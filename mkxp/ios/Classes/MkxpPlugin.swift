@@ -11,7 +11,7 @@ public class MkxpPlugin: NSObject, FlutterPlugin {
     channel.setMethodCallHandler(handler.handle)
 
     let factory = MkxpPlatformViewFactory(messenger: registrar.messenger())
-    registrar.registerViewFactory(factory, withId: "mkxp-game-view")
+    registrar.register(factory, withId: "mkxp-game-view")
   }
 }
 
