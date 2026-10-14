@@ -1,0 +1,24 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+
+# 本地生成的平台工程（由 CI 的 flutter create 生成，不入库）
+/ios/
+/android/
+/windows/
+/linux/
+/macos/
+/web/
+
+# 插件临时产物
+mkxp/.dart_tool/
+mkxp/build/
+
+# 用户自己的游戏与日志（不入库）
+*.log
+games/
+
+# 出包产物
+*.ipa

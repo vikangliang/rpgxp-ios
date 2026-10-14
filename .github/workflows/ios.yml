@@ -1,0 +1,53 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+          cache: true
+
+      # flutter create 会重新生成根目录 pubspec.yaml/lib/ios ，先备份我们的源码
+      - name: Backup app sources
+        run: |
+          cp pubspec.yaml /tmp/app_pubspec.yaml
+          cp -r lib /tmp/app_lib
+
+      # 本地无 Mac，用 CI 生成 iOS 工程（含 Runner.xcodeproj）
+      # 工作区目录名以数字开头，不能做 Dart 包名，必须显式指定 --project-name
+      - name: Generate iOS project (flutter create)
+        run: flutter create --platforms=ios --org com.yourapp --project-name rpgxp_loader .
+
+      # 还原我们的源码，并通过 flutter pub get 集成 mkxp 原生插件
+      - name: Restore sources & integrate plugin
+        run: |
+          cp -f /tmp/app_pubspec.yaml pubspec.yaml
+          rm -rf lib && cp -r /tmp/app_lib lib
+          flutter pub get
+
+      # 不签名编译（Sideloadly 在 Windows 侧重签安装）
+      - name: Build iOS (no codesign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p build/Payload
+          cp -r build/ios/iphoneos/Runner.app build/Payload/
+          cd build && zip -r app.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpgxp-loader-ipa
+          path: build/app.ipa

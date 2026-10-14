@@ -1,0 +1,24 @@
+name: rpgxp_loader
+description: 自用 iOS 启动器，运行 Pokémon Essentials 21.1（RPG Maker XP / RGSS1），内嵌 MKXP-Z 引擎。
+publish_to: 'none'
+version: 0.0.1+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # 原生桥接插件（承载 MKXP 引擎与 UiKitView），源码在 ./mkxp
+  mkxp:
+    path: ./mkxp
+  # M2 将在此添加：file_picker、archive（导入/解压游戏）
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
