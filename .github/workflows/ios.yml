@@ -7,16 +7,23 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # 钉在 macos-15：默认 Xcode 16.4，且自带 CocoaPods（macos-26 默认 Xcode 26，旧版 Flutter 不兼容）
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          # 用最新 stable，与 runner 的 Xcode 保持兼容（勿再钉死旧版本号）
           channel: 'stable'
           cache: true
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          flutter --version
+          pod --version
 
       # flutter create 会重新生成根目录 pubspec.yaml/lib/ios ，先备份我们的源码
       - name: Backup app sources
