@@ -6,11 +6,11 @@ import UIKit
 public class MkxpPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "com.yourapp.mkxp",
-                                        binaryMessenger: registrar.messenger)
+                                        binaryMessenger: registrar.messenger())
     let handler = MkxpMethodHandler()
     channel.setMethodCallHandler(handler.handle)
 
-    let factory = MkxpPlatformViewFactory(messenger: registrar.messenger)
+    let factory = MkxpPlatformViewFactory(messenger: registrar.messenger())
     registrar.registerViewFactory(factory, withId: "mkxp-game-view")
   }
 }
