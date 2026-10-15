@@ -264,8 +264,9 @@ cat > "$FW_DIR/Headers/MKXP.h" <<'EOF'
 #ifdef __cplusplus
 extern "C" {
 #endif
-// 在指定 UIView 中启动 MKXP，运行 gamePath 下的 RGSS 游戏；返回 0 成功
-int mkxp_run(const char* gamePath, void* uiView);
+// 启动 MKXP 运行 gamePath 下的 RGSS 游戏（SDL 自建全屏窗口，详见 README「嵌入方式决策」）。
+// 必须在后台线程调用（原 eventThread.process() 阻塞）。返回 0 成功。
+int mkxp_run(const char* gamePath);
 void mkxp_key(int rgssKey, int down);
 void mkxp_quit(void);
 #ifdef __cplusplus
