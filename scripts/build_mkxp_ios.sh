@@ -124,7 +124,8 @@ EOF
       ac_cv_header_sys_vnode_h=no \
       ac_cv_header_sys_ucred_h=no \
       ac_cv_header_sys_attr_h=no \
-      ac_cv_func_getattrlist=no
+      ac_cv_func_getattrlist=no \
+      ac_cv_func_fgetattrlist=no
     # 关键：所有"需要运行 ruby"的生成步骤都用 host 版 miniruby，避免跑 iOS 二进制。
     # 不指定 libruby.a 这个 target 名（Makefile 未直接暴露），走默认 all，
     # 静态库 libruby.a 会作为构建 ruby 的前置产物被编出来。
