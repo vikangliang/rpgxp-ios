@@ -9,6 +9,7 @@ project(mkxp-ios C CXX)
 
 set(MKXP_SRC      "" CACHE PATH "mkxp-z 源码根目录")
 set(VCPKG_INSTALL "" CACHE PATH "vcpkg installed/arm64-ios")
+set(SDLSOUND_PREFIX "" CACHE PATH "SDL2_sound 安装前缀（源码交叉编译）")
 set(RUBY_INC      "" CACHE PATH "ruby 头目录")
 set(RUBY_LIB      "" CACHE FILEPATH "libruby-static.a")
 
@@ -23,9 +24,10 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 set(DEP_INC ${VCPKG_INSTALL}/include)
 set(DEP_LIB ${VCPKG_INSTALL}/lib)
 
-# ---- 在 vcpkg 静态安装里找库 ----
+# ---- 在 vcpkg 静态安装里找库（也允许 SDL2_sound 前缀） ----
 function(find_mkxp_lib var)
-  find_library(${var} NAMES ${ARGN} PATHS ${DEP_LIB} NO_DEFAULT_PATH REQUIRED)
+  find_library(${var} NAMES ${ARGN}
+    PATHS ${DEP_LIB} ${SDLSOUND_PREFIX}/lib NO_DEFAULT_PATH REQUIRED)
 endfunction()
 
 find_mkxp_lib(L_SDL2      SDL2)
@@ -67,6 +69,7 @@ set(MKXP_INC
   ${DEP_INC}
   ${DEP_INC}/SDL2
   ${DEP_INC}/freetype2
+  ${SDLSOUND_PREFIX}/include
   ${RUBY_INC}
 )
 

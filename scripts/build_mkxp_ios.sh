@@ -55,11 +55,35 @@ echo "== install C deps via vcpkg (arm64-ios) =="
 #   ogg freetype pixman libpng libjpeg zlib uchardet (+ 系统 bz2/iconv)
 # 音频走 SDL2_sound + vorbis/theora，不是 sdl2-mixer；无 boost/sqlite 依赖。
 "$VCPKG/vcpkg" install --triplet arm64-ios \
-  sdl2 sdl2-image sdl2-ttf sdl2-sound \
+  sdl2 sdl2-image sdl2-ttf \
   physfs openal-soft \
   libtheora libvorbis libogg \
   freetype pixman libpng libjpeg-turbo zlib uchardet
 VCPKG_INSTALL=$VCPKG/installed/arm64-ios
+
+# ---------- 1b. 编 SDL2_sound（vcpkg 无此端口；mkxp-z 音频硬依赖，源码交叉编译静态库） ----------
+SDLSOUND_SRC=$ROOT/deps/SDL_sound
+SDLSOUND_PREFIX=$ROOT/deps/sdl2-sound-ios
+if [ ! -f "$SDLSOUND_PREFIX/lib/libSDL2_sound.a" ]; then
+  if [ ! -d "$SDLSOUND_SRC/.git" ]; then
+    git clone --depth 1 --branch v2.0.6 https://github.com/icculus/SDL_sound.git "$SDLSOUND_SRC"
+  fi
+  cmake -B "$SDLSOUND_SRC/build-ios" -S "$SDLSOUND_SRC" \
+    -DCMAKE_SYSTEM_NAME=iOS \
+    -DCMAKE_OSX_SYSROOT=iphoneos \
+    -DCMAKE_OSX_ARCHITECTURES=$ARCH \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=$MIN_IOS \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH="$VCPKG_INSTALL" \
+    -DSDL2_DIR="$VCPKG_INSTALL/share/sdl2" \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DSDLSOUND_BUILD_SHARED=OFF -DSDLSOUND_BUILD_STATIC=ON \
+    -DSDLSOUND_BUILD_TEST=OFF \
+    -DCMAKE_INSTALL_PREFIX="$SDLSOUND_PREFIX"
+  cmake --build "$SDLSOUND_SRC/build-ios" -j"$(sysctl -n hw.ncpu)"
+  cmake --install "$SDLSOUND_SRC/build-ios"
+fi
+echo "sdl2_sound static lib: $(ls -1 "$SDLSOUND_PREFIX"/lib/libSDL2_sound.a 2>/dev/null || echo NONE)"
 
 # ---------- 2. MRI Ruby 交叉编译（iOS arm64） ----------
 # 用主机 ruby 引导 miniruby；本体编成静态库供 MKXP 链接。
@@ -193,6 +217,7 @@ cmake -B "$MKXP_SRC/build-ios" \
   -DCMAKE_BUILD_TYPE=Release \
   -DMKXP_SRC="$MKXP_SRC" \
   -DVCPKG_INSTALL="$VCPKG_INSTALL" \
+  -DSDLSOUND_PREFIX="$SDLSOUND_PREFIX" \
   -DRUBY_INC="$RUBY_INC" \
   -DRUBY_LIB="$RUBY_LIB"
 cmake --build "$MKXP_SRC/build-ios" -j"$(sysctl -n hw.ncpu)"
