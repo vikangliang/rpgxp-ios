@@ -49,17 +49,20 @@ pushd "$VCPKG" >/dev/null
   ./bootstrap-vcpkg.sh
 popd >/dev/null
 
-echo "== install C deps via vcpkg (arm64-ios) =="
+echo "== install C deps via vcpkg (arm64-ios-static) =="
 # mkxp-z v2.4.2 依赖面（来自 src/meson.build）：
 #   sdl2 sdl2_image sdl2_ttf sdl2_sound physfs openal theora vorbis vorbisfile
 #   ogg freetype pixman libpng libjpeg zlib uchardet (+ 系统 bz2/iconv)
 # 音频走 SDL2_sound + vorbis/theora，不是 sdl2-mixer；无 boost/sqlite 依赖。
-"$VCPKG/vcpkg" install --triplet arm64-ios \
+# 必须用【静态】triplet：动态 arm64-ios 产出 .framework/.dylib，既无法被手搓
+# CMake 的 find_library(SDL2) 直接命中，也无法被 libtool -static 合并进框架。
+"$VCPKG/vcpkg" install --triplet arm64-ios-static \
+  --overlay-triplets "$ROOT/scripts/vcpkg-triplets" \
   sdl2 sdl2-image sdl2-ttf \
   physfs openal-soft \
   libtheora libvorbis libogg \
   freetype pixman libpng libjpeg-turbo zlib uchardet
-VCPKG_INSTALL=$VCPKG/installed/arm64-ios
+VCPKG_INSTALL=$VCPKG/installed/arm64-ios-static
 
 # ---------- 1b. 编 SDL2_sound（vcpkg 无此端口；mkxp-z 音频硬依赖，源码交叉编译静态库） ----------
 SDLSOUND_SRC=$ROOT/deps/SDL_sound
@@ -201,6 +204,17 @@ if [ ! -d "$MKXP_SRC/.git" ]; then
   git clone --depth 1 --branch v2.4.2 --recurse-submodules \
     https://github.com/mkxp-z/mkxp-z.git "$MKXP_SRC" || \
   git clone --depth 1 --branch v2.4.2 https://github.com/mkxp-z/mkxp-z.git "$MKXP_SRC"
+fi
+
+# iOS 上 __APPLE__ 为真，上游 src/system/system.h 会把 MKXPZ_PLATFORM 判成
+# MKXPZ_PLATFORM_MACOS，可能误走 macOS Cocoa/AppKit 分支（iOS 没有 AppKit，编译必炸）。
+# 强制改判为 MKXPZ_PLATFORM_LINUX（POSIX/SDL 路径，iOS 与 Linux 同属 Unix 类，可用）。
+# 注意：仅靠 -DMKXPZ_PLATFORM=... 不够——system.h 内的 #define 在源码里后定义会覆盖命令行，
+# 所以必须在克隆后直接改源文件。
+if [ -f "$MKXP_SRC/src/system/system.h" ]; then
+  sed -i '' 's/#define MKXPZ_PLATFORM MKXPZ_PLATFORM_MACOS/#define MKXPZ_PLATFORM MKXPZ_PLATFORM_LINUX/' \
+    "$MKXP_SRC/src/system/system.h"
+  echo "patched MKXPZ_PLATFORM -> LINUX for iOS"
 fi
 
 # ---------- 4. 编译 mkxp-z 为静态库 libmkxp.a（手搓 CMake，链接 vcpkg + 静态 Ruby） ----------

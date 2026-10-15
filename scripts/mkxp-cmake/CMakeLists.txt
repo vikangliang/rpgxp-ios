@@ -35,14 +35,14 @@ find_mkxp_lib(L_SDL2SOUND SDL2_sound sdl2_sound)
 find_mkxp_lib(L_SDL2IMAGE SDL2_image sdl2_image)
 find_mkxp_lib(L_SDL2TTF   SDL2_ttf sdl2_ttf)
 find_mkxp_lib(L_PHYSFS    physfs)
-find_mkxp_lib(L_OPENAL    openal OpenAL)
+find_mkxp_lib(L_OPENAL    openal OpenAL libopenal openal32)
 find_mkxp_lib(L_THEORA    theora)
 find_mkxp_lib(L_VORBIS    vorbis)
 find_mkxp_lib(L_VORBISFILE vorbisfile)
 find_mkxp_lib(L_OGG       ogg)
 find_mkxp_lib(L_FREETYPE  freetype)
 find_mkxp_lib(L_PIXMAN    pixman-1 pixman)
-find_mkxp_lib(L_PNG       png libpng png16)
+find_mkxp_lib(L_PNG       png libpng png16 libpng16)
 find_mkxp_lib(L_JPEG      jpeg turbojpeg libjpeg)
 find_mkxp_lib(L_ZLIB      z)
 find_mkxp_lib(L_UCHARDET  uchardet)
@@ -144,6 +144,13 @@ target_compile_definitions(mkxp PRIVATE
   MKXPZ_ALCDEVICE=ALCdevice
   GLES2_HEADER
   MKXPZ_MINIFFI
+  # iOS 没有 Windows/Cocoa 专属 API，必须显式声明为非 Windows 平台，
+  # 否则 #if MKXPZ_PLATFORM != MKXPZ_PLATFORM_WINDOWS 因两宏均未定义而
+  # 误走 Windows 分支（GetUserDefaultLangID 等不存在）。上游 Linux 构建
+  # 即设为 MKXPZ_PLATFORM_LINUX，iOS 复用同一 POSIX/SDL 路径。
+  MKXPZ_PLATFORM=MKXPZ_PLATFORM_LINUX
+  # Essentials 中文 UI 字体兜底
+  MKXPZ_CJK_FONT
 )
 target_compile_options(mkxp PRIVATE
   -fdeclspec
