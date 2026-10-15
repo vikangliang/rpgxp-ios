@@ -87,6 +87,7 @@ else
       --prefix="$PREFIX" \
       --enable-static --disable-shared \
       --disable-install-doc --disable-jit-support \
+      --with-coroutine=copy \
       --with-static-linked-ext \
       --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty
     env CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" LDFLAGS= make -j"$(sysctl -n hw.ncpu)"
@@ -128,6 +129,7 @@ EOF
       --prefix="$PREFIX" \
       --enable-static --disable-shared \
       --disable-install-doc --disable-jit-support \
+      --with-coroutine=copy \
       --with-static-linked-ext \
       --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty \
       cflags="$ARCH_FLAGS" LDFLAGS="$ARCH_FLAGS" \
