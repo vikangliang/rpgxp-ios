@@ -90,6 +90,7 @@ else
       --prefix="$PREFIX" \
       --enable-static --disable-shared \
       --disable-install-doc --disable-jit-support \
+      --enable-load-relative \
       --with-static-linked-ext \
       --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty
     env CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" LDFLAGS= make -j"$(sysctl -n hw.ncpu)"
@@ -142,11 +143,13 @@ EOF
       ac_cv_header_sys_attr_h=no \
       ac_cv_func_getattrlist=no \
       ac_cv_func_fgetattrlist=no
-    # 关键：所有"需要运行 ruby"的生成步骤都用 host 版 miniruby，避免跑 iOS 二进制。
+    # 关键：所有"需要运行 ruby"的生成步骤都用 host 版 ruby（完整版，含 erb 等
+    # stdlib），避免跑 iOS 二进制；miniruby 不加载 default gem（如 erb），
+    # 生成 ext/configure-ext.mk 时会 LoadError，故用完整 ruby 作 MINIRUBY/PREP。
     # 不指定 libruby.a 这个 target 名（Makefile 未直接暴露），走默认 all，
     # 静态库 libruby.a 会作为构建 ruby 的前置产物被编出来。
     make -j"$(sysctl -n hw.ncpu)" \
-      MINIRUBY="$HOST_MINIRUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_MINIRUBY"
+      MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY"
     # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物。
     # 静态库可能叫 libruby.a 或 libruby-static.a，挑存在的那个。
     mkdir -p "$PREFIX/lib" "$PREFIX/include/ruby"
