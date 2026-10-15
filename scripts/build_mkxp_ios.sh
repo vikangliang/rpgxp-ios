@@ -73,19 +73,25 @@ else
     sed -i '' 's/system(buf)/0/' vm_dump.c
     # autoreconf -fi 自动安装辅助文件（config.guess/sub/install-sh）
     autoreconf -fi
-    # ---------- Stage A：编一个 host 版（macOS 原生）miniruby ----------
-    # 交叉编译时 make 要用 miniruby 生成 encdb.h/transdb.h/rbconfig.rb 等，
-    # 这些必须在本机跑，所以 miniruby 必须是 macOS 二进制。务必清掉被 export
-    # 的 iOS CFLAGS/LDFLAGS，否则编出的还是 iOS 目标、跑不起来。
+    # ---------- Stage A：编一个 host 版（macOS 原生）ruby/miniruby ----------
+    # 交叉编译时 make 要用 miniruby 生成 encdb.h/transdb.h/rbconfig.rb、
+    # builtin_binary.inc 等，这些必须在本机跑，所以必须是 macOS 二进制。
+    # 务必清掉被 export 的 iOS CFLAGS/LDFLAGS，否则编出的还是 iOS 目标、跑不起来。
+    # 注意：host 只是构建期工具，用 -O0 编（clang 17 的 -O3 会把 miniruby
+    # 在生成全部内建字节码时 miscompile 导致 builtin_binary.inc 段错误）。
     mkdir -p build-host && cd build-host
-    env CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= ../configure \
+    env CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" CPPFLAGS= LDFLAGS= ../configure \
       --prefix="$PREFIX" \
       --enable-static --disable-shared \
       --disable-install-doc --disable-jit-support \
       --with-static-linked-ext \
       --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty
-    env CFLAGS= CXXFLAGS= LDFLAGS= make -j"$(sysctl -n hw.ncpu)" miniruby
+    env CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" LDFLAGS= make -j"$(sysctl -n hw.ncpu)"
     cd ..
+    HOST_MINIRUBY="$(pwd)/build-host/miniruby"
+    HOST_RUBY="$(pwd)/build-host/ruby"
+    file "$HOST_MINIRUBY"   # 自检：应为 Mach-O arm64 (native)，能在 runner 上跑
+    "$HOST_MINIRUBY" -e 'puts "HOST_MINIRUBY_OK"'   # 运行时自检，崩了立刻暴露
     HOST_MINIRUBY="$(pwd)/build-host/miniruby"
     file "$HOST_MINIRUBY"   # 自检：应为 Mach-O arm64 (native)，能在 runner 上跑
     # ---------- iOS SDK 缺失的 BSD 头桩（iPhoneOS 去掉了部分 macOS 头） ----------
@@ -134,7 +140,7 @@ EOF
     # 不指定 libruby.a 这个 target 名（Makefile 未直接暴露），走默认 all，
     # 静态库 libruby.a 会作为构建 ruby 的前置产物被编出来。
     make -j"$(sysctl -n hw.ncpu)" \
-      MINIRUBY="$HOST_MINIRUBY" BUILTRUBY="$HOST_MINIRUBY" PREP="$HOST_MINIRUBY"
+      MINIRUBY="$HOST_MINIRUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_MINIRUBY"
     # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物。
     # 静态库可能叫 libruby.a 或 libruby-static.a，挑存在的那个。
     mkdir -p "$PREFIX/lib" "$PREFIX/include/ruby"
