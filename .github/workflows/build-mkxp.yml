@@ -1,0 +1,52 @@
+name: Build MKXP framework (M1a)
+
+# 隔离构建 MKXP.framework，不触碰 App 的 IPA 流水线。
+# 只在 push 到 main 时跑（或手动 workflow_dispatch），产物作为 artifact 上传。
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-mkxp:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vcpkg installed (arm64-ios)
+        uses: actions/cache@v4
+        with:
+          path: deps/vcpkg/installed
+          key: vcpkg-ios-${{ hashFiles('scripts/build_mkxp_ios.sh') }}
+          restore-keys: vcpkg-ios-
+
+      - name: Cache cross-built Ruby
+        uses: actions/cache@v4
+        with:
+          path: deps/ruby-ios
+          key: ruby-ios-3.2.5-${{ hashFiles('scripts/build_mkxp_ios.sh') }}
+          restore-keys: ruby-ios-3.2.5-
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          brew --version
+
+      - name: Build MKXP.framework
+        run: bash scripts/build_mkxp_ios.sh
+
+      - name: Upload MKXP.framework
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MKXP-framework
+          path: mkxp/ios/MKXP.framework
+          if-no-files-found: warn
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mkxp-build-log
+          path: build-mkxp.log
+          if-no-files-found: warn
