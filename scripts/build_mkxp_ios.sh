@@ -20,8 +20,10 @@ exec > >(tee -a "$LOG") 2>&1
 echo "== [$(date)] MKXP-Z iOS build start =="
 echo "SDK=$SDK  MIN_IOS=$MIN_IOS"
 
-RUBY_VER=3.2.5
-PREFIX=$ROOT/deps/ruby-ios   # Ruby 安装前缀（缓存）
+RUBY_VER=3.3.12
+# PREFIX 带版本号：换 Ruby 版本时旧缓存自动失效，避免脚本因 libruby-static.a
+# 已存在而跳过重建（同 runner 上 homebrew 的 ruby@3.3.12 已验证可编）。
+PREFIX=$ROOT/deps/ruby-ios-$RUBY_VER   # Ruby 安装前缀（缓存）
 VCPKG=$ROOT/deps/vcpkg
 MKXP_SRC=$ROOT/deps/mkxp-z
 FW_DIR=$ROOT/mkxp/ios/MKXP.framework
@@ -73,7 +75,8 @@ else
     # iOS 上 system() 被标 unavailable，且 vm_dump.c 的 rb_vm_bugreport 里
     # 没有任何预处理宏守卫（仅运行时 if(cmd) 包着）。函数式宏 -Dsystem(x)=0
     # 会害 shell 把命令行里的括号当成 subshell 语法而报错，故改用 sed 直改调用点。
-    sed -i '' 's/system(buf)/0/' vm_dump.c
+    # 兼容 3.2（system(buf)）与 3.3（system(cmd)）两种写法。
+    sed -i '' -e 's/system(buf)/0/' -e 's/system(cmd)/0/' vm_dump.c
     # autoreconf -fi 自动安装辅助文件（config.guess/sub/install-sh）
     autoreconf -fi
     # ---------- Stage A：编一个 host 版（macOS 原生）ruby/miniruby ----------
@@ -87,7 +90,6 @@ else
       --prefix="$PREFIX" \
       --enable-static --disable-shared \
       --disable-install-doc --disable-jit-support \
-      --with-coroutine=copy \
       --with-static-linked-ext \
       --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty
     env CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" LDFLAGS= make -j"$(sysctl -n hw.ncpu)"
@@ -129,7 +131,6 @@ EOF
       --prefix="$PREFIX" \
       --enable-static --disable-shared \
       --disable-install-doc --disable-jit-support \
-      --with-coroutine=copy \
       --with-static-linked-ext \
       --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty \
       cflags="$ARCH_FLAGS" LDFLAGS="$ARCH_FLAGS" \
