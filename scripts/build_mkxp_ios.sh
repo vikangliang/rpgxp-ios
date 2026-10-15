@@ -106,7 +106,7 @@ else
 #define VCPLX 10
 #endif
 EOF
-    export CPPFLAGS="-I$STUB -I$PREFIX/include"
+    export CPPFLAGS="-I$STUB -I$PREFIX/include -Dsystem(x)=0"
     # ---------- Stage B：交叉编译 iOS 静态库，用 host miniruby 引导 ----------
     mkdir -p build-ios && cd build-ios
     # --host 走交叉路径；不显式给 --build，让 configure 用 config.guess 推断
