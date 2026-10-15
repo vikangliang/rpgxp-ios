@@ -67,6 +67,10 @@ else
     git clone --depth 1 --branch "v${RUBY_VER//./_}" https://github.com/ruby/ruby.git "$RUBY_SRC"
   fi
   pushd "$RUBY_SRC" >/dev/null
+    # iOS 上 system() 被标 unavailable，且 vm_dump.c 的 rb_vm_bugreport 里
+    # 没有任何预处理宏守卫（仅运行时 if(cmd) 包着）。函数式宏 -Dsystem(x)=0
+    # 会害 shell 把命令行里的括号当成 subshell 语法而报错，故改用 sed 直改调用点。
+    sed -i '' 's/system(buf)/0/' vm_dump.c
     # autoreconf -fi 自动安装辅助文件（config.guess/sub/install-sh）
     autoreconf -fi
     # ---------- Stage A：编一个 host 版（macOS 原生）miniruby ----------
@@ -106,7 +110,7 @@ else
 #define VCPLX 10
 #endif
 EOF
-    export CPPFLAGS="-I$STUB -I$PREFIX/include -Dsystem(x)=0"
+    export CPPFLAGS="-I$STUB -I$PREFIX/include"
     # ---------- Stage B：交叉编译 iOS 静态库，用 host miniruby 引导 ----------
     mkdir -p build-ios && cd build-ios
     # --host 走交叉路径；不显式给 --build，让 configure 用 config.guess 推断
