@@ -46,8 +46,9 @@ popd >/dev/null
 
 echo "== install C deps via vcpkg (arm64-ios) =="
 "$VCPKG/vcpkg" install --triplet arm64-ios \
-  sdl2 sdl2-image sdl2-ttf "sdl2-mixer[libvorbis]" \
+  sdl2 sdl2-image sdl2-ttf sdl2-mixer \
   libpng zlib pixman freetype physfs sqlite3 \
+  libvorbis \
   boost-system boost-filesystem boost-interprocess
 VCPKG_INSTALL=$VCPKG/installed/arm64-ios
 
