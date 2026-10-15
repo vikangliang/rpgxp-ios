@@ -100,6 +100,14 @@ set(MKXP_INC
 )
 
 # ---- xxd 嵌入 shader/asset（还原上游 meson 的 custom_target） ----
+# 关键 1：符号名由【相对构建目录】的输入路径决定。上游 meson 在 build/ 下执行
+#   xxd -i ../shader/simple.frag  →  ___shader_simple_frag
+# （".."→"__" 再接 "/"→"_"，共 3 个下划线）。shader.cpp 的 INIT_SHADER 宏正是
+# 引用 ___shader_##vert##_vert / ___shader_common_h。若像原先那样传绝对路径，
+# 符号会变成 _Users_runner_..._shader_simple_frag，链接期必然炸。
+# 关键 2：输出必须叫 <file>.xxd——源码里写的是 #include "simple.frag.xxd"。
+# 关键 3：这些 .xxd 由 shader.cpp / main.cpp / eventthread.cpp / font.cpp
+# 直接 #include，绝不参与编译；否则同一数组在两个 TU 各定义一次 → 重复符号。
 find_program(XXD NAMES xxd REQUIRED)
 set(GEN ${CMAKE_CURRENT_BINARY_DIR}/gen)
 file(MAKE_DIRECTORY ${GEN})
@@ -111,18 +119,21 @@ set(SHADERS
   tilemap.vert tilemapvx.vert blur.frag blurH.vert blurV.vert simpleMatrix.vert)
 set(ASSETS icon.png gamecontrollerdb.txt liberation.ttf)
 
-set(EMBED_SRCS)
+set(EMBED_HDRS)
 foreach(f ${SHADERS} ${ASSETS})
   if(EXISTS ${MKXP_SRC}/shader/${f})
     set(src ${MKXP_SRC}/shader/${f})
   else()
     set(src ${MKXP_SRC}/assets/${f})
   endif()
+  # 相对构建目录 → 正确的 xxd 符号前缀（___shader_* / ___assets_*）
+  file(RELATIVE_PATH rel ${CMAKE_CURRENT_BINARY_DIR} ${src})
   add_custom_command(
-    OUTPUT ${GEN}/${f}.c
-    COMMAND ${XXD} -i ${src} ${GEN}/${f}.c
+    OUTPUT ${GEN}/${f}.xxd
+    COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_CURRENT_BINARY_DIR}
+            ${XXD} -i ${rel} ${GEN}/${f}.xxd
     DEPENDS ${src} MAIN_DEPENDENCY ${src})
-  list(APPEND EMBED_SRCS ${GEN}/${f}.c)
+  list(APPEND EMBED_HDRS ${GEN}/${f}.xxd)
 endforeach()
 
 # ---- 源文件清单（来自上游 src/meson.build + binding/meson.build，miniffi=on） ----
@@ -158,9 +169,12 @@ foreach(s ${SRC})
   list(APPEND SRC_FULL ${MKXP_SRC}/${s})
 endforeach()
 
-add_library(mkxp STATIC ${SRC_FULL} ${EMBED_SRCS})
+add_library(mkxp STATIC ${SRC_FULL})
+# .xxd 仅被 #include，不参与编译；但必须保证在编译前生成，故挂一个自定义目标
+add_custom_target(mkxp_embed_xxd ALL DEPENDS ${EMBED_HDRS})
+add_dependencies(mkxp mkxp_embed_xxd)
 
-target_include_directories(mkxp PRIVATE ${MKXP_INC})
+target_include_directories(mkxp PRIVATE ${MKXP_INC} ${GEN})
 target_compile_definitions(mkxp PRIVATE
   MKXPZ_BUILD_MESON
   MKXPZ_VERSION="2.4.2"
