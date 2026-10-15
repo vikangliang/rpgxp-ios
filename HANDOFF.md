@@ -13,6 +13,33 @@
   - `SDL2_sound` v2.0.6 源码交叉编译出 `libSDL2_sound.a` 成功。
 - 两个前置炸弹已修（见下「已踩的坑」）。
 
+## 环境要求
+
+### 本地（另一台电脑）——只需能推代码，其余全在云端
+- **git**：任意安装路径，配置好能 `push` 到本仓库即可（HTTPS 凭据或 SSH key）。
+  Windows 上 git 不一定在 PATH，常见位置 `C:\Program Files\Git\cmd\git.exe`、
+  `C:\src\git\cmd\git.exe`，找不到时用 `Get-Command git` 定位后把其目录加进 `$env:PATH`。
+- **网络**：能访问 github.com（拉取 + 触发 Actions）。
+- **仓库远程**：默认 `origin` 指向 `github.com/vikangliang/rpgxp-ios`（`push` 到 `main` 即触发 CI）。
+- （可选）**Flutter SDK**：仅用于本地 `flutter analyze` / `flutter test` 自检 Dart 代码；
+  iOS 编译**不能**在本地做（无 Mac），必须在 CI。Windows 装 Flutter 即可跑 analyze。
+- 编辑器/AI：用任意编辑器改 `scripts/`、CMake、Dart 文本即可，**无需本地编译任何原生代码**。
+
+### 云端 CI（GitHub Actions `macos-15`）——真正的构建环境
+- macOS 15 runner，默认 Xcode 16.4（自带 iPhoneOS SDK、Apple clang 17）。
+- Homebrew 已预装；脚本内 `brew install` 补：`cmake ninja automake libtool pkg-config bison xxd`。
+- `ruby@3.3`（3.3.12）已预装，作 MRI Ruby 交叉编译的引导器。
+- 其余全部由脚本自动 clone + 编译，**无需预装**：
+  - MRI Ruby 源码（交叉编 `libruby-static.a`）
+  - vcpkg + 全部 C 依赖（`arm64-ios-static` 静态 triplet）
+  - `SDL2_sound` v2.0.6（源码交叉编译）
+  - mkxp-z v2.4.2（手搓 CMake 编 `libmkxp.a`）
+- 缓存：workflow 用 `actions/cache` 缓存 `deps/vcpkg/installed` 与 `deps/ruby-ios`，
+  命中即跳过重建（改脚本 / triplet 时 key 会变而失效）。
+
+> 结论：另一台电脑**不需要 Mac、不需要 Xcode、不需要 vcpkg/Ruby**；只要 git 能 push，
+> 剩下的全交给 CI。唯一会随机器变的是 git 的可执行路径与凭据。
+
 ## 怎么触发云编译
 
 - `push` 到 `main` 会**同时**触发：
