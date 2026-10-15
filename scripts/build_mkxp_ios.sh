@@ -84,6 +84,29 @@ else
     cd ..
     HOST_MINIRUBY="$(pwd)/build-host/miniruby"
     file "$HOST_MINIRUBY"   # 自检：应为 Mach-O arm64 (native)，能在 runner 上跑
+    # ---------- iOS SDK 缺失的 BSD 头桩（iPhoneOS 去掉了部分 macOS 头） ----------
+    # Ruby 的 dir.c 等在某些版本下直接 #include <sys/vnode.h>（iOS SDK 没有）。
+    # 提供最小桩并放到 include 搜索最前面；同时把对应 ac_cv_header_* 压成 no 双保险。
+    STUB=$ROOT/deps/ios-stub
+    mkdir -p "$STUB/sys"
+    cat > "$STUB/sys/vnode.h" <<'EOF'
+#ifndef RUBY_IOS_SYS_VNODE_H
+#define RUBY_IOS_SYS_VNODE_H
+/* Minimal stub for iOS: <sys/vnode.h> is absent from the iPhoneOS SDK. */
+#define VNON  0
+#define VREG  1
+#define VDIR  2
+#define VBLK  3
+#define VCHR  4
+#define VLNK  5
+#define VSOCK 6
+#define VFIFO 7
+#define VBAD  8
+#define VSTR  9
+#define VCPLX 10
+#endif
+EOF
+    export CPPFLAGS="-I$STUB -I$PREFIX/include"
     # ---------- Stage B：交叉编译 iOS 静态库，用 host miniruby 引导 ----------
     mkdir -p build-ios && cd build-ios
     # --host 走交叉路径；不显式给 --build，让 configure 用 config.guess 推断
@@ -97,7 +120,9 @@ else
       cflags="$ARCH_FLAGS" LDFLAGS="$ARCH_FLAGS" \
       CROSS_COMPILING=yes \
       ac_cv_func_getentropy=no \
-      ac_cv_func_fcntl=yes
+      ac_cv_func_fcntl=yes \
+      ac_cv_header_sys_vnode_h=no \
+      ac_cv_header_sys_ucred_h=no
     # 关键：所有"需要运行 ruby"的生成步骤都用 host 版 miniruby，避免跑 iOS 二进制。
     # 不指定 libruby.a 这个 target 名（Makefile 未直接暴露），走默认 all，
     # 静态库 libruby.a 会作为构建 ruby 的前置产物被编出来。
