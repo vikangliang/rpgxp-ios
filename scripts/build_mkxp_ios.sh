@@ -57,6 +57,9 @@ VCPKG_INSTALL=$VCPKG/installed/arm64-ios
 
 # ---------- 2. MRI Ruby 交叉编译（iOS arm64） ----------
 # 用主机 ruby 引导 miniruby；本体编成静态库供 MKXP 链接。
+# mk_builtin_binary.rb 递归编译全部内建字节码时容易栈溢出（segfault 11），
+# macOS 默认主线程栈仅 8MB，放大到 64MB 规避。
+ulimit -s 65536 2>/dev/null || true
 if [ -f "$PREFIX/lib/libruby-static.a" ]; then
   echo "== Ruby 已缓存，跳过 =="
 else
