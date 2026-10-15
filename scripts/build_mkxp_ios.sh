@@ -79,28 +79,22 @@ else
     sed -i '' -e 's/system(buf)/0/' -e 's/system(cmd)/0/' vm_dump.c
     # autoreconf -fi 自动安装辅助文件（config.guess/sub/install-sh）
     autoreconf -fi
-    # ---------- Stage A：编一个 host 版（macOS 原生）ruby/miniruby ----------
-    # 交叉编译时 make 要用 miniruby 生成 encdb.h/transdb.h/rbconfig.rb、
-    # builtin_binary.inc 等，这些必须在本机跑，所以必须是 macOS 二进制。
-    # 务必清掉被 export 的 iOS CFLAGS/LDFLAGS，否则编出的还是 iOS 目标、跑不起来。
-    # 注意：host 只是构建期工具，用 -O0 编（clang 17 的 -O3 会把 miniruby
-    # 在生成全部内建字节码时 miscompile 导致 builtin_binary.inc 段错误）。
-    mkdir -p build-host && cd build-host
-    env CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" CPPFLAGS= LDFLAGS= ../configure \
-      --prefix="$PREFIX" \
-      --enable-static --disable-shared \
-      --disable-install-doc --disable-jit-support \
-      --enable-load-relative \
-      --with-static-linked-ext \
-      --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty
-    env CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" LDFLAGS= make -j"$(sysctl -n hw.ncpu)"
-    cd ..
-    HOST_MINIRUBY="$(pwd)/build-host/miniruby"
-    HOST_RUBY="$(pwd)/build-host/ruby"
-    file "$HOST_MINIRUBY"   # 自检：应为 Mach-O arm64 (native)，能在 runner 上跑
-    "$HOST_MINIRUBY" -e 'puts "HOST_MINIRUBY_OK"'   # 运行时自检，崩了立刻暴露
-    HOST_MINIRUBY="$(pwd)/build-host/miniruby"
-    file "$HOST_MINIRUBY"   # 自检：应为 Mach-O arm64 (native)，能在 runner 上跑
+    # ---------- Stage A：定位 macOS 原生 ruby（构建期工具，无需自编） ----------
+    # runner 已自带 ruby@3.3 (3.3.12，与 iOS 目标同版本)：原生 macOS arm64、含全套
+    # stdlib（含 erb）。交叉编译时 make 用它生成 encdb.h/transdb.h/rbconfig.rb、
+    # builtin_binary.inc、ext/configure-ext.mk 等，这些必须在本机跑。
+    # 直接复用它作 MINIRUBY/BUILTRUBY/PREP，既避免自编 host ruby 被全局 iOS
+    # CFLAGS 污染，也避开 Ruby 3.3 的 `ruby` 可执行链接规则把 Makefile 当目标文件
+    # 的坑（那个规则只影响可执行链接，跳过它、只编静态库即可）。
+    BUILD_RUBY="$(brew --prefix ruby@3.3 2>/dev/null)/bin/ruby"
+    [ -x "$BUILD_RUBY" ] || BUILD_RUBY=/opt/homebrew/opt/ruby@3.3/bin/ruby
+    "$BUILD_RUBY" --disable=gems -v
+    "$BUILD_RUBY" --disable=gems -e 'require "erb"; puts "HOST_RUBY_ERB_OK"'   # 自检：erb 可用
+    # 注意：HOST_RUBY 必须是“裸路径”，不能带 --disable=gems 之类的参数——Ruby 的
+    # Makefile 会把 MINIRUBY/PREP 当作前置目标（prerequisite）展开，带空格的参数会被
+    # 拆成两个 token 导致 “No rule to make target '--disable=gems'”。erb 是 default gem，
+    # 不带该参数也能 require 成功。
+    HOST_RUBY="$BUILD_RUBY"
     # ---------- iOS SDK 缺失的 BSD 头桩（iPhoneOS 去掉了部分 macOS 头） ----------
     # Ruby 的 dir.c 等在某些版本下直接 #include <sys/vnode.h>（iOS SDK 没有）。
     # 提供最小桩并放到 include 搜索最前面；同时把对应 ac_cv_header_* 压成 no 双保险。
@@ -124,7 +118,7 @@ else
 #endif
 EOF
     export CPPFLAGS="-I$STUB -I$PREFIX/include"
-    # ---------- Stage B：交叉编译 iOS 静态库，用 host miniruby 引导 ----------
+    # ---------- Stage B：交叉编译 iOS 静态库，用 runner 原生 ruby 引导 ----------
     mkdir -p build-ios && cd build-ios
     # --host 走交叉路径；不显式给 --build，让 configure 用 config.guess 推断
     # （带系统版本号、与 host 不同），autoconf 才判定为交叉编译。
@@ -143,19 +137,21 @@ EOF
       ac_cv_header_sys_attr_h=no \
       ac_cv_func_getattrlist=no \
       ac_cv_func_fgetattrlist=no
-    # 关键：所有"需要运行 ruby"的生成步骤都用 host 版 ruby（完整版，含 erb 等
-    # stdlib），避免跑 iOS 二进制；miniruby 不加载 default gem（如 erb），
-    # 生成 ext/configure-ext.mk 时会 LoadError，故用完整 ruby 作 MINIRUBY/PREP。
-    # 不指定 libruby.a 这个 target 名（Makefile 未直接暴露），走默认 all，
-    # 静态库 libruby.a 会作为构建 ruby 的前置产物被编出来。
-    make -j"$(sysctl -n hw.ncpu)" \
+    # 关键：所有"需要运行 ruby"的生成步骤都用 runner 的原生 ruby（完整版，含 erb
+    # 等 stdlib），避免跑 iOS 二进制；miniruby 不加载 default gem（如 erb），生成
+    # ext/configure-ext.mk 时会 LoadError，故用完整 ruby 作 MINIRUBY/PREP/BUILTRUBY。
+    # 只编静态库 libruby-static.a（包含 encodings 与 static-linked-ext），跳过 `ruby`
+    # 可执行链接——Ruby 3.3 的可执行链接规则会把 Makefile/GNUmakefile 当目标文件而
+    # 失败，而静态库归档规则不受影响，且 MKXP 只需要静态库。
+    make libruby-static.a -j"$(sysctl -n hw.ncpu)" \
       MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY"
     # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物。
     # 静态库可能叫 libruby.a 或 libruby-static.a，挑存在的那个。
     mkdir -p "$PREFIX/lib" "$PREFIX/include/ruby"
     RUBY_A=""
-    [ -f libruby.a ] && RUBY_A=libruby.a
+    [ -f libruby.3.3-static.a ] && RUBY_A=libruby.3.3-static.a
     [ -f libruby-static.a ] && RUBY_A=libruby-static.a
+    [ -f libruby.a ] && RUBY_A=libruby.a
     echo "ruby static lib: ${RUBY_A:-NONE}"
     cp -f "$RUBY_A" "$PREFIX/lib/libruby-static.a"
     cp -f ./*.h "$PREFIX/include" 2>/dev/null || true
@@ -163,6 +159,8 @@ EOF
     # mkxp-z 期望 ruby 版本子目录（如 ruby/version.h, ruby/intern.h）
     cp -rf ../include/ruby/* "$PREFIX/include/ruby/" 2>/dev/null || true
     cp -f ./*.h "$PREFIX/include/ruby/" 2>/dev/null || true
+    # 交叉编译生成的本机 arch 头（ruby/config.h 等）在 .ext/include/arm64-darwin/
+    cp -rf .ext/include/arm64-darwin/* "$PREFIX/include/" 2>/dev/null || true
     ls "$PREFIX/include" >/dev/null && echo "ruby headers staged"
   popd >/dev/null
 fi
