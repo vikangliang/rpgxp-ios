@@ -72,7 +72,7 @@ else
       --enable-static --disable-shared \
       --disable-install-doc --disable-jit-support \
       --with-static-linked-ext \
-      --without-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty \
+      --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty \
       cflags="$ARCH_FLAGS" LDFLAGS="$ARCH_FLAGS" \
       CROSS_COMPILING=yes \
       ac_cv_func_getentropy=no \
