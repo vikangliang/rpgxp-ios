@@ -64,14 +64,13 @@ else
     git clone --depth 1 --branch "v${RUBY_VER//./_}" https://github.com/ruby/ruby.git "$RUBY_SRC"
   fi
   pushd "$RUBY_SRC" >/dev/null
-    autoconf
-    # autoconf 不附带平台辅助文件，从 automake 的 lib 目录拷入（交叉编译必需）
-    # 注意：configure 靠 install-sh 定位辅助目录，缺它则 guess/sub 也找不到
-    AUTOMAKE_LIBDIR="$(automake --print-libdir)"
-    for f in config.guess config.sub install-sh; do cp "$AUTOMAKE_LIBDIR/$f" .; done
+    # autoreconf -fi 会自动把 config.guess/config.sub/install-sh 等辅助文件
+    # 安装进源码树（autoconf 单独跑不会带这些，交叉编译必须靠它们）。
+    autoreconf -fi
     mkdir -p build-ios && cd build-ios
-    # 关键交叉参数：--host 让 configure 走交叉路径；用主机 ruby 充当 MINIRUBY
-    ../configure --host=aarch64-apple-darwin \
+    # 关键交叉参数：--host 让 configure 走交叉路径；显式 --build 省去 config.guess 推导。
+    # 用主机 ruby 充当 MINIRUBY 引导编译。
+    ../configure --host=aarch64-apple-darwin --build=aarch64-apple-darwin \
       --prefix="$PREFIX" \
       --enable-static --disable-shared \
       --disable-install-doc --disable-jit-support \
