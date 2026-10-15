@@ -10,13 +10,45 @@
 
 ---
 
-## ⚠️ 当前进度（M0）
+## ⚠️ 当前进度（M1 进行中）
 
-本仓库当前是 **M0：流水线验证版**。它能在 iPhone 上跑起来、证明
-`推送 → 云端编译 → 下载 IPA → 侧载 → 真机` 整条链路是通的，但**还没有接入游戏引擎**
-（画面是一个黑色原生视图，日志页能读到启动日志）。
+**M0 已完成**：SDK 流水线打通（Flutter 壳 + mkxp 插件 + 云构建 + 侧载），真机可跑、日志页可读 bootstrap 日志。
 
-下一阶段（M1）才会把 MKXP-Z 编译进 App 并跑通 Essentials 21.1 的画面与声音。
+**M1 进行中**：把 MKXP-Z 编译成 iOS 静态库 `libmkxp.a`，再合并成 `MKXP.framework` 接入插件。
+
+> 关键背景：上游 mkxp-z 早已**放弃 CMake / macOS / iOS**（根目录只剩 `meson.build`，且第一行就
+> `error('...no longer supports macOS')`）。所有近期 tag（v2.2.3→v2.4.2）都是 Meson + wrap 子项目。
+> 因此我们没有去适配它那套 Meson，而是**手搓 CMake**（`scripts/mkxp-cmake/CMakeLists.txt`）
+> 直接编译 v2.4.2 的 `src/ + binding/ + shader/ + assets/` → 静态库，按上游 `meson.build`
+> 还原源清单、include 目录、编译宏（`GLES2_HEADER` 走 GLES、`SDL2_sound`+vorbis/theora 走音频）
+> 和 xxd 嵌入。
+
+### 已跑通的子步骤
+- **MRI Ruby 3.3.12 静态库**：`libruby.3.3-static.a` 链接成功 + 头文件已 staged（交叉编译最难的一块已过）。
+- **vcpkg 静态依赖**：改用自定义静态 triplet `arm64-ios-static`（动态 `arm64-ios` 产出 `.framework/.dylib`，
+  无法被 `libtool -static` 合并进框架）。
+- **SDL2_sound 源码交叉编译**：vcpkg 无此端口，且 `icculus/SDL_sound` 的 `main` 已升级 SDL3，
+  故固定编其 `v2.0.6`（产出 `libSDL2_sound.a`，正好对上 mkxp-z v2.4.2 要的 SDL2 版）。
+
+### 当前卡点（按 CI 日志迭代）
+正在过「手搓 CMake configure → 编 mkxp-z C++」这一关。两个前置炸弹已修，下一轮 CI（`ffc7dfa`）待验证：
+1. `find_library(SDL2)` 太脆 → 改成递归 glob `lib<name>.a` + framework 主二进制，并加了诊断输出
+   （configure 与 vcpkg 装完两处都 dump 安装目录）。
+2. xxd 嵌入三处错（符号名 `___shader_*` / 文件名 `.xxd` / 重复符号）→ 已用 `file(RELATIVE_PATH)`
+   取相对构建目录路径、输出改名 `.xxd`、并把 `.xxd` 移出编译源（改由自定义目标驱动生成）修复。
+
+### 嵌入方式决策（已定）
+mkxp-z 是独立 app、**不是可嵌入库**——它永远自己 `SDL_CreateWindow`，无 `SDL_CreateWindowFrom` /
+`SDL_WINDOW_EXTERNAL`，也无 iOS UIView 嵌入代码，只导出标准 `int main()`。游戏画面进 Flutter 采用
+**「SDL 自建全屏窗口 + Flutter 透明浮层」**：mkxp-z 跑全屏 SDL 窗口，Flutter 游戏页只承载圆环摇杆 /
+动作键并转发 RGSS 键码。`mkxp_run(gamePath)` 在后台线程启动引擎（原 `eventThread.process()` 会阻塞）。
+已放弃原计划的 `UiKitView` 内嵌（需在 `SDL_CreateWindow` 后把 SDL 原生 UIView 重挂，属 hack、本机不可验证）。
+
+### 预期接下来的深水区
+- mkxp-z 真实 C++ 编译：GLES2 后端在某 iOS SDK 上的兼容、iOS 缺失的 POSIX API（`system()`/`vm_dump` 等）、
+  openal-soft 的 `ALCdevice` 结构体名（已传 `-DMKXPZ_ALCDEVICE=ALCdevice`）。
+- `main.cpp` 里的 `int main()` 最终链接进 Flutter App 会冲突 → 届时把 `main` 重构成 `mkxp_run(gamePath)`。
+- 桥接层 `MkxpBridge` + Flutter 游戏页从 `UiKitView` 改为透明浮层。
 
 ---
 
@@ -89,8 +121,9 @@ git push
 ## 路线图
 
 - **M0（当前）**：最小 Flutter App + UiKitView + mkxp 插件 + 云构建 + 侧载链路验证。✅
-- **M1**：MKXP-Z iOS 交叉编译（MRI Ruby 绑定 + SDL2/SDL_mixer + OGG/WAV），接入插件 framework，
-  在 UiKitView 里硬编码启动你的 Essentials 21.1，验证画面+声音。
+- **M1（进行中）**：MKXP-Z iOS 交叉编译（MRI Ruby + SDL2/SDL2_sound/theora/vorbis + OGG/WAV），
+  产出 `MKXP.framework`；**嵌入方式定为「SDL 全屏窗 + Flutter 透明浮层」**，`mkxp_run(gamePath)`
+  在后台线程启动引擎，Flutter 游戏页只做透明控件层（放弃原 `UiKitView` 内嵌）。
 - **M2**：游戏库扫描、Zip 导入解压、虚拟摇杆+动作键（按 Essentials 键位）、设置页、日志页。
 - **M3**：依据 CI 日志与真机 `mkxp.log` 迭代修复引擎兼容/音频/触摸问题。
 
