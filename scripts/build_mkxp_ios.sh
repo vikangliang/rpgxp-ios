@@ -64,14 +64,27 @@ else
     git clone --depth 1 --branch "v${RUBY_VER//./_}" https://github.com/ruby/ruby.git "$RUBY_SRC"
   fi
   pushd "$RUBY_SRC" >/dev/null
-    # autoreconf -fi 会自动把 config.guess/config.sub/install-sh 等辅助文件
-    # 安装进源码树（autoconf 单独跑不会带这些，交叉编译必须靠它们）。
+    # autoreconf -fi 自动安装辅助文件（config.guess/sub/install-sh）
     autoreconf -fi
+    # ---------- Stage A：编一个 host 版（macOS 原生）miniruby ----------
+    # 交叉编译时 make 要用 miniruby 生成 encdb.h/transdb.h/rbconfig.rb 等，
+    # 这些必须在本机跑，所以 miniruby 必须是 macOS 二进制。务必清掉被 export
+    # 的 iOS CFLAGS/LDFLAGS，否则编出的还是 iOS 目标、跑不起来。
+    mkdir -p build-host && cd build-host
+    env CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= ../configure \
+      --prefix="$PREFIX" \
+      --enable-static --disable-shared \
+      --disable-install-doc --disable-jit-support \
+      --with-static-linked-ext \
+      --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty
+    env CFLAGS= CXXFLAGS= LDFLAGS= make -j"$(sysctl -n hw.ncpu)" miniruby
+    cd ..
+    HOST_MINIRUBY="$(pwd)/build-host/miniruby"
+    file "$HOST_MINIRUBY"   # 自检：应为 Mach-O arm64 (native)，能在 runner 上跑
+    # ---------- Stage B：交叉编译 iOS 静态库，用 host miniruby 引导 ----------
     mkdir -p build-ios && cd build-ios
-    # 关键交叉参数：--host 走交叉路径；不显式给 --build，
-    # 让 configure 用 config.guess 推断 build（带系统版本号，与 host 不同），
-    # 这样 autoconf 才判定为交叉编译、不尝试运行 iOS 目标程序。
-    # 用主机 ruby 充当 MINIRUBY 引导编译。
+    # --host 走交叉路径；不显式给 --build，让 configure 用 config.guess 推断
+    # （带系统版本号、与 host 不同），autoconf 才判定为交叉编译。
     ../configure --host=aarch64-apple-darwin \
       --prefix="$PREFIX" \
       --enable-static --disable-shared \
@@ -82,13 +95,15 @@ else
       CROSS_COMPILING=yes \
       ac_cv_func_getentropy=no \
       ac_cv_func_fcntl=yes
-    make -j"$(sysctl -n hw.ncpu)" libruby-static.a
+    # 关键：所有"需要运行 ruby"的生成步骤都用 host 版 miniruby，避免跑 iOS 二进制
+    make -j"$(sysctl -n hw.ncpu)" \
+      MINIRUBY="$HOST_MINIRUBY" BUILTRUBY="$HOST_MINIRUBY" PREP="$HOST_MINIRUBY" \
+      libruby.a
     # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物
     mkdir -p "$PREFIX/lib" "$PREFIX/include/ruby"
-    cp -f libruby-static.a "$PREFIX/lib/"
+    cp -f libruby.a "$PREFIX/lib/libruby-static.a"
     cp -f ./*.h "$PREFIX/include" 2>/dev/null || true
     cp -f ../*.h "$PREFIX/include/" 2>/dev/null || true
-    cp -f ./*.h "$PREFIX/include/" 2>/dev/null || true
     # mkxp-z 期望 ruby 版本子目录（如 ruby/version.h, ruby/intern.h）
     cp -rf ../include/ruby/* "$PREFIX/include/ruby/" 2>/dev/null || true
     cp -f ./*.h "$PREFIX/include/ruby/" 2>/dev/null || true
