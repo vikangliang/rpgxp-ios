@@ -140,10 +140,11 @@ EOF
     # 关键：所有"需要运行 ruby"的生成步骤都用 runner 的原生 ruby（完整版，含 erb
     # 等 stdlib），避免跑 iOS 二进制；miniruby 不加载 default gem（如 erb），生成
     # ext/configure-ext.mk 时会 LoadError，故用完整 ruby 作 MINIRUBY/PREP/BUILTRUBY。
-    # 只编静态库 libruby-static.a（包含 encodings 与 static-linked-ext），跳过 `ruby`
-    # 可执行链接——Ruby 3.3 的可执行链接规则会把 Makefile/GNUmakefile 当目标文件而
-    # 失败，而静态库归档规则不受影响，且 MKXP 只需要静态库。
-    make libruby-static.a -j"$(sysctl -n hw.ncpu)" \
+    # 只编静态库（含 encodings 与 static-linked-ext），跳过 `ruby` 可执行链接——
+    # Ruby 3.3 的可执行链接规则会把 Makefile/GNUmakefile 当目标文件而失败，而静态库
+    # 归档规则不受影响，且 MKXP 只需要静态库。注意 Makefile 里静态库 target 带版本号
+    # libruby.$(MAJOR).$(MINOR)-static.a（此处为 libruby.3.3-static.a），直接用该名。
+    make libruby.3.3-static.a -j"$(sysctl -n hw.ncpu)" \
       MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY"
     # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物。
     # 静态库可能叫 libruby.a 或 libruby-static.a，挑存在的那个。
