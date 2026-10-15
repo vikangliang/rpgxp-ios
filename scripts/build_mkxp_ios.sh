@@ -98,13 +98,19 @@ else
       CROSS_COMPILING=yes \
       ac_cv_func_getentropy=no \
       ac_cv_func_fcntl=yes
-    # 关键：所有"需要运行 ruby"的生成步骤都用 host 版 miniruby，避免跑 iOS 二进制
+    # 关键：所有"需要运行 ruby"的生成步骤都用 host 版 miniruby，避免跑 iOS 二进制。
+    # 不指定 libruby.a 这个 target 名（Makefile 未直接暴露），走默认 all，
+    # 静态库 libruby.a 会作为构建 ruby 的前置产物被编出来。
     make -j"$(sysctl -n hw.ncpu)" \
-      MINIRUBY="$HOST_MINIRUBY" BUILTRUBY="$HOST_MINIRUBY" PREP="$HOST_MINIRUBY" \
-      libruby.a
-    # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物
+      MINIRUBY="$HOST_MINIRUBY" BUILTRUBY="$HOST_MINIRUBY" PREP="$HOST_MINIRUBY"
+    # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物。
+    # 静态库可能叫 libruby.a 或 libruby-static.a，挑存在的那个。
     mkdir -p "$PREFIX/lib" "$PREFIX/include/ruby"
-    cp -f libruby.a "$PREFIX/lib/libruby-static.a"
+    RUBY_A=""
+    [ -f libruby.a ] && RUBY_A=libruby.a
+    [ -f libruby-static.a ] && RUBY_A=libruby-static.a
+    echo "ruby static lib: ${RUBY_A:-NONE}"
+    cp -f "$RUBY_A" "$PREFIX/lib/libruby-static.a"
     cp -f ./*.h "$PREFIX/include" 2>/dev/null || true
     cp -f ../*.h "$PREFIX/include/" 2>/dev/null || true
     # mkxp-z 期望 ruby 版本子目录（如 ruby/version.h, ruby/intern.h）
