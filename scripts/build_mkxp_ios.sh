@@ -68,9 +68,11 @@ else
     # 安装进源码树（autoconf 单独跑不会带这些，交叉编译必须靠它们）。
     autoreconf -fi
     mkdir -p build-ios && cd build-ios
-    # 关键交叉参数：--host 让 configure 走交叉路径；显式 --build 省去 config.guess 推导。
+    # 关键交叉参数：--host 走交叉路径；不显式给 --build，
+    # 让 configure 用 config.guess 推断 build（带系统版本号，与 host 不同），
+    # 这样 autoconf 才判定为交叉编译、不尝试运行 iOS 目标程序。
     # 用主机 ruby 充当 MINIRUBY 引导编译。
-    ../configure --host=aarch64-apple-darwin --build=aarch64-apple-darwin \
+    ../configure --host=aarch64-apple-darwin \
       --prefix="$PREFIX" \
       --enable-static --disable-shared \
       --disable-install-doc --disable-jit-support \
