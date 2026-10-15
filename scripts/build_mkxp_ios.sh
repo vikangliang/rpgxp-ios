@@ -50,11 +50,15 @@ pushd "$VCPKG" >/dev/null
 popd >/dev/null
 
 echo "== install C deps via vcpkg (arm64-ios) =="
+# mkxp-z v2.4.2 依赖面（来自 src/meson.build）：
+#   sdl2 sdl2_image sdl2_ttf sdl2_sound physfs openal theora vorbis vorbisfile
+#   ogg freetype pixman libpng libjpeg zlib uchardet (+ 系统 bz2/iconv)
+# 音频走 SDL2_sound + vorbis/theora，不是 sdl2-mixer；无 boost/sqlite 依赖。
 "$VCPKG/vcpkg" install --triplet arm64-ios \
-  sdl2 sdl2-image sdl2-ttf sdl2-mixer \
-  libpng zlib pixman freetype physfs sqlite3 \
-  libvorbis \
-  boost-system boost-filesystem boost-interprocess
+  sdl2 sdl2-image sdl2-ttf sdl2-sound \
+  physfs openal-soft \
+  libtheora libvorbis libogg \
+  freetype pixman libpng libjpeg-turbo zlib uchardet
 VCPKG_INSTALL=$VCPKG/installed/arm64-ios
 
 # ---------- 2. MRI Ruby 交叉编译（iOS arm64） ----------
@@ -168,43 +172,40 @@ fi
 RUBY_INC=$PREFIX/include
 RUBY_LIB=$PREFIX/lib/libruby-static.a
 
-# ---------- 3. 克隆 mkxp-z ----------
+# ---------- 3. 克隆 mkxp-z（上游已放弃 CMake/macOS/iOS，统一用 v2.4.2 + 手搓 CMake） ----------
 if [ ! -d "$MKXP_SRC/.git" ]; then
-  git clone --depth 1 https://github.com/mkxp-z/mkxp-z.git "$MKXP_SRC"
+  git clone --depth 1 --branch v2.4.2 --recurse-submodules \
+    https://github.com/mkxp-z/mkxp-z.git "$MKXP_SRC" || \
+  git clone --depth 1 --branch v2.4.2 https://github.com/mkxp-z/mkxp-z.git "$MKXP_SRC"
 fi
 
-# ---------- 4. 编译 mkxp-z（链接 vcpkg 依赖 + 静态 Ruby） ----------
-pushd "$MKXP_SRC" >/dev/null
-  # 准备 Ruby 头（mkxp-z 期望 ruby 版本子目录）
-  RUBY_HDR=$RUBY_INC/ruby
-  if [ ! -d "$RUBY_HDR" ]; then
-    mkdir -p "$RUBY_HDR"
-    cp -f "$RUBY_INC"/*.h "$RUBY_HDR/" 2>/dev/null || true
-  fi
-  cmake -G Ninja -B build-ios \
-    -DCMAKE_TOOLCHAIN_FILE="$VCPKG/scripts/buildsystems/vcpkg.cmake" \
-    -DVCPKG_TARGET_TRIPLET=arm64-ios \
-    -DCMAKE_SYSTEM_NAME=iOS \
-    -DCMAKE_OSX_ARCHITECTURES=$ARCH \
-    -DCMAKE_OSX_SYSROOT=iphoneos \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=$MIN_IOS \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DWITH_AUDIO=ON -DWITH_MIDI=OFF \
-    -DRUBY_INCLUDE_DIR="$RUBY_INC" \
-    -DRUBY_LIBRARY="$RUBY_LIB" \
-    -DCMAKE_PREFIX_PATH="$VCPKG_INSTALL"
-  cmake --build build-ios -j"$(sysctl -n hw.ncpu)"
-popd >/dev/null
+# ---------- 4. 编译 mkxp-z 为静态库 libmkxp.a（手搓 CMake，链接 vcpkg + 静态 Ruby） ----------
+# 确保构建工具（CI macos runner 可能缺 xxd；默认用 Unix Makefiles 生成器，无需 ninja）
+brew install xxd >/dev/null 2>&1 || true
+command -v xxd >/dev/null 2>&1 || brew reinstall xxd >/dev/null 2>&1 || true
+MKXP_CMAKE=$ROOT/scripts/mkxp-cmake
+cmake -B "$MKXP_SRC/build-ios" \
+  -S "$MKXP_CMAKE" \
+  -DCMAKE_SYSTEM_NAME=iOS \
+  -DCMAKE_OSX_SYSROOT=iphoneos \
+  -DCMAKE_OSX_ARCHITECTURES=$ARCH \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=$MIN_IOS \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMKXP_SRC="$MKXP_SRC" \
+  -DVCPKG_INSTALL="$VCPKG_INSTALL" \
+  -DRUBY_INC="$RUBY_INC" \
+  -DRUBY_LIB="$RUBY_LIB"
+cmake --build "$MKXP_SRC/build-ios" -j"$(sysctl -n hw.ncpu)"
+echo "mkxp static lib: $(ls -1 "$MKXP_SRC"/build-ios/libmkxp.a 2>/dev/null || echo NONE)"
 
 # ---------- 5. 合并为静态 framework ----------
 echo "== package MKXP.framework =="
 rm -rf "$FW_DIR"
 mkdir -p "$FW_DIR/Headers" "$FW_DIR/Modules"
 
-# 收集全部 .a（mkxp-z + vcpkg + ruby）
+# 收集全部 .a（libmkxp + vcpkg + ruby）
 LIBS=()
-while IFS= read -r f; do LIBS+=("$f"); done < <(find "$MKXP_SRC/build-ios" -name '*.a')
+[ -f "$MKXP_SRC/build-ios/libmkxp.a" ] && LIBS+=("$MKXP_SRC/build-ios/libmkxp.a")
 while IFS= read -r f; do LIBS+=("$f"); done < <(find "$VCPKG_INSTALL/lib" -name '*.a')
 LIBS+=("$RUBY_LIB")
 
