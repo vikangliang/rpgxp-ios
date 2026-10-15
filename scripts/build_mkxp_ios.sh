@@ -63,6 +63,13 @@ echo "== install C deps via vcpkg (arm64-ios-static) =="
   libtheora libvorbis libogg \
   freetype pixman libpng libjpeg-turbo zlib uchardet
 VCPKG_INSTALL=$VCPKG/installed/arm64-ios-static
+# 诊断：确认静态 triplet 确实产出了 .a（尤其是 libSDL2*），避免 find_library 黑盒
+echo "== vcpkg installed 顶层 =="
+ls -1 "$VCPKG_INSTALL" 2>/dev/null
+echo "== vcpkg installed/lib/*.a (前 200 行) =="
+ls -1 "$VCPKG_INSTALL/lib" 2>/dev/null | head -200
+echo "== SDL2 相关产物 =="
+find "$VCPKG_INSTALL" \( -name 'libSDL2*' -o -name 'SDL2*' \) 2>/dev/null
 
 # ---------- 1b. 编 SDL2_sound（vcpkg 无此端口；mkxp-z 音频硬依赖，源码交叉编译静态库） ----------
 SDLSOUND_SRC=$ROOT/deps/SDL_sound

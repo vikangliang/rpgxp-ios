@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.20)
 project(mkxp-ios C CXX)
 
 set(MKXP_SRC      "" CACHE PATH "mkxp-z 源码根目录")
-set(VCPKG_INSTALL "" CACHE PATH "vcpkg installed/arm64-ios")
+set(VCPKG_INSTALL "" CACHE PATH "vcpkg installed/arm64-ios-static")
 set(SDLSOUND_PREFIX "" CACHE PATH "SDL2_sound 安装前缀（源码交叉编译）")
 set(RUBY_INC      "" CACHE PATH "ruby 头目录")
 set(RUBY_LIB      "" CACHE FILEPATH "libruby-static.a")
@@ -24,10 +24,36 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 set(DEP_INC ${VCPKG_INSTALL}/include)
 set(DEP_LIB ${VCPKG_INSTALL}/lib)
 
-# ---- 在 vcpkg 静态安装里找库（也允许 SDL2_sound 前缀） ----
+# ---- 在 vcpkg 静态安装里找库（递归 glob .a，兼容各种命名/子目录） ----
+message(STATUS "VCPKG_INSTALL = ${VCPKG_INSTALL}")
+message(STATUS "DEP_LIB       = ${DEP_LIB}")
+message(STATUS "SDLSOUND_PREFIX = ${SDLSOUND_PREFIX}")
+file(GLOB_RECURSE _DEP_ALL_A "${DEP_LIB}/*.a")
+message(STATUS "DEP_LIB 下 .a 数量 = ${_DEP_ALL_A}")
+
+# 不依赖 find_library 的命名猜测：直接在 DEP_LIB / SDLSOUND_PREFIX 下递归找
+# lib<name>.a（也允许 framework 内同名）。命中任意一个候选即采用。
 function(find_mkxp_lib var)
-  find_library(${var} NAMES ${ARGN}
-    PATHS ${DEP_LIB} ${SDLSOUND_PREFIX}/lib NO_DEFAULT_PATH REQUIRED)
+  set(_found "")
+  foreach(_n ${ARGN})
+    file(GLOB_RECURSE _cands
+      "${DEP_LIB}/lib${_n}.a"
+      "${DEP_LIB}/${_n}.a"
+      "${DEP_LIB}/lib${_n}.framework/lib${_n}"
+      "${DEP_LIB}/${_n}.framework/${_n}"
+      "${DEP_LIB}/${_n}.framework/Versions/A/${_n}"
+      "${SDLSOUND_PREFIX}/lib/lib${_n}.a"
+      "${SDLSOUND_PREFIX}/lib/${_n}.a")
+    if(_cands)
+      list(GET _cands 0 _found)
+      break()
+    endif()
+  endforeach()
+  if(NOT _found)
+    message(FATAL_ERROR "find_mkxp_lib: 在 ${DEP_LIB} / ${SDLSOUND_PREFIX} 下找不到 ${ARGN} 的 .a")
+  endif()
+  message(STATUS "find_mkxp_lib ${var} = ${_found}")
+  set(${var} "${_found}" PARENT_SCOPE)
 endfunction()
 
 find_mkxp_lib(L_SDL2      SDL2)
