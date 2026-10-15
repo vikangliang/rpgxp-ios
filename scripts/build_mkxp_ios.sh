@@ -34,7 +34,10 @@ export LDFLAGS="$ARCH_FLAGS"
 export CPPFLAGS="-I$PREFIX/include"
 
 # ---------- 0. 主机工具 ----------
-brew install --formula cmake ninja automake libtool pkg-config 2>/dev/null || true
+brew install --formula cmake ninja automake libtool pkg-config bison 2>/dev/null || true
+# Ruby 的 parse.c 由 bison 生成，Apple 自带 bison 仅 2.3（需 >=3.0），
+# 必须把 brew 的 bison 放到 PATH 前面，否则两端生成 parse.c 都会失败。
+export PATH="$(brew --prefix bison)/bin:$PATH"
 
 # ---------- 1. vcpkg 安装 C 依赖（arm64-ios 静态） ----------
 if [ ! -d "$VCPKG/.git" ]; then
