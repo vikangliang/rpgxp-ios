@@ -66,8 +66,9 @@ else
   pushd "$RUBY_SRC" >/dev/null
     autoconf
     # autoconf 不附带平台辅助文件，从 automake 的 lib 目录拷入（交叉编译必需）
+    # 注意：configure 靠 install-sh 定位辅助目录，缺它则 guess/sub 也找不到
     AUTOMAKE_LIBDIR="$(automake --print-libdir)"
-    cp "$AUTOMAKE_LIBDIR/config.guess" "$AUTOMAKE_LIBDIR/config.sub" .
+    for f in config.guess config.sub install-sh; do cp "$AUTOMAKE_LIBDIR/$f" .; done
     mkdir -p build-ios && cd build-ios
     # 关键交叉参数：--host 让 configure 走交叉路径；用主机 ruby 充当 MINIRUBY
     ../configure --host=aarch64-apple-darwin \
