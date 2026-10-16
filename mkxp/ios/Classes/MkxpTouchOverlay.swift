@@ -148,7 +148,32 @@ final class MkxpTouchOverlay: NSObject {
   @objc private func actionDown(_ s: UIButton) { MkxpBridge.key(s.tag, down: true) }
   @objc private func actionUp(_ s: UIButton)   { MkxpBridge.key(s.tag, down: false) }
 
-  @objc private func menuTap() { toggle() }
+  /// "⋯"菜单：动作表（收起/显示控件、退出游戏）。
+  /// SDL 全屏窗盖住 Flutter 后，这里是用户回库的唯一出口。
+  @objc private func menuTap() {
+    guard let vc = window?.rootViewController else { return }
+    let alert = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+    alert.addAction(UIAlertAction(title: controlsHidden ? "显示控件" : "收起控件",
+                                  style: .default) { [weak self] _ in
+      self?.toggle()
+    })
+    alert.addAction(UIAlertAction(title: "退出游戏", style: .destructive) { [weak self] _ in
+      self?.exitGame()
+    })
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    if let pop = alert.popoverPresentationController {
+      pop.sourceView = vc.view
+      pop.sourceRect = CGRect(x: vc.view.bounds.midX, y: 30, width: 1, height: 1)
+    }
+    vc.present(alert, animated: true)
+  }
+
+  /// 退出游戏：收浮层 → 转回竖屏 → 引擎走 SDL_QUIT 清理（窗口销毁后露出 Flutter）。
+  private func exitGame() {
+    hide()
+    MkxpOrientation.lockLandscape(false)
+    MkxpBridge.quit()
+  }
 
   // MARK: - 样式
 

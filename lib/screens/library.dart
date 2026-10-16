@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../services/app_settings.dart';
@@ -78,6 +80,11 @@ class _LibraryPageState extends State<LibraryPage> {
     await GameLibrary.delete(g.name);
     await _refresh();
   }
+
+  Future<(int, DateTime?)> _meta(GameInfo g) async => (
+        await AppSettings.playtime(g.name),
+        await AppSettings.lastPlayed(g.name),
+      );
 
   String _formatLastPlayed(DateTime t) {
     final d = DateTime.now().difference(t);
@@ -227,7 +234,7 @@ class _LibraryPageState extends State<LibraryPage> {
           padding: const EdgeInsets.symmetric(vertical: 10),
           child: Row(
             children: [
-              _gameIcon(g.name),
+              _gameIcon(g),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -247,20 +254,33 @@ class _LibraryPageState extends State<LibraryPage> {
                 ),
               ),
               const SizedBox(width: 8),
-              FutureBuilder<DateTime?>(
-                future: AppSettings.lastPlayed(g.name),
+              FutureBuilder<(int, DateTime?)>(
+                future: _meta(g),
                 builder: (_, snap) {
-                  final t = snap.data;
-                  if (t == null) return const SizedBox.shrink();
-                  return Row(
+                  final playtime = snap.data?.$1 ?? 0;
+                  final t = snap.data?.$2;
+                  if (playtime == 0 && t == null) {
+                    return const SizedBox.shrink();
+                  }
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.schedule,
-                          color: Colors.white24, size: 14),
-                      const SizedBox(width: 4),
-                      Text(_formatLastPlayed(t),
-                          style: const TextStyle(
-                              color: Colors.white38, fontSize: 12)),
+                      if (playtime > 0)
+                        Text(AppSettings.formatPlaytime(playtime),
+                            style: const TextStyle(
+                                color: Colors.white54, fontSize: 11)),
+                      if (t != null) ...[
+                        const SizedBox(height: 2),
+                        Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.schedule,
+                              color: Colors.white24, size: 12),
+                          const SizedBox(width: 3),
+                          Text(_formatLastPlayed(t),
+                              style: const TextStyle(
+                                  color: Colors.white24, fontSize: 10)),
+                        ]),
+                      ],
                     ],
                   );
                 },
@@ -272,23 +292,38 @@ class _LibraryPageState extends State<LibraryPage> {
         ),
       );
 
-  Widget _gameIcon(String name) => Container(
+  Widget _gameIcon(GameInfo g) {
+    final fallback = Container(
+      width: 46,
+      height: 46,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          colors: [_primary.withValues(alpha: 0.85), const Color(0xFF5E5CE6)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Center(
+        child: Text(
+          g.name.isEmpty ? '?' : g.name.characters.first.toUpperCase(),
+          style: const TextStyle(
+              color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+    final icon = g.iconPath;
+    if (icon == null) return fallback;
+    return ClipOval(
+      child: SizedBox(
         width: 46,
         height: 46,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: LinearGradient(
-            colors: [_primary.withValues(alpha: 0.85), const Color(0xFF5E5CE6)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
+        child: Image.file(
+          File(icon),
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => fallback,
         ),
-        child: Center(
-          child: Text(
-            name.isEmpty ? '?' : name.characters.first.toUpperCase(),
-            style: const TextStyle(
-                color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
-          ),
-        ),
-      );
+      ),
+    );
+  }
 }

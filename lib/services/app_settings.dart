@@ -75,4 +75,27 @@ class AppSettings {
     final s = m['$_kLastPlayedPrefix$gameName'] as String?;
     return s == null ? null : DateTime.tryParse(s);
   }
+
+  static const _kPlaytimePrefix = 'playtime:';
+
+  /// 累计游玩时长（秒）。GameRunPage 退出时把本次时长累进去。
+  static Future<void> addPlaytime(String gameName, int seconds) async {
+    if (seconds <= 0) return;
+    final m = await _read();
+    final prev = m['$_kPlaytimePrefix$gameName'] as int? ?? 0;
+    m['$_kPlaytimePrefix$gameName'] = prev + seconds;
+    await _write(m);
+  }
+
+  static Future<int> playtime(String gameName) async {
+    final m = await _read();
+    return m['$_kPlaytimePrefix$gameName'] as int? ?? 0;
+  }
+
+  /// 秒 → 人类可读时长（"3.2 小时" / "42 分钟"）。
+  static String formatPlaytime(int seconds) {
+    if (seconds < 60) return '不足 1 分钟';
+    if (seconds < 3600) return '${seconds ~/ 60} 分钟';
+    return '${(seconds / 3600).toStringAsFixed(1)} 小时';
+  }
 }

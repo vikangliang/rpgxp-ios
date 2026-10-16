@@ -90,6 +90,10 @@ int mkxp_run(const char *gamePath)
      * 接管 UIApplication。必须在 SDL_Init 之前调用（任意线程均可）。 */
     SDL_SetMainReady();
 
+    /* SDL uikit 窗口允许的朝向：RGSS 游戏为横屏，与 MkxpOrientation 的
+     * requestGeometryUpdate 配合，避免 SDL 建窗后旋转/尺寸错乱。 */
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeRight LandscapeLeft");
+
     /* 引擎初始化（SDL_Init/建窗/RGSS 线程）在主线程（UIKit 安全），阻塞事件循环由
      * mkxp_z_main 内部甩到后台线程；本函数立即返回，主线程 run loop 不被占死，iOS 合成器
      * 才能上屏。g_engineRunning 由后台线程在引擎真正退出时复位。argv 用块内复合字面量，避免悬空指针。 */

@@ -18,6 +18,7 @@ class _GameRunPageState extends State<GameRunPage> {
   static const _primary = Color(0xFF4CC2FF);
   String _status = '正在启动…';
   bool _failed = false;
+  DateTime? _enteredAt; // 本次游玩开始时间（退出时累计游玩时长）
 
   @override
   void initState() {
@@ -34,6 +35,7 @@ class _GameRunPageState extends State<GameRunPage> {
       await Mkxp.launchGame('games/${widget.game.name}');
       if (!mounted) return;
       setState(() => _status = '运行中');
+      _enteredAt = DateTime.now();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -44,6 +46,11 @@ class _GameRunPageState extends State<GameRunPage> {
   }
 
   Future<void> _cleanup() async {
+    final entered = _enteredAt;
+    if (entered != null) {
+      await AppSettings.addPlaytime(
+          widget.game.name, DateTime.now().difference(entered).inSeconds);
+    }
     await Mkxp.setKeepAwake(false);
     await Mkxp.setOrientation(false);
     await Mkxp.quitGame();

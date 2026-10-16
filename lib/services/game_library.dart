@@ -8,7 +8,8 @@ import 'package:path_provider/path_provider.dart';
 class GameInfo {
   final String name;
   final String dirPath;
-  const GameInfo(this.name, this.dirPath);
+  final String? iconPath; // 游戏根目录的 Icon.png（RPG Maker XP 默认图标）
+  const GameInfo(this.name, this.dirPath, {this.iconPath});
 }
 
 /// 游戏库（M2）：扫描 Documents/games/ 下的游戏，支持从 Zip 导入解压。
@@ -25,6 +26,7 @@ class GameLibrary {
   }
 
   /// 扫描：games/ 下顶层含 Game.ini 的子目录即为一个游戏。
+  /// 图标取游戏根的 Icon.png（RPG Maker XP 工程默认生成）。
   static Future<List<GameInfo>> scan() async {
     final dir = await gamesDir();
     final games = <GameInfo>[];
@@ -32,7 +34,9 @@ class GameLibrary {
       if (entity is Directory) {
         if (await File('${entity.path}/Game.ini').exists()) {
           final name = entity.path.split('/').last;
-          games.add(GameInfo(name, entity.path));
+          final icon = File('${entity.path}/Icon.png');
+          games.add(GameInfo(name, entity.path,
+              iconPath: await icon.exists() ? icon.path : null));
         }
       }
     }
