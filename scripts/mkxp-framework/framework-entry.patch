@@ -316,45 +316,76 @@ index 355b698..91ddec7 100644
                          gameScreen.x = event.user.windowID;
                          gameScreen.y = event.user.code;
 diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
-index f7f293a..aa0a089 100644
+index f7f293a..a2715e6 100644
 --- a/binding/binding-mri.cpp
 +++ b/binding/binding-mri.cpp
-@@ -896,10 +896,11 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -55,10 +55,11 @@ extern "C" {
+ #endif
+ 
+ #include <assert.h>
+ #include <string>
+ #include <zlib.h>
++#include <chrono>
+ 
+ #include <SDL_cpuinfo.h>
+ #include <SDL_filesystem.h>
+ #include <SDL_loadso.h>
+ #include <SDL_power.h>
+@@ -863,10 +864,18 @@ bool evalScript(VALUE string, const char *filename)
+ }
+ 
+ 
+ #define SCRIPT_SECTION_FMT (rgssVer >= 3 ? "{%04ld}" : "Section%03ld")
+ 
++
++/* iOS 嵌入式调试：脚本加载进度打点——真机日志此前在 Essentials 启动期
++ * 全程无输出，无法区分「慢」与「卡死」。 */
++static long long msSinceStart() {
++    static const auto t0 = std::chrono::steady_clock::now();
++    return std::chrono::duration_cast<std::chrono::milliseconds>(
++               std::chrono::steady_clock::now() - t0).count();
++}
+ static void runRMXPScripts(BacktraceData &btData) {
+     const Config &conf = shState->rtData().config;
+     const std::string &scriptPack = conf.game.scripts;
+     
+     if (scriptPack.empty()) {
+@@ -896,10 +905,11 @@ static void runRMXPScripts(BacktraceData &btData) {
      }
      
      rb_gv_set("$RGSS_SCRIPTS", scriptArray);
      
      long scriptCount = RARRAY_LEN(scriptArray);
-+    Debug() << "rgss: Scripts.rxdata loaded, N=" << scriptCount << " (t=" << SDL_GetTicks() << "ms)";
++    Debug() << "rgss: Scripts.rxdata loaded, N=" << scriptCount << " (t=" << msSinceStart() << "ms)";
      
      std::string decodeBuffer;
      decodeBuffer.resize(0x1000);
      
      for (long i = 0; i < scriptCount; ++i) {
-@@ -941,12 +942,15 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -941,12 +951,15 @@ static void runRMXPScripts(BacktraceData &btData) {
              showMsg(buffer);
              
              break;
          }
          
 +        if ((i % 100) == 0)
-+            Debug() << "rgss: inflate " << i << "/" << scriptCount << " (t=" << SDL_GetTicks() << "ms)";
++            Debug() << "rgss: inflate " << i << "/" << scriptCount << " (t=" << msSinceStart() << "ms)";
          rb_ary_store(script, 3, rb_utf8_str_new_cstr(decodeBuffer.c_str()));
      }
-+    Debug() << "rgss: all scripts inflated (t=" << SDL_GetTicks() << "ms)";
++    Debug() << "rgss: all scripts inflated (t=" << msSinceStart() << "ms)";
      
      /* Execute preloaded scripts */
      for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
           i != conf.preloadScripts.end(); ++i)
          runCustomScript(*i);
-@@ -955,10 +959,12 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -955,10 +968,12 @@ static void runRMXPScripts(BacktraceData &btData) {
      if (exc != Qnil)
          return;
      
      while (true) {
          for (long i = 0; i < scriptCount; ++i) {
 +            if ((i % 50) == 0)
-+                Debug() << "rgss: exec " << i << "/" << scriptCount << " (t=" << SDL_GetTicks() << "ms)";
++                Debug() << "rgss: exec " << i << "/" << scriptCount << " (t=" << msSinceStart() << "ms)";
              VALUE script = rb_ary_entry(scriptArray, i);
              VALUE scriptDecoded = rb_ary_entry(script, 3);
              VALUE string =
