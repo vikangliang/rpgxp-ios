@@ -79,6 +79,14 @@
   `ci-status/last-failure.md`（`[skip ci]` 防重触发）。读取：
   `GET /repos/vikangliang/rpgxp-ios/contents/ci-status/last-failure.md?ref=ci-status`（公开仓库免登录）。
   本地也可跑 `powershell -File C:\Users\ginny\.ci\get-ci.ps1` 一次拿到状态+步骤+失败摘要。
+- **iOS 失败摘要需要 PAT（重要）**：`ios.yml` 由 `workflow_run` 触发，拿到的 `GITHUB_TOKEN` 是
+  **只读**的，`git push` 到 `ci-status-ios` 会被拒（摘要步骤也会因此崩）。已在 `ios.yml` 的
+  Publish 步骤改用仓库 Secret **`CI_PUSH_TOKEN`**（fine-grained PAT，仅本仓库、Contents: RW）推送；
+  无该 Secret 时退回 `GITHUB_TOKEN` 并 `continue-on-error` 容忍失败。**接手者必须先建这个 Secret**
+  才能自动读到 iOS 失败摘要——否则只能去 Actions 页面手动看日志。建法：GitHub → Settings →
+  Developer settings → Fine-grained tokens → 生成（Repository access 选 rpgxp-ios，Contents: RW）→
+  复制 → 仓库 Settings → Secrets and variables → Actions → New secret：`CI_PUSH_TOKEN`。
+  **注意**：重跑一个基于旧提交的失败 run 不会带上后续提交的修复，必须在一个含修复的提交上跑。
 
 ## 已踩的坑（别再踩）
 
