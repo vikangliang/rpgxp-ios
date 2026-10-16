@@ -65,7 +65,7 @@ jobs:
             fi
             rm -rf mkxp/ios/MKXP.framework
             gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
-              --name MKXP-framework --dir mkxp/ios/MKXP.framework --clobber
+              --name MKXP-framework --dir mkxp/ios/MKXP.framework
             # 兼容两种 zip 布局：内容在根 / 多嵌一层 MKXP.framework
             if [ -d mkxp/ios/MKXP.framework/MKXP.framework ]; then
               mv mkxp/ios/MKXP.framework/MKXP.framework/* mkxp/ios/MKXP.framework/
