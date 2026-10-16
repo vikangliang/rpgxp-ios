@@ -113,5 +113,19 @@ target.build_configurations.each do |config|
   settings['OTHER_LDFLAGS'] = flags
 end
 
+# 4) 禁用代码签名：本项目一律不签名——最终由 Sideloadly 在装有免费 Apple ID 的
+#    Windows/Mac 侧重签安装。但 Flutter 的 `build ios` 预检仍要求“已选 Development
+#    Team”，否则抛 “requires a selected Development Team”；故塞一个占位 Team 让预检
+#    通过，实际签名由 CODE_SIGNING_ALLOWED=NO 关掉（Xcode 完全跳过签名阶段）。
+#    占位 Team 不得为空字符串（预检要非空），且格式需为 10 位大写字母。
+DUMMY_TEAM = 'AAAAAAAAAA'
+[project, target].each do |obj|
+  obj.build_configurations.each do |config|
+    config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+    config.build_settings['CODE_SIGN_IDENTITY'] = ''
+    config.build_settings['DEVELOPMENT_TEAM'] = DUMMY_TEAM
+  end
+end
+
 project.save
 puts "saved #{proj_path} (anchor + -force_load core + #{dep_libs.size} on-demand deps + #{ENGINE_FRAMEWORKS.size} frameworks + #{ENGINE_LIBS.size} libs)"
