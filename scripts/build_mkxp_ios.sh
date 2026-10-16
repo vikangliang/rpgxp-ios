@@ -331,37 +331,46 @@ echo "== package MKXP.framework =="
 rm -rf "$FW_DIR"
 mkdir -p "$FW_DIR/Headers" "$FW_DIR/Modules"
 
-# 收集全部 .a（libmkxp + vcpkg + ruby + 自编 SDL2_sound）
-# 去重与排除（都为了 App 侧 force_load 时不炸 duplicate symbols）：
+# 收集 .a 分两组（App 侧链接策略：核心 force_load + 依赖按需加载，见 ios-link-mkxp.rb）：
+#   CORE  = libmkxp + ruby + SDL2_sound —— 合并成框架二进制，-force_load 全量载入
+#           （顺序无关，保证引擎完整）；
+#   DEPS  = vcpkg 各静态库 —— 单独放进框架 Libs/，在 -force_load 之后按需加载。
+#           按需加载天然去重：同一符号被多个归档定义（libc++/fmt 的符号被嵌进
+#           libopenal/libfmt/libmkxp 多处）时 ld 只取第一个定义，不会 duplicate；
+#           若把这些也 force_load 进来，实测炸 454 个 duplicate symbols。
+# 去重与排除：
 #   - 按真实路径去重：vcpkg 的 libpng.a 是 libpng16.a 的符号链接，find 会同时
-#     命中两个路径，libtool 会把同一份内容合并两遍 → 每个 png 符号重复定义；
-#   - 排除 libSDL2main.a：iOS 上 SDL 不接管 main，且 main 已改名 mkxp_z_main；
-#   - 排除 libz.a：Ruby 的 --with-static-linked-ext 已把 zlib 烘进
-#     libruby-static.a（mkxp 的 binding 要静态加载 zlib 扩展），两份定义重叠。
-LIBS=()
-[ -f "$MKXP_SRC/build-ios/libmkxp.a" ] && LIBS+=("$MKXP_SRC/build-ios/libmkxp.a")
+#     命中两个路径，同一份内容会进两遍 Libs；
+#   - 排除 libSDL2main.a：iOS 上 SDL 不接管 main，且 main 已改名 mkxp_z_main
+#     （SDL_main 引用由 mkxp_framework.cpp 的桩兜底）。
+CORE_LIBS=()
+[ -f "$MKXP_SRC/build-ios/libmkxp.a" ] && CORE_LIBS+=("$MKXP_SRC/build-ios/libmkxp.a")
+CORE_LIBS+=("$RUBY_LIB")
+# SDL2_sound 是 vcpkg 外的自编静态库——曾漏合并，导致 App 链接期
+# Sound_Init/Sound_Decode 等齐 undefined。
+[ -f "$SDLSOUND_PREFIX/lib/libSDL2_sound.a" ] && CORE_LIBS+=("$SDLSOUND_PREFIX/lib/libSDL2_sound.a")
+
+DEP_LIBS=()
 SEEN=""
 while IFS= read -r f; do
   real=$(python3 -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$f")
   case " ${SEEN} " in *" ${real} "*) continue ;; esac
   SEEN="${SEEN} ${real}"
-  LIBS+=("${real}")
-done < <(find "$VCPKG_INSTALL/lib" -name '*.a' ! -name 'libSDL2main.a' ! -name 'libz.a' | sort)
-LIBS+=("$RUBY_LIB")
-# SDL2_sound 是 vcpkg 外的自编静态库——曾漏合并，导致 App 链接期
-# Sound_Init/Sound_Decode 等齐 undefined。
-[ -f "$SDLSOUND_PREFIX/lib/libSDL2_sound.a" ] && LIBS+=("$SDLSOUND_PREFIX/lib/libSDL2_sound.a")
+  DEP_LIBS+=("${real}")
+done < <(find "$VCPKG_INSTALL/lib" -name '*.a' ! -name 'libSDL2main.a' | sort)
 
-libtool -static -o "$FW_DIR/MKXP" "${LIBS[@]}"
+libtool -static -o "$FW_DIR/MKXP" "${CORE_LIBS[@]}"
+mkdir -p "$FW_DIR/Libs"
+for a in "${DEP_LIBS[@]}"; do cp -f "$a" "$FW_DIR/Libs/$(basename "$a")"; done
+echo "framework core: $(ls -l "$FW_DIR/MKXP" | awk '{print $5}') bytes; deps: ${#DEP_LIBS[@]} 个 .a 进 Libs/"
 
 # ---------- 5b. 跨归档符号冲突诊断 ----------
-# App 侧用 -force_load 全量载入本框架时，任何被两个输入归档同时定义的符号都会变成
-# duplicate symbol（按需加载则不会—— linker 只取第一个定义）。这里提前对账，
-# 输出 COLLISION 行（含涉及的归档），供 build-mkxp.yml 的发布步骤推到 ci-status。
-echo "== 跨归档符号冲突诊断 =="
+# 按需加载不报 duplicate，但这里仍对账全部输入，输出 COLLISION 行（含涉及的归档），
+# 供 build-mkxp.yml 的发布步骤推到 ci-status，便于观察依赖面变化。
+echo "== 跨归档符号冲突诊断（CORE+DEPS 全量） =="
 SYMMAP="$ROOT/deps/symmap.txt"
 : > "$SYMMAP"
-for a in "${LIBS[@]}"; do
+for a in "${CORE_LIBS[@]}" "${DEP_LIBS[@]}"; do
   b=$(basename "$a")
   nm -g "$a" 2>/dev/null | grep -v '):$' | awk 'NF>=3 {print $NF}' | sort -u \
     | awk -v b="$b" '{print $1, b}'

@@ -117,8 +117,8 @@ jobs:
           name: rpgxp-loader-ipa
           path: build/app.ipa
 
-      # 失败时把日志推回 ci-status 分支（与 build-mkxp.yml 同机制，免 token 可读）。
-      # [skip ci] 防重触发。
+      # 失败时把日志推回 ci-status-ios 分支（与 build-mkxp 的 ci-status 分开，
+      # 两边都 --force 推同一分支会互相覆盖）。[skip ci] 防重触发。
       - name: Publish failure summary
         if: failure()
         run: |
@@ -142,4 +142,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add ci-status/last-failure.md
           git commit -m "ci: ios build failure summary [skip ci]"
-          git push origin HEAD:ci-status --force
+          git push origin HEAD:ci-status-ios --force
