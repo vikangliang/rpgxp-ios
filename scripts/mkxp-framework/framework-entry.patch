@@ -78,7 +78,7 @@ diff --git a/src/main.cpp b/src/main.cpp
  
 -    RGSSThreadData rtData(&eventThread, argv[0], win, alcDev, mode.refresh_rate,
 -                          mkxp_sys::getScalingFactor(), conf, glCtx);
-+    RGSSThreadData *rtData = new RGSSThreadData(*evThread, argv[0], win, alcDev,
++    RGSSThreadData *rtData = new RGSSThreadData(evThread, argv[0], win, alcDev,
 +                                               mode.refresh_rate,
 +                                               mkxp_sys::getScalingFactor(),
 +                                               conf, glCtx);
