@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import AVFAudio
 
 /// mkxp 插件的 iOS 入口。由 GeneratedPluginRegistrant 自动调用 register(with:)，
 /// 负责注册 MethodChannel 与平台视图工厂。无需修改 AppDelegate。
@@ -31,6 +32,15 @@ class MkxpMethodHandler: NSObject {
                             message: "launch 需要非空 path（游戏目录，相对则按 Documents 解析）",
                             details: nil))
         return
+      }
+      // 音频会话：.playback 绕过静音拨片；必须在引擎初始化 OpenAL 之前激活
+      do {
+        let s = AVAudioSession.sharedInstance()
+        try s.setCategory(.playback, mode: .default)
+        try s.setActive(true)
+        MkxpLog.append("[bridge] AVAudioSession .playback 激活成功")
+      } catch {
+        MkxpLog.append("[bridge] AVAudioSession 激活失败: \(error)")
       }
       let rc = MkxpBridge.run(gamePath: path)
       if rc == 0 {

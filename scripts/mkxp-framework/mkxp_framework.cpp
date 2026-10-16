@@ -28,6 +28,8 @@
 #include <dispatch/dispatch.h>
 
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -63,6 +65,22 @@ int mkxp_run(const char *gamePath)
 
     if (g_engineRunning.load())
         return -2;
+
+    /* stdout/stderr → Documents/mkxp.log：引擎 C++ 日志、Ruby/Essentials 启动报错、
+     * shader 编译错误全部落盘，供 App 内日志页读取（无 Mac 环境的唯一调试通道）。
+     * 沙盒进程 HOME 即 App 沙盒根。stderr 不缓冲，崩溃前也能看到已写内容。 */
+    {
+        const char *home = getenv("HOME");
+        if (home && home[0])
+        {
+            std::string logPath = std::string(home) + "/Documents/mkxp.log";
+            if (freopen(logPath.c_str(), "a", stdout))
+                setvbuf(stdout, nullptr, _IOLBF, 0);
+            if (freopen(logPath.c_str(), "a", stderr))
+                setvbuf(stderr, nullptr, _IONBF, 0);
+            fprintf(stderr, "\n===== mkxp engine start: %s =====\n", gamePath);
+        }
+    }
 
     /* 工作目录 = 游戏目录。配合 WORKDIR_CURRENT，mkxp_z_main 不会再 chdir。 */
     if (!mkxp_fs::setCurrentDirectory(gamePath))

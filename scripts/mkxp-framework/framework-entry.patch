@@ -72,7 +72,7 @@ diff --git a/src/main.cpp b/src/main.cpp
  
  #ifndef MKXPZ_INIT_GL_LATER
      SDL_GLContext glCtx = initGL(win, conf, 0);
-@@ -422,84 +432,92 @@
+@@ -422,84 +432,90 @@
      SDL_GLContext glCtx = NULL;
  #endif
  
@@ -175,15 +175,13 @@ diff --git a/src/main.cpp b/src/main.cpp
 +        if (rtData->rqTermAck)
 +          SDL_WaitThread(rgssThread, 0);
 +        else
-+          SDL_ShowSimpleMessageBox(
-+              SDL_MESSAGEBOX_ERROR, rtData->config.game.title.c_str(),
-+              std::string("The RGSS script seems to be stuck. "+rtData->config.game.title+" will now force quit.").c_str(),
-+              rtData->window);
++          /* iOS：SDL_ShowSimpleMessageBox 必须在主线程调用（后台线程会崩/不显示），
++           * 这里只写日志；stderr 已由 mkxp_run 重定向到 Documents/mkxp.log。 */
++          Debug() << "The RGSS script seems to be stuck. " << rtData->config.game.title
++                  << " will now force quit.";
 +
 +        if (!rtData->rgssErrorMsg.empty()) {
 +          Debug() << rtData->rgssErrorMsg;
-+          SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, rtData->config.game.title.c_str(),
-+                                   rtData->rgssErrorMsg.c_str(), rtData->window);
 +        }
 +
 +        if (rtData->glContext)

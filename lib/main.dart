@@ -63,7 +63,8 @@ class _GameScreenState extends State<GameScreen> {
     setState(() => _status = '正在启动 ${g.name}…');
     try {
       await Mkxp.launchGame('games/${g.name}');
-      // 启动成功：引擎跑在主线程，界面随后冻结（M1 已知状态，属正常）
+      // 启动成功：引擎事件循环在后台线程，界面不冻结；SDL 全屏窗盖在 Flutter 之上，
+      // 原生触摸浮层（MkxpTouchOverlay）同步展示。引擎报错看「日志」页 mkxp.log。
       if (mounted) setState(() => _status = '${g.name} 运行中');
     } on PlatformException catch (e) {
       if (mounted) setState(() => _status = '启动失败：${e.message}');
