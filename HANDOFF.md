@@ -6,9 +6,9 @@
 
 - 最新提交：`5f78b80`（补第三方头文件 include 路径）。待 `git push origin main` 触发下一轮 CI。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
-- **M1 进行中**，卡在「手搓 CMake 编译 `libmkxp.a`」这一关。configure / xxd 嵌入 / find_library 三关已过，
-  最新卡点为**第三方头文件 include 路径**（`al.h`/`alc.h`/`uchardet.h` file not found，另有 pixman/SDL2_sound/ruby 同病），
-  已在 CMakeLists 修复，待下一轮 CI 验证。
+- **M1 进行中**，卡在「手搓 CMake 编译 `libmkxp.a`」这一关。configure / xxd / find_library / 头文件路径
+  四关已过（坑 #6），当前卡点为编译期错误：`assert` 被 ruby/assert.h 截胡（坑 #7，已改平铺布局）、
+  `isMetalSupported` 未声明（坑 #8，Metal 守卫已收紧），待下一轮 CI 验证。
 - 已跑通的子步骤（CI 已验证）：
   - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` 链接成功 + 头文件 staged；
   - vcpkg `arm64-ios-static` 静态 triplet 编出全部 C 依赖（脚本内有诊断会列出 `libSDL2*` 等）；
@@ -83,6 +83,15 @@
    排查方法：本地 clone `mkxp-z/mkxp-z` 的 tag `v2.4.2`，grep 全部 `#include <...>`，逐一对照各 port 安装规则。
    已确认**不会**参与编译的：fluidsynth（`SHARED_FLUID` 未定义）、openssl/HTTPS（`MKXPZ_SSL` 未定义）、
    boost（sigslot 适配器无人引用）、X11/EGL（`GLES2_HEADER` 已定义走 GLES 路径）。
+7. **`include/ruby` 不能进 `-I`（assert.h 截胡）**：mkxp-z 直接 `#include <ruby.h>`，曾把
+   `include/ruby` 加进搜索路径 → Ruby 的 `ruby/assert.h` 截胡全部 26 处 `<assert.h>`
+   （它只定义 `RUBY_ASSERT_*`，无标准 `assert` 宏）→ 满屏 `use of undeclared identifier 'assert'`。
+   正解：build 脚本把 `ruby.h` + `defines.h`（ruby.h 内裸名引用）**平铺**到 include 根，
+   对齐 homebrew ruby 布局；`<ruby/xxx.h>` 仍从 include 根的 `ruby/` 子目录解析。
+8. **`__APPLE__` vs `MKXPZ_PLATFORM` 守卫错位**：iOS 上 `__APPLE__` 为真，但 `MKXPZ_PLATFORM`
+   已被坑 #3 的 sed 改成 LINUX。`config.cpp` 三处 `__APPLE__` 守卫引用仅 macOS 存在的 Metal 逻辑
+   （`isMetalSupported()` 仅 `MKXPZ_BUILD_XCODE` 下声明、Apple arm64 默认开 Metal、ANGLE 平台选择）
+   → `undeclared identifier 'isMetalSupported'`。已 sed 收紧为 `MKXPZ_PLATFORM_MACOS` 专属（iOS 走 GLES）。
 
 ## 下一步该看什么（`ffc7dfa` 之后的构建）
 

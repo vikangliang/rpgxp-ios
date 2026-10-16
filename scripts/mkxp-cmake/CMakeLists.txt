@@ -107,14 +107,14 @@ set(MKXP_INC
 #                                                  ${CMAKE_INSTALL_INCLUDEDIR}/uchardet）
 #   pixman      → include/pixman-1/pixman.h         （对应 meson 的 pkg-config pixman-1）
 #   SDL2_sound  → <prefix>/include/SDL2/SDL_sound.h（icculus v2.0.6 CMake 装进 SDL2/）
-#   ruby        → <prefix>/include/ruby/ruby.h      （mkxp-z 直接 <ruby.h>；Debian 布局
-#                                                  把 ruby.h 平铺在版本目录根，iOS 没有）
+#   ruby        → ruby.h/defines.h 由 build 脚本【平铺】到 include 根（对齐 homebrew
+#                布局），从 RUBY_INC 本身解析；绝不能把 include/ruby 加进 -I——
+#                其 assert.h 会截胡全部 <assert.h>（mkxp-z 26 处引用，见 HANDOFF 坑 #7）。
 list(APPEND MKXP_INC
   ${DEP_INC}/AL
   ${DEP_INC}/uchardet
   ${DEP_INC}/pixman-1
   ${SDLSOUND_PREFIX}/include/SDL2
-  ${RUBY_INC}/ruby
 )
 # 兜底：把 vcpkg / SDL2_sound 两个 include 根下的【全部子目录】都纳入搜索，
 # 这样即使某个 port 升级后换了布局（如 uchardet 平铺回根目录），也无需改这里。

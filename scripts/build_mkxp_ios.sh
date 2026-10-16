@@ -200,6 +200,13 @@ EOF
     cp -f ./*.h "$PREFIX/include/ruby/" 2>/dev/null || true
     # 交叉编译生成的本机 arch 头（ruby/config.h 等）在 .ext/include/arm64-darwin/
     cp -rf .ext/include/arm64-darwin/* "$PREFIX/include/" 2>/dev/null || true
+    # mkxp-z 直接 #include <ruby.h>，且 ruby.h 内部 #include "defines.h"（裸名引用）。
+    # 把这两个头平铺到 include 根（对齐 homebrew ruby 布局），<ruby.h> 从 include 根
+    # 即可解析。【切勿】改把 $PREFIX/include/ruby 加进 -I：那会让全部 <assert.h>
+    # 被 ruby/assert.h 截胡——它只定义 RUBY_ASSERT_* 系列、不定义标准 assert 宏，
+    # 而 mkxp-z 有 26 处 #include <assert.h>，会齐炸 'use of undeclared identifier assert'。
+    cp -f "$PREFIX/include/ruby/ruby.h" "$PREFIX/include/ruby.h" 2>/dev/null || true
+    cp -f "$PREFIX/include/ruby/defines.h" "$PREFIX/include/defines.h" 2>/dev/null || true
     ls "$PREFIX/include" >/dev/null && echo "ruby headers staged"
   popd >/dev/null
 fi
@@ -222,6 +229,18 @@ if [ -f "$MKXP_SRC/src/system/system.h" ]; then
   sed -i '' 's/#define MKXPZ_PLATFORM MKXPZ_PLATFORM_MACOS/#define MKXPZ_PLATFORM MKXPZ_PLATFORM_LINUX/' \
     "$MKXP_SRC/src/system/system.h"
   echo "patched MKXPZ_PLATFORM -> LINUX for iOS"
+fi
+
+# iOS 上 __APPLE__ 为真、但 MKXPZ_PLATFORM 已被上面改成 LINUX：config.cpp 有三处
+# __APPLE__ 守卫引用了仅 macOS 存在的 Metal 逻辑——isMetalSupported() 仅
+# MKXPZ_BUILD_XCODE 下声明（我们没定义，故未声明 → 'undeclared identifier'）；
+# Apple arm64 默认开 Metal；以及 ANGLE 平台选择。iOS 走 GLES2，统一收紧为 macOS 专属。
+if [ -f "$MKXP_SRC/src/config.cpp" ]; then
+  sed -i '' \
+    -e 's|^#if defined(__APPLE__) && defined(__aarch64__)$|#if defined(__APPLE__) \&\& defined(__aarch64__) \&\& (MKXPZ_PLATFORM == MKXPZ_PLATFORM_MACOS)|' \
+    -e 's|^#ifdef __APPLE__$|#if defined(__APPLE__) \&\& (MKXPZ_PLATFORM == MKXPZ_PLATFORM_MACOS)|' \
+    "$MKXP_SRC/src/config.cpp"
+  echo "patched config.cpp Metal guards -> macOS-only"
 fi
 
 # ---------- 4. 编译 mkxp-z 为静态库 libmkxp.a（手搓 CMake，链接 vcpkg + 静态 Ruby） ----------
