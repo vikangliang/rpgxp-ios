@@ -33,15 +33,21 @@ class MkxpMethodHandler: NSObject {
                             details: nil))
         return
       }
-      // 音频会话：.playback 绕过静音拨片；必须在引擎初始化 OpenAL 之前激活
-      do {
-        let s = AVAudioSession.sharedInstance()
-        try s.setCategory(.playback, mode: .default)
-        try s.setActive(true)
-        MkxpLog.append("[bridge] AVAudioSession .playback 激活成功")
-      } catch {
-        MkxpLog.append("[bridge] AVAudioSession 激活失败: \(error)")
+      // 音频会话：.playback 绕过静音拨片。setActive 在真机上可阻塞数秒，
+      // 挪到后台队列执行，主线程（Flutter 平台线程）不被堵——这是"点游戏卡住"
+      // 的主要来源之一。引擎 dispatch 到主队列还有一跳，实际顺序基本不受影响。
+      MkxpLog.append("[launch] 激活音频会话(后台)…")
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          let s = AVAudioSession.sharedInstance()
+          try s.setCategory(.playback, mode: .default)
+          try s.setActive(true)
+          MkxpLog.append("[launch] AVAudioSession .playback OK")
+        } catch {
+          MkxpLog.append("[launch] AVAudioSession 失败: \(error)")
+        }
       }
+      MkxpLog.append("[launch] 调 mkxp_run(\(path))")
       let rc = MkxpBridge.run(gamePath: path)
       if rc == 0 {
         MkxpTouchOverlay.shared.show()   // M2 阶段二：引擎起后展示原生触摸浮层

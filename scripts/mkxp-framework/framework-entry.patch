@@ -59,7 +59,7 @@ diff --git a/src/main.cpp b/src/main.cpp
      SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
      SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
  
-@@ -414,7 +420,11 @@
+@@ -414,7 +420,12 @@
      if (!mode.refresh_rate)
        conf.syncToRefreshrate = false;
  
@@ -69,10 +69,11 @@ diff --git a/src/main.cpp b/src/main.cpp
 +    // RGSS 线程都留在主线程（UIKit 安全），循环与终止清理甩到后台线程。状态用堆分配，
 +    // 跨 mkxp_z_main 返回存活；g_engineRunning 由后台线程在引擎退出时复位。
 +    EventThread *evThread = new EventThread();
++    fprintf(stderr, "[stage] %ums evThread ok (window+openal done, initGL next)\n", (unsigned) SDL_GetTicks());
  
  #ifndef MKXPZ_INIT_GL_LATER
      SDL_GLContext glCtx = initGL(win, conf, 0);
-@@ -422,84 +432,90 @@
+@@ -422,84 +432,93 @@
      SDL_GLContext glCtx = NULL;
  #endif
  
@@ -82,6 +83,7 @@ diff --git a/src/main.cpp b/src/main.cpp
 +                                               mode.refresh_rate,
 +                                               mkxp_sys::getScalingFactor(),
 +                                               conf, glCtx);
++    fprintf(stderr, "[stage] %ums rtData ok (GL context ready)\n", (unsigned) SDL_GetTicks());
  
      int winW, winH, drwW, drwH;
      SDL_GetWindowSize(win, &winW, &winH);
@@ -151,6 +153,7 @@ diff --git a/src/main.cpp b/src/main.cpp
 -    alcCloseDevice(alcDev);
 -    SDL_DestroyWindow(win);
 +    SDL_Thread *rgssThread = SDL_CreateThread(rgssThreadFun, "rgss", rtData);
++    fprintf(stderr, "[stage] %ums rgss thread spawned (ruby+scripts load starts)\n", (unsigned) SDL_GetTicks());
 +
 +    std::thread engineLoop([evThread, rtData, rgssThread]() {
 +        evThread->process(*rtData);
@@ -224,6 +227,7 @@ diff --git a/src/main.cpp b/src/main.cpp
 +        delete evThread;
 +    });
 +    engineLoop.detach();
++    fprintf(stderr, "[stage] %ums main-thread init complete, main loop free\n", (unsigned) SDL_GetTicks());
  
      return 0;
  }
