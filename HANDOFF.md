@@ -4,7 +4,7 @@
 
 ## 当前状态（2026-10-16）
 
-- 最新提交：`e7d7019`（修 binding 层两个错误）。已 `git push origin main`，**工作区干净**。
+- 最新提交：`8f263e1`（框架化入口 M1-A）。待 `git push origin main` 触发 CI 验证。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
 - **M1 编译关已通** ✅✅：`e7d7019` 起 `build-mkxp.yml` 全绿——`libmkxp.a` 编通并合并出
   `MKXP.framework`（artifact 9.96MB = libmkxp + 全部 vcpkg 静态依赖 + libruby-static + 4.5MB CJK 字体）。
@@ -12,6 +12,13 @@
   system() / 根相对 include 十关全过（坑 #3/#6-#12）。
 - **M1 剩余**：见下方「M1 后续必做」A/B/C（`mkxp_run()` 重构 → 透明浮层 → workflow 串接），
   改的是 C++/Swift/Dart/workflow，引擎本体已不必再大改。
+- **M1-A 进行中（2026-10-16）**：框架化入口已落地——`scripts/mkxp-framework/` 下
+  `framework-entry.patch`（`main()`→`extern "C" mkxp_z_main()`；input.cpp 发布
+  rgssKey→scancode 反查表带 mutex）+ `mkxp_framework.cpp`（`mkxp_run` 后台线程 /
+  `mkxp_key` SDL 事件注入 / `mkxp_quit` SDL_QUIT），CMake 加 `WORKDIR_CURRENT`
+  （游戏目录由 mkxp_run 设为工作目录，不 chdir 到 bundle）。待 CI 验证。
+  已知待验证风险：后台线程里 `SDL_Init(VIDEO)`/`SDL_CreateWindow` 在 iOS 上是否
+  稳（已先调 `SDL_SetMainReady()`）；真机跑起来看 `mkxp.log`。
 - 已跑通的子步骤（CI 已验证）：
   - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` 链接成功 + 头文件 staged；
   - vcpkg `arm64-ios-static` 静态 triplet 编出全部 C 依赖（脚本内有诊断会列出 `libSDL2*` 等）；

@@ -263,6 +263,24 @@ if [ -f "$MKXP_SRC/binding/binding-mri.cpp" ]; then
   echo "patched binding-mri.cpp std::system -> 0 (unavailable on iOS)"
 fi
 
+# ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
+# framework-entry.patch（git diff，LF 行尾）：
+#   1. src/main.cpp: int main() -> extern "C" int mkxp_z_main()
+#      （原符号会与 Flutter App 的 main 冲突，且需按 C 约定被框架层调用）
+#   2. src/input/input.cpp: applyBindingDesc 里重建 rgssKey->scancode 反查表
+#      （带 mutex：RGSS 线程写、UI 线程读）
+# mkxp_framework.cpp 拷入 src/ 后由 CMake 的 SRC 清单编译（mkxp_run/mkxp_key/mkxp_quit）。
+if [ -f "$MKXP_SRC/.git/config" ]; then
+  git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/framework-entry.patch" \
+    || { echo "FATAL: framework-entry.patch 应用失败（v2.4.2 源码对不上？）"; exit 1; }
+  echo "applied framework-entry.patch"
+else
+  echo "FATAL: $MKXP_SRC 不是 git 仓库，无法 apply framework-entry.patch"
+  exit 1
+fi
+cp -f "$ROOT/scripts/mkxp-framework/mkxp_framework.cpp" "$MKXP_SRC/src/mkxp_framework.cpp"
+echo "installed mkxp_framework.cpp"
+
 # ---------- 4. 编译 mkxp-z 为静态库 libmkxp.a（手搓 CMake，链接 vcpkg + 静态 Ruby） ----------
 # 确保构建工具（CI macos runner 可能缺 xxd；默认用 Unix Makefiles 生成器，无需 ninja）
 brew install xxd >/dev/null 2>&1 || true

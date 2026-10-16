@@ -1,0 +1,51 @@
+diff --git a/src/input/input.cpp b/src/input/input.cpp
+index 67c7799..83126e1 100644
+--- a/src/input/input.cpp
++++ b/src/input/input.cpp
+@@ -35,9 +35,16 @@
+ #include <vector>
+ #include <cmath>
+ #include <unordered_map>
++#include <mutex>
+ #include <string.h>
+ #include <assert.h>
+ 
++/* rgssKey(Input::ButtonCode) -> SDL_Scancode 反查表：由 applyBindingDesc 在
++ * 绑定变化时重建，供 mkxp_framework.cpp 的 mkxp_key() 做按键注入。
++ * RGSS 线程写、UI 线程读，访问需持 g_buttonToScancodeMtx。 */
++std::unordered_map<int, SDL_Scancode> g_buttonToScancode;
++std::mutex g_buttonToScancodeMtx;
++
+ #define BUTTON_CODE_COUNT 26
+ 
+ #define m(vk,sc) { vk, SDL_SCANCODE_##sc }
+@@ -965,6 +972,14 @@ struct InputPrivate
+         appendBindings(kbBindings);
+         appendBindings(ctrlABindings);
+         appendBindings(ctrlBBindings);
++
++        /* 重建 rgssKey -> scancode 反查表（mkxp_key 注入按键用） */
++        {
++            std::lock_guard<std::mutex> _(g_buttonToScancodeMtx);
++            g_buttonToScancode.clear();
++            for (const KbBinding &k : kbBindings)
++                g_buttonToScancode[k.target] = k.source;
++        }
+     }
+     
+     void initStaticKbBindings()
+diff --git a/src/main.cpp b/src/main.cpp
+index 4779221..cb7329d 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -201,7 +201,9 @@ static void setupWindowIcon(const Config &conf, SDL_Window *win) {
+   }
+ }
+ 
+-int main(int argc, char *argv[]) {
++// 框架化（iOS 嵌入）：原 main 改名，由 mkxp_framework.cpp 的 mkxp_run() 在
++// 后台线程调用；extern "C" 避免符号修饰，供框架层按 C 约定调用。
++extern "C" int mkxp_z_main(int argc, char *argv[]) {
+     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
+     SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
+ 
