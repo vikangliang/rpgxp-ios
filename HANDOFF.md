@@ -4,12 +4,11 @@
 
 ## 当前状态（2026-10-16）
 
-- 最新提交：`4668eb2`（TTF_Font 改名）。待 `git push origin main` 触发下一轮 CI。
+- 最新提交：`863fa6d`（xxd 清单补 wqymicrohei.ttf）。待 `git push origin main` 触发下一轮 CI。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
 - **M1 进行中**，卡在「手搓 CMake 编译 `libmkxp.a`」这一关。configure / xxd / find_library / 头文件路径
-  / assert 截胡 / Metal 守卫五关已过（坑 #3/#6/#7/#8），编译进度约 34%，当前卡点为
-  SDL2_ttf ≥2.20 的 `_TTF_Font`→`TTF_Font` 改名（坑 #9，已修），待下一轮 CI 验证。
-- 最新提交：`35e3a8a` 之后的修复（TTF_Font 改名）待推送。
+  / assert 截胡 / Metal 守卫五关已过（坑 #3/#6/#7/#8），编译进度约 48%，当前卡点为
+  CJK 兜底字体 wqymicrohei.ttf 未进 xxd 清单（坑 #10，已修），待下一轮 CI 验证。
 - 已跑通的子步骤（CI 已验证）：
   - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` 链接成功 + 头文件 staged；
   - vcpkg `arm64-ios-static` 静态 triplet 编出全部 C 依赖（脚本内有诊断会列出 `libSDL2*` 等）；
@@ -98,6 +97,10 @@
    `font.h/font.cpp` 按旧名 forward-declare/返回，`settingsmenu.cpp` 经 SDL_ttf.h 拿到新类型
    → `incompatible pointer types assigning to 'TTF_Font *' from '_TTF_Font *'`。
    已 sed 把这两个文件的 `_TTF_Font` 统一改成 `TTF_Font`（API 用法均跨版本兼容，无需其他改动）。
+10. **`MKXPZ_CJK_FONT` 的字体漏嵌**：本工程 CMake 定义了 `MKXPZ_CJK_FONT`（Essentials 中文 UI
+    兜底），此时 `font.cpp` 嵌的是 `assets/wqymicrohei.ttf`（4.5MB）而非 liberation → xxd 清单
+    漏了它就炸 `'wqymicrohei.ttf.xxd' file not found`。排查法：grep 全部 `#include "*.xxd"`
+    与 CMake 的 SHADERS/ASSETS 清单对账（shader 26 + icon/gamecontrollerdb/liberation/wqy）。
 
 ## 下一步该看什么（`ffc7dfa` 之后的构建）
 

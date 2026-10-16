@@ -152,7 +152,11 @@ set(SHADERS
   bitmapBlit.frag flatColor.frag simple.frag simpleColor.frag simpleAlpha.frag simpleAlphaUni.frag
   tilemap.frag flashMap.frag lanczos3.frag minimal.vert simple.vert simpleColor.vert sprite.vert
   tilemap.vert tilemapvx.vert blur.frag blurH.vert blurV.vert simpleMatrix.vert)
-set(ASSETS icon.png gamecontrollerdb.txt liberation.ttf)
+# wqymicrohei.ttf：本工程定义了 MKXPZ_CJK_FONT（Essentials 中文 UI 兜底），此时
+# font.cpp 改嵌这个 4.5MB 字体而非 liberation；漏了它就炸
+# 'wqymicrohei.ttf.xxd' file not found。符号名 ___assets_wqymicrohei_ttf 由
+# 相对路径 ../assets/wqymicrohei.ttf 经 xxd -i 生成，与 font.cpp 的宏拼接一致。
+set(ASSETS icon.png gamecontrollerdb.txt liberation.ttf wqymicrohei.ttf)
 
 set(EMBED_HDRS)
 foreach(f ${SHADERS} ${ASSETS})
