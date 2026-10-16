@@ -47,10 +47,12 @@ proj_dir = File.expand_path(File.dirname(proj_path))
 fw_rel_from_proj = Pathname.new(fw_abs).relative_path_from(Pathname.new(proj_dir)).to_s
 anchor_rel_from_proj = Pathname.new(anchor_abs).relative_path_from(Pathname.new(proj_dir)).to_s
 
-# 1) 链接锚点加入 Runner 编译源
+# 1) 链接锚点加入 Runner 编译源（路径要相对【组】目录——Runner 组的基准是 ios/Runner/）
 runner_group = project.main_group['Runner'] || project.main_group
+group_dir = runner_group.real_path.to_s
+anchor_rel_from_group = Pathname.new(anchor_abs).relative_path_from(Pathname.new(group_dir)).to_s
 anchor_ref = runner_group.files.find { |f| f.real_path.to_s == anchor_abs }
-anchor_ref ||= runner_group.new_file(anchor_rel_from_proj)
+anchor_ref ||= runner_group.new_file(anchor_rel_from_group)
 sources_phase = target.source_build_phase
 if sources_phase.files_references.include?(anchor_ref)
   puts "anchor already in compile sources"
