@@ -33,9 +33,11 @@ final class MkxpTouchOverlay: NSObject {
     }
     let scene = (UIApplication.shared.connectedScenes
       .first { $0.activationState == .foregroundActive } as? UIWindowScene)
-    let win = UIWindow(windowScene: scene ?? UIApplication.shared.windows.first?.windowScene
-                       ?? UIWindowScene(session: UISceneSession(role: .windowApplication), connectionOptions: UIScene.ConnectionOptions()))
-    win.windowLevel = .alert + 2   // 高于 SDL 与 Flutter 窗口
+      ?? (UIApplication.shared.connectedScenes.first as? UIWindowScene)
+      ?? UIApplication.shared.windows.first?.windowScene
+    guard let scene else { return }   // 无可用 scene（极少见）：下次 show() 重试
+    let win = UIWindow(windowScene: scene)
+    win.windowLevel = UIWindow.Level.alert + 2   // 高于 SDL 与 Flutter 窗口
     let vc = UIViewController()
     vc.view.backgroundColor = .clear
     win.rootViewController = vc
@@ -130,9 +132,9 @@ final class MkxpTouchOverlay: NSObject {
   private var currentDir: String = ""
   private func applyDirection(_ dir: String) {
     if dir == currentDir { return }
-    if !currentDir.isEmpty { MkxpBridge.key(keyFor(currentDir), down: false) }
+    if !currentDir.isEmpty { MkxpBridge.key(Int(keyFor(currentDir)), down: false) }
     currentDir = dir
-    if !currentDir.isEmpty { MkxpBridge.key(keyFor(currentDir), down: true) }
+    if !currentDir.isEmpty { MkxpBridge.key(Int(keyFor(currentDir)), down: true) }
   }
   private func keyFor(_ dir: String) -> Int32 {
     switch dir {
@@ -143,8 +145,8 @@ final class MkxpTouchOverlay: NSObject {
     }
   }
 
-  @objc private func actionDown(_ s: UIButton) { MkxpBridge.key(Int32(s.tag), down: true) }
-  @objc private func actionUp(_ s: UIButton)   { MkxpBridge.key(Int32(s.tag), down: false) }
+  @objc private func actionDown(_ s: UIButton) { MkxpBridge.key(s.tag, down: true) }
+  @objc private func actionUp(_ s: UIButton)   { MkxpBridge.key(s.tag, down: false) }
 
   @objc private func menuTap() { toggle() }
 
