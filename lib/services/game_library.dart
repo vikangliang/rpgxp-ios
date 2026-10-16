@@ -54,20 +54,13 @@ class GameLibrary {
   ///   - Game.ini 在 Zip 内的某个文件夹下（常见：Essentials/Game.ini）。
   /// 自动跳过 __MACOSX/、.DS_Store、._* 等 macOS 打包垃圾。
   static Future<String> importZip() async {
-    final result = await FilePicker.platform.pickFiles(
-      withData: false,
-      allowMultiple: false,
-      type: FileType.any,
-    );
-    if (result == null || result.files.isEmpty) return '';
-    final picked = result.files.single;
+    // file_picker 13.x：单文件选择用 pickFile()（pickFiles 的 withData/
+    // allowMultiple 已被移除），读取数据改用 PlatformFile.readAsBytes()。
+    final picked = await FilePicker.platform.pickFile(type: FileType.any);
+    if (picked == null) return '';
 
-    List<int> bytes;
-    if (picked.bytes != null) {
-      bytes = picked.bytes!;
-    } else if (picked.path != null) {
-      bytes = await File(picked.path!).readAsBytes();
-    } else {
+    final bytes = await picked.readAsBytes();
+    if (bytes == null || bytes.isEmpty) {
       throw Exception('无法读取所选文件');
     }
 
