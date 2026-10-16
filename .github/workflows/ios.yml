@@ -43,6 +43,29 @@ jobs:
           rm -rf lib && cp -r /tmp/app_lib lib
           flutter pub get
 
+      # 取【最近一次成功】的 build-mkxp 产物 MKXP.framework，放到插件目录供 pod 链接。
+      # 刻意不串行依赖：引擎构建翻车时用上一个好版本框架继续出 IPA（M0 安全网不破）。
+      - name: Download MKXP.framework
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-mkxp.yml \
+                     --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          echo "latest successful build-mkxp run: ${RUN_ID:-<none>}"
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::error::找不到成功的 build-mkxp 运行，无 MKXP.framework 可用"; exit 1
+          fi
+          mkdir -p mkxp/ios/MKXP.framework
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name MKXP-framework --dir mkxp/ios/MKXP.framework --clobber
+          # 兼容两种 zip 布局：内容在根 / 多嵌一层 MKXP.framework
+          if [ -d mkxp/ios/MKXP.framework/MKXP.framework ]; then
+            mv mkxp/ios/MKXP.framework/MKXP.framework/* mkxp/ios/MKXP.framework/
+            rmdir mkxp/ios/MKXP.framework/MKXP.framework
+          fi
+          ls -R mkxp/ios/MKXP.framework
+          test -f mkxp/ios/MKXP.framework/MKXP || { echo "::error::MKXP.framework 布局异常"; exit 1; }
+
       # 不签名编译（Sideloadly 在 Windows 侧重签安装）
       - name: Build iOS (no codesign)
         run: flutter build ios --release --no-codesign

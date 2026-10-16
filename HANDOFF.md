@@ -10,13 +10,19 @@
   `MKXP.framework`（artifact 9.96MB = libmkxp + 全部 vcpkg 静态依赖 + libruby-static + 4.5MB CJK 字体）。
   configure / xxd / find_library / 头文件路径 / assert 截胡 / Metal 守卫 / TTF_Font 改名 / CJK 字体 /
   system() / 根相对 include 十关全过（坑 #3/#6-#12）。
-- **M1 剩余**：见下方「M1 后续必做」A/B/C（`mkxp_run()` 重构 → 透明浮层 → workflow 串接），
-  改的是 C++/Swift/Dart/workflow，引擎本体已不必再大改。
-- **M1-A 进行中（2026-10-16）**：框架化入口已落地——`scripts/mkxp-framework/` 下
-  `framework-entry.patch`（`main()`→`extern "C" mkxp_z_main()`；input.cpp 发布
-  rgssKey→scancode 反查表带 mutex）+ `mkxp_framework.cpp`（`mkxp_run` 后台线程 /
-  `mkxp_key` SDL 事件注入 / `mkxp_quit` SDL_QUIT），CMake 加 `WORKDIR_CURRENT`
-  （游戏目录由 mkxp_run 设为工作目录，不 chdir 到 bundle）。待 CI 验证。
+- **M1-A 已完成** ✅（`baeb52f` CI 验证）：`mkxp_run`/`mkxp_key`/`mkxp_quit` 框架化入口落地
+  （`scripts/mkxp-framework/`：patch + mkxp_framework.cpp），`MKXP.framework` 含全部三个符号。
+- **M1-C/B 已完成（待 CI 验证）**：`ios.yml` 下载最近一次成功的 `MKXP-framework` 到
+  `mkxp/ios/`（引擎翻车不挡 IPA 流水线）；podspec 放开 `vendored_frameworks` 并补齐
+  系统框架/库（与 CMake 的 target_link_libraries 对应）；Swift 侧 `MkxpBridge` +
+  MethodChannel 的 launch/quit/key；Dart 侧 `GameView` 改透明浮层、主界面加启动/关机入口。
+  **真机验证清单**：装包 → 填游戏目录（如 games/Essentials）→ 启动引擎 → 看 `mkxp.log`。
+- **M1 剩余**：真机验证（上述清单）+ M2（游戏库扫描/导入解压/虚拟摇杆）。
+- **M1-A 进行中（2026-10-16）**：框架化入口已落地并由 `baeb52f` 验证通过——
+  `scripts/mkxp-framework/` 下 `framework-entry.patch`（`main()`→`extern "C" mkxp_z_main()`；
+  input.cpp 发布 rgssKey→scancode 反查表带 mutex）+ `mkxp_framework.cpp`
+  （`mkxp_run` 后台线程 / `mkxp_key` SDL 事件注入 / `mkxp_quit` SDL_QUIT），
+  CMake 加 `WORKDIR_CURRENT`（游戏目录由 mkxp_run 设为工作目录，不 chdir 到 bundle）。
   已知待验证风险：后台线程里 `SDL_Init(VIDEO)`/`SDL_CreateWindow` 在 iOS 上是否
   稳（已先调 `SDL_SetMainReady()`）；真机跑起来看 `mkxp.log`。
 - 已跑通的子步骤（CI 已验证）：
