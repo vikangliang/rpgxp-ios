@@ -10,7 +10,7 @@ import UIKit
 /// 键位映射（Essentials 默认，可在设置重映射）：
 ///   方向：Up=8 / Down=2 / Left=4 / Right=6（Input::ButtonCode）
 ///   动作：C 确定=13 / ✕ 取消=12 / Z 特殊=16 / ☰ 菜单=14
-final class MkxpTouchOverlay {
+final class MkxpTouchOverlay: NSObject {
   static let shared = MkxpTouchOverlay()
 
   /// RGSS 键码（Input::ButtonCode），与 scripts/mkxp-framework/mkxp_framework.cpp 注释一致。
