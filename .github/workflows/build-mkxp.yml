@@ -25,9 +25,12 @@ jobs:
       - name: Cache cross-built Ruby
         uses: actions/cache@v4
         with:
-          path: deps/ruby-ios
-          key: ruby-ios-3.2.5-${{ hashFiles('scripts/build_mkxp_ios.sh') }}
-          restore-keys: ruby-ios-3.2.5-
+          # 与脚本 PREFIX（deps/ruby-ios-$RUBY_VER）一致；此前误写 deps/ruby-ios，
+          # 路径不存在导致缓存从未生效（Ruby 每轮全量重建）。
+          path: deps/ruby-ios-3.3.12
+          key: ruby-ios-3.3.12-${{ hashFiles('scripts/build_mkxp_ios.sh') }}
+          # 不用 restore-keys：脚本变更（如 ASFLAGS 修复）必须逼 Ruby 重建，
+          # 否则旧产物里按宿主编成的 macOS 架构对象会污染最终链接。
 
       - name: Show toolchain
         run: |

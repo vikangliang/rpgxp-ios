@@ -127,6 +127,17 @@
     已改为：克隆前把还原内容挪到 `${VCPKG}.restore`，clone + checkout 钉死 commit 后再把
     `installed/` 挪回。另：vcpkg 已钉死 commit（`VCPKG_REF`），不钉则每次跑当天 master、
     缓存跨版本复用，构建不可复现。
+14. **Ruby 汇编文件没吃 iOS flags（`Context.o` built for macOS）**：Ruby 的 coroutine `.S`
+    汇编规则是 `$(CC) $(ASFLAGS) -c`，**不吃 CFLAGS**——`configure cflags=` 传的交叉 flags
+    到不了汇编步骤，`Context.o` 按宿主编成 macOS 对象；`libtool -static` 又不校验平台，
+    直到最终链进 App 才炸 `linking object file built for 'macOS'`。已改 `make ... ASFLAGS="$ARCH_FLAGS"`。
+    另修：Ruby 缓存路径此前误写 `deps/ruby-ios`（与脚本 PREFIX 不一致）导致缓存从未生效，
+    已改为 `deps/ruby-ios-3.3.12` 并去掉 restore-keys（脚本变更必须逼重建）。
+15. **静态 framework pod 不传递依赖到 App 链接**：mkxp 插件含 Swift 必须 `static_framework = true`，
+    而静态 framework 的 pod target 只归档自己的对象——podspec 的 `vendored_frameworks` 只让
+    pod 编译期能 `import MKXP`，App 最终链接看不到框架 → `Undefined symbol: _mkxp_run`。
+    已用 `scripts/ios-link-mkxp.rb`（CI 在 flutter build 前跑）把框架显式注入 Runner 的
+    Link Binary With Libraries + force_load + 补齐系统框架/库。
 
 ## 下一步该做什么（编译关已通，2026-10-16）
 

@@ -202,8 +202,13 @@ EOF
     # Ruby 3.3 的可执行链接规则会把 Makefile/GNUmakefile 当目标文件而失败，而静态库
     # 归档规则不受影响，且 MKXP 只需要静态库。注意 Makefile 里静态库 target 带版本号
     # libruby.$(MAJOR).$(MINOR)-static.a（此处为 libruby.3.3-static.a），直接用该名。
+    # ASFLAGS 必须显式传 iOS 交叉 flags：coroutine 的 .S 汇编规则是
+    # `$(CC) $(ASFLAGS) -c`，【不吃 CFLAGS】——不传就会按宿主编成 macOS 对象，
+    # libtool -static 又不校验平台，直到最终链进 App 才炸
+    # "linking object file built for 'macOS'"。
     make libruby.3.3-static.a -j"$(sysctl -n hw.ncpu)" \
-      MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY"
+      MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY" \
+      ASFLAGS="$ARCH_FLAGS"
     # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物。
     # 静态库可能叫 libruby.a 或 libruby-static.a，挑存在的那个。
     mkdir -p "$PREFIX/lib" "$PREFIX/include/ruby"
