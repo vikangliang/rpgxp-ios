@@ -216,21 +216,9 @@ EOF
     # `$(CC) $(ASFLAGS) -c`，【不吃 CFLAGS】——不传就会按宿主编成 macOS 对象，
     # libtool -static 又不校验平台，直到最终链进 App 才炸
     # "linking object file built for 'macOS'"。
-    # 【关键】--with-static-linked-ext 的扩展是独立目标（build-ext / extinit.c），
-    # 只 make libruby.3.3-static.a 不会触发——真机日志已证实这样产出的 libruby 里
-    # 没有 Init_zlib。这里显式先建扩展与 extinit 注册代码，再编静态库。
-    # 注意：脚本开了 set -o pipefail，诊断命令必须显式吞掉非零退出码，
-    # 否则 grep 无匹配就会掐断整个构建（上一轮 exit code 2 就是这么来的）。
-    echo "== ext 配置状态 =="
-    { grep -E '^(EXTS|EXTSTATIC|EXTLIBS|EXTA)' ext/configure-ext.mk 2>/dev/null | head -20; } || true
-    { ls ext/ 2>/dev/null | tr '\n' ' '; } || true
-    echo ""
-    make -j"$(sysctl -n hw.ncpu)" build-ext \
-      MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY" \
-      ASFLAGS="$ARCH_FLAGS" || echo "::warning::build-ext 失败（继续，稍后自检会暴露）"
-    make -j"$(sysctl -n hw.ncpu)" ext/extinit.o \
-      MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY" \
-      ASFLAGS="$ARCH_FLAGS" 2>/dev/null || echo "(ext/extinit.o 目标不存在，忽略)"
+    # 注：【不再】跑 make build-ext——交叉编译下 extconf 用 HOST ruby 的 RbConfig
+    # （macOS 编译器）生成 constdefs.h 等，必然失败（实测 make: *** [build-ext]
+    # Error 2），产出的也不是 iOS 对象。zlib 改用下方【手工编译】方案。
     make libruby.3.3-static.a -j"$(sysctl -n hw.ncpu)" \
       MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY" \
       ASFLAGS="$ARCH_FLAGS"
@@ -258,8 +246,10 @@ EOF
     if [ -f "$ZLIB_C" ] && [ -n "$RUBY_A" ]; then
       echo "== 手工编译 zlib 扩展 =="
       clang $ARCH_FLAGS -O2 -fPIC -DHAVE_ZLIB_H -c "$ZLIB_C" -o zlib_ext.o \
-        -I"$PREFIX/include" -I"$PREFIX/include/ruby" -I"../include" -I".." -I"." \
-        -I"$RUBY_SRC" -I"$RUBY_SRC/include" -I"$VCPKG_INSTALL/include" 2>&1 | tail -5 || true
+        -I"$PREFIX/include" -I"$PREFIX/include/ruby" \
+        -I".ext/include/arm64-darwin" -I".ext/include/arm64-darwin/ruby" \
+        -I"../include" -I"../include/ruby" -I".." -I"." \
+        -I"$RUBY_SRC" -I"$RUBY_SRC/include" -I"$VCPKG_INSTALL/include" 2>&1 | tail -8 || true
       if [ -f zlib_ext.o ]; then
         libtool -static -o "$RUBY_A.new" "$RUBY_A" zlib_ext.o && mv -f "$RUBY_A.new" "$RUBY_A"
         echo "zlib 扩展已合并进 $RUBY_A"
