@@ -179,7 +179,10 @@ else
 #define VCPLX 10
 #endif
 EOF
-    export CPPFLAGS="-I$STUB -I$PREFIX/include"
+    # zlib 头/库来自 vcpkg（libz.a + zlib.h 已在 arm64-ios-static 装好）：
+    # 真机日志实证 Ruby 'require zlib' LoadError → Scripts.rxdata 的 zlib 解包失败，
+    # RGSS 线程死亡。CPPFLAGS 喂头文件、LDFLAGS 喂库路径；--with-zlib-dir 双保险。
+    export CPPFLAGS="-I$STUB -I$PREFIX/include -I$VCPKG_INSTALL/include"
     # ---------- Stage B：交叉编译 iOS 静态库，用 runner 原生 ruby 引导 ----------
     mkdir -p build-ios && cd build-ios
     # --host 走交叉路径；不显式给 --build，让 configure 用 config.guess 推断
@@ -190,7 +193,8 @@ EOF
       --disable-install-doc --disable-jit-support \
       --with-static-linked-ext \
       --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty \
-      cflags="$ARCH_FLAGS" LDFLAGS="$ARCH_FLAGS" \
+      --with-zlib-dir="$VCPKG_INSTALL" \
+      cflags="$ARCH_FLAGS" LDFLAGS="$ARCH_FLAGS -L$VCPKG_INSTALL/lib" \
       CROSS_COMPILING=yes \
       ac_cv_func_getentropy=no \
       ac_cv_func_fcntl=yes \
@@ -213,6 +217,13 @@ EOF
     make libruby.3.3-static.a -j"$(sysctl -n hw.ncpu)" \
       MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY" \
       ASFLAGS="$ARCH_FLAGS"
+    # 自检：zlib 扩展必须真的编进来了（真机日志曾因缺它 require zlib LoadError）
+    if ls .ext/aarch64-darwin*/zlib/zlib.a >/dev/null 2>&1 \
+       || find .ext -name 'zlib.a' 2>/dev/null | grep -q .; then
+      echo "zlib static ext: OK"
+    else
+      echo "::warning::zlib 扩展未编译出来——检查 --with-zlib-dir 与 vcpkg 头文件"
+    fi
     # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物。
     # 静态库可能叫 libruby.a 或 libruby-static.a，挑存在的那个。
     mkdir -p "$PREFIX/lib" "$PREFIX/include/ruby"
