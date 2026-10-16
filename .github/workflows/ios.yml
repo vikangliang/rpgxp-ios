@@ -126,9 +126,9 @@ jobs:
             echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "commit: ${GITHUB_SHA::7} $(git log -1 --format=%s)"
             echo "date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-            echo '## ios-build.log (tail 200)'
+            echo '## ios-build.log (tail 400)'
             echo '```'
-            tail -200 /tmp/ios-build.log 2>/dev/null || echo '(no log)'
+            tail -400 /tmp/ios-build.log 2>/dev/null || echo '(no log)'
             echo '```'
           } > ci-status/last-failure.md
           git config user.name "github-actions[bot]"

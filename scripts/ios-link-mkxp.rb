@@ -4,19 +4,17 @@
 # 把 MKXP.framework 显式链进 Flutter 生成的 Runner target（CI 专用）。
 #
 # 背景：mkxp 插件因含 Swift，podspec 必须 s.static_framework = true。而静态
-# framework 的 pod target 只归档【自己的】对象、不解析外部依赖——podspec 里的
-# vendored_frameworks 仅让 pod 编译期能找到 MKXP 模块（import MKXP），App 的
-# 最终链接阶段看不到该框架，于是 Undefined symbol: _mkxp_run/_mkxp_key/_mkxp_quit。
+# framework 的 pod target 只归档【自己的】对象、不解析外部依赖——App 的最终
+# 链接阶段看不到引擎框架，于是 Undefined symbol: _mkxp_run/_mkxp_key/_mkxp_quit。
 #
-# 故在 flutter create 生成工程后、flutter build ios 前，用本脚本给 Runner 补：
-#   1. FRAMEWORK_SEARCH_PATHS：插件目录（Runner 在 ios/，框架在仓库根 mkxp/ios/）；
-#   2. OTHER_LDFLAGS：-framework MKXP + 引擎所需系统框架/静态库（与
-#      scripts/mkxp-cmake/CMakeLists.txt 的 target_link_libraries 对应）。
+# 已排除的两条错路（都实测炸过）：
+#   1. podspec 用 vendored_frameworks：静态 framework 的 pod 会把引擎归档并进
+#      Pods-mkxp.framework，与 App 侧加载重复 → 875 duplicate symbols；
+#   2. App 侧用 -framework MKXP 按需加载：引用方 MkxpBridge.o 在 pod 的归档里，
+#      ld 单遍按需扫描走到 MKXP.framework 时还没有未决符号，过后不回头 → 仍 undefined。
 #
-# 注意【不要】再加 -force_load，也【不要】再把框架加进 "Link Binary With Libraries"：
-# 两种机制与 -framework 重复加载同一个静态归档会产生大量 duplicate symbols
-# （实测 875 个）。按需加载即可——引擎内部高度互联，mkxp_run 被引用会递归拉起
-# 所有依赖成员。
+# 正解=单一加载者：podspec 只留编译期 FRAMEWORK_SEARCH_PATHS（import MKXP 用），
+# App 侧用 -force_load 全量载入引擎归档（force_load 无视顺序，一定全进）。
 #
 # 用法： ruby scripts/ios-link-mkxp.rb [Runner.xcodeproj 路径] [MKXP.framework 路径]
 
@@ -54,11 +52,11 @@ target.build_configurations.each do |config|
   search << marker unless search.include?(marker)
   settings['FRAMEWORK_SEARCH_PATHS'] = search
 
-  # 2) 链接参数：-framework MKXP + 系统框架/库
+  # 2) 链接参数：force_load 引擎归档（唯一加载者）+ 系统框架/库
   flags = settings['OTHER_LDFLAGS'] || ['$(inherited)']
   flags = [flags] if flags.is_a?(String)
-  fw_flag = '-framework "MKXP"'
-  flags << fw_flag unless flags.include?(fw_flag)
+  force = %(-force_load "$(SRCROOT)/../mkxp/ios/MKXP.framework/MKXP")
+  flags << force unless flags.include?(force)
   ENGINE_FRAMEWORKS.each do |fw|
     flag = %(-framework "#{fw}")
     flags << flag unless flags.include?(flag)
@@ -71,4 +69,4 @@ target.build_configurations.each do |config|
 end
 
 project.save
-puts "saved #{proj_path} (-framework MKXP + #{ENGINE_FRAMEWORKS.size} frameworks + #{ENGINE_LIBS.size} libs)"
+puts "saved #{proj_path} (-force_load MKXP + #{ENGINE_FRAMEWORKS.size} frameworks + #{ENGINE_LIBS.size} libs)"
