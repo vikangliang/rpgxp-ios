@@ -354,6 +354,26 @@ LIBS+=("$RUBY_LIB")
 
 libtool -static -o "$FW_DIR/MKXP" "${LIBS[@]}"
 
+# ---------- 5b. 跨归档符号冲突诊断 ----------
+# App 侧用 -force_load 全量载入本框架时，任何被两个输入归档同时定义的符号都会变成
+# duplicate symbol（按需加载则不会—— linker 只取第一个定义）。这里提前对账，
+# 输出 COLLISION 行（含涉及的归档），供 build-mkxp.yml 的发布步骤推到 ci-status。
+echo "== 跨归档符号冲突诊断 =="
+SYMMAP="$ROOT/deps/symmap.txt"
+: > "$SYMMAP"
+for a in "${LIBS[@]}"; do
+  b=$(basename "$a")
+  nm -g "$a" 2>/dev/null | grep -v '):$' | awk 'NF>=3 {print $NF}' | sort -u \
+    | awk -v b="$b" '{print $1, b}'
+done | sort -u > "$SYMMAP"
+awk '{print $1}' "$SYMMAP" | uniq -d > "$ROOT/deps/dupsyms.txt"
+DUPN=$(wc -l < "$ROOT/deps/dupsyms.txt" | tr -d ' ')
+echo "COLLISION_COUNT $DUPN"
+head -100 "$ROOT/deps/dupsyms.txt" | while read -r sym; do
+  files=$(grep -m 8 "^$sym " "$SYMMAP" | awk '{print $2}' | tr '\n' ',')
+  echo "COLLISION $sym -> $files"
+done
+
 # 公开头（供桥接调用 mkxp_run）
 cat > "$FW_DIR/Headers/MKXP.h" <<'EOF'
 #ifndef MKXP_H

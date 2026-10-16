@@ -56,6 +56,27 @@ jobs:
           path: build-mkxp.log
           if-no-files-found: warn
 
+      # 把符号冲突诊断报告推到 ci-status 分支（App 侧 force_load 会不会炸 duplicate
+      # symbols，取决于这里列出的跨归档重复定义）。成功也推，免 token 可读。
+      - name: Publish symbol collisions
+        if: always()
+        run: |
+          mkdir -p ci-status
+          {
+            echo "# MKXP symbol collisions (merged archive)"
+            echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "commit: ${GITHUB_SHA::7} $(git log -1 --format=%s)"
+            echo "date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo '```'
+            grep -E "^COLLISION" build-mkxp.log 2>/dev/null || echo '(no collisions)'
+            echo '```'
+          } > ci-status/last-collisions.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ci-status/last-collisions.md
+          git commit -m "ci: mkxp symbol collisions [skip ci]"
+          git push origin HEAD:ci-status --force
+
       # 失败时把错误摘要+日志尾部推回 ci-status 分支：
       # 公开仓库经 api.github.com 免登录即可读取（contents?ref=ci-status），
       # 省去每次手动截日志/配 token。[skip ci] 防止推送再触发 workflow。
