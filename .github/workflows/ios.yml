@@ -128,9 +128,14 @@ jobs:
             echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "commit: ${GITHUB_SHA::7} $(git log -1 --format=%s)"
             echo "date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-            echo '## ios-build.log (tail 600)'
+            echo '## duplicate/undefined symbols (aggregated)'
             echo '```'
-            tail -600 /tmp/ios-build.log 2>/dev/null || echo '(no log)'
+            grep -oE "(duplicate symbol|Undefined symbol): .*" /tmp/ios-build.log 2>/dev/null \
+              | sed -E "s/.*'(_.*)'.*/\1/" | sort | uniq -c | sort -rn | head -60
+            echo '```'
+            echo '## ios-build.log (tail 120)'
+            echo '```'
+            tail -120 /tmp/ios-build.log 2>/dev/null || echo '(no log)'
             echo '```'
           } > ci-status/last-failure.md
           git config user.name "github-actions[bot]"
