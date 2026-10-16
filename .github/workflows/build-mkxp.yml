@@ -10,6 +10,8 @@ on:
 jobs:
   build-mkxp:
     runs-on: macos-15
+    permissions:
+      contents: write   # 供失败摘要推回 ci-status 分支
     steps:
       - uses: actions/checkout@v4
 
@@ -50,3 +52,35 @@ jobs:
           name: mkxp-build-log
           path: build-mkxp.log
           if-no-files-found: warn
+
+      # 失败时把错误摘要+日志尾部推回 ci-status 分支：
+      # 公开仓库经 api.github.com 免登录即可读取（contents?ref=ci-status），
+      # 省去每次手动截日志/配 token。[skip ci] 防止推送再触发 workflow。
+      - name: Publish failure summary
+        if: failure()
+        run: |
+          mkdir -p ci-status
+          LOG=build-mkxp.log
+          {
+            echo "# MKXP build failure"
+            echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "commit: ${GITHUB_SHA::7} $(git log -1 --format=%s)"
+            echo "date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            if [ -f "$LOG" ]; then
+              echo '## error lines'
+              echo '```'
+              { grep -nE "error:|fatal error|Error [0-9]+|FAILED|\*\*\*" "$LOG" || true; } | tail -60
+              echo '```'
+              echo '## log tail (120)'
+              echo '```'
+              tail -120 "$LOG"
+              echo '```'
+            else
+              echo '(no build-mkxp.log found)'
+            fi
+          } > ci-status/last-failure.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ci-status/last-failure.md
+          git commit -m "ci: mkxp build failure summary [skip ci]"
+          git push origin HEAD:ci-status --force

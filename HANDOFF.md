@@ -49,6 +49,10 @@
   - `ios.yml`：编 M0 App 的未签名 IPA（`rpgxp-loader-ipa`）。
 - 接手动作：本机 `git pull` → 改 `scripts/` 或 `CMakeLists.txt` → `commit && push`，CI 自动跑。
 - 看日志：GitHub → Actions → 对应 workflow run → 下载 artifact（尤其 `mkxp-build-log`）。
+- **免 token 看错误**：`build-mkxp.yml` 失败时会把错误摘要+日志尾部自动推到 `ci-status` 分支的
+  `ci-status/last-failure.md`（`[skip ci]` 防重触发）。读取：
+  `GET /repos/vikangliang/rpgxp-ios/contents/ci-status/last-failure.md?ref=ci-status`（公开仓库免登录）。
+  本地也可跑 `powershell -File C:\Users\ginny\.ci\get-ci.ps1` 一次拿到状态+步骤+失败摘要。
 
 ## 已踩的坑（别再踩）
 
