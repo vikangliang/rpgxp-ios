@@ -4,7 +4,7 @@
 // 上游 mkxp-z 是独立 app：int main + SDL 自建全屏窗口。本文件把它包装成可嵌入
 // 静态库，供 Flutter 侧（mkxp 插件）通过 MKXP.h 的三个 C 接口调用：
 //
-//   int  mkxp_run(const char *gamePath)  后台线程启动引擎，立即返回 0
+//   int  mkxp_run(const char *gamePath)  主线程启动引擎，立即返回 0
 //   void mkxp_key(int rgssKey, int down) 注入 RGSS 按键（Input::ButtonCode）
 //   void mkxp_quit(void)                 走正常关机流程
 //
@@ -15,19 +15,22 @@
 //      使用调用方（mkxp_run）设置的工作目录作为游戏根。
 //   3. MKXP.h（构建脚本生成）中的三个声明与本文件定义一致。
 //
-// 线程模型：mkxp_run 由 Flutter 主线程调用；引擎整体（SDL_Init/窗口/RGSS 线程/
-// EventThread::process）跑在 g_engineThread。SDL 事件队列是线程安全的，按键与
-// 退出请求都通过 SDL_PushEvent 投递，走引擎原生输入管线（触发/重复/释放语义
-// 与实体键盘一致）。
+// 线程模型：引擎整体（SDL_Init/窗口/RGSS 线程/EventThread::process）跑在【主线程】
+// ——SDL2 的 iOS 后端（UIWindow/CAEAGLLayer/UIKit 事件泵）只支持主线程，后台线程里
+// SDL_Init(VIDEO)/SDL_CreateWindow 会直接崩（2026-10-16 真机实测：点启动即闪退）。
+// mkxp_run 由 Flutter 主线程调用，dispatch_async 到主队列后立即返回，Dart 侧不阻塞；
+// 引擎事件循环占用主线程期间 Flutter 浮层暂停响应（M1 无触摸控件，可接受；
+// M2 做浮层时若需要常驻响应再评估拆分）。SDL 事件队列线程安全，按键与退出请求
+// 经 SDL_PushEvent 投递，走引擎原生输入管线。
 // =============================================================================
 
 #include <SDL.h>
 #include <SDL_scancode.h>
+#include <dispatch/dispatch.h>
 
 #include <atomic>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <unordered_map>
 
 #include "filesystem/filesystem.h"
@@ -48,13 +51,12 @@ extern "C" int SDL_main(int argc, char *argv[]) {
 extern std::unordered_map<int, SDL_Scancode> g_buttonToScancode;
 extern std::mutex g_buttonToScancodeMtx;
 
-static std::thread g_engineThread;
 static std::atomic<bool> g_engineRunning{false};
 
 extern "C" {
 
 /* 启动引擎。gamePath 指向游戏目录（含 Game.ini / Data/）。
- * 返回：0 成功；-1 参数为空；-2 引擎已在运行；-3 游戏目录不存在。 */
+ * 返回：0 成功（已派发到主线程）；-1 参数为空；-2 引擎已在运行；-3 游戏目录不存在。 */
 int mkxp_run(const char *gamePath)
 {
     if (!gamePath || !gamePath[0])
@@ -62,10 +64,6 @@ int mkxp_run(const char *gamePath)
 
     if (g_engineRunning.load())
         return -2;
-
-    /* 等上一次运行彻底退出（mkxp_quit 后通常几秒内） */
-    if (g_engineThread.joinable())
-        g_engineThread.join();
 
     /* 工作目录 = 游戏目录。配合 WORKDIR_CURRENT，mkxp_z_main 不会再 chdir。 */
     if (!mkxp_fs::setCurrentDirectory(gamePath))
@@ -75,12 +73,10 @@ int mkxp_run(const char *gamePath)
      * 接管 UIApplication。必须在 SDL_Init 之前调用（任意线程均可）。 */
     SDL_SetMainReady();
 
-    std::string path(gamePath);
+    /* 引擎跑主线程：见文件头「线程模型」。argv 用块内复合字面量，避免悬空指针。 */
     g_engineRunning.store(true);
-
-    g_engineThread = std::thread([path]() {
-        const char *argv[] = { "mkxp", nullptr };
-        mkxp_z_main(1, const_cast<char **>(argv));
+    dispatch_async(dispatch_get_main_queue(), ^{
+        mkxp_z_main(1, (char *[]){"mkxp", nullptr});
         g_engineRunning.store(false);
     });
 

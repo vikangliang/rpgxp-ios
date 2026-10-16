@@ -14,8 +14,13 @@
   - 编译期十二坑（#3/#6-#12）+ 链接期六坑（#13-#18）全填平。
 - **M1 剩余唯一事项：真机验证**——Sideloadly 装包 → 填游戏目录（如 `games/Essentials`）→
   点「启动引擎」→ 看 `mkxp.log`（主界面有 启动/关机/读取原生日志 三按钮 + 目录输入框）。
-  已知待验证风险：后台线程里 `SDL_Init(VIDEO)`/`SDL_CreateWindow` 在 iOS 上是否稳
-  （已先调 `SDL_SetMainReady()`）。
+  **真机首测结果（2026-10-16）**：装包/Flutter 壳/桥接/链接全通，但**点启动即闪退**——
+  根因：引擎整体跑在后台 `std::thread`，SDL2 的 iOS 后端（UIWindow/CAEAGLLayer/UIKit
+  事件泵）只支持主线程。已修（`625cbd5` 之后的 `mkxp_framework.cpp` 改为
+  `dispatch_async(dispatch_get_main_queue())` 派发到主线程、立即返回）。若再崩，
+  取 iPhone 设置→隐私→分析与改进→分析数据里最新的 `rpgxpLoader-*.ips` 崩溃日志定位。
+  另注意：游戏文件目前只能经 Finder 文件共享进入沙盒（`Info.plist` 的
+  `UIFileSharingEnabled` 尚未开，需要的话 CI 加一步 patch）。
 - 已跑通的子步骤（CI 已验证）：
   - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` + 头文件 staged；
   - vcpkg `arm64-ios-static` 静态 triplet 编出全部 C 依赖；
