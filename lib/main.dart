@@ -71,7 +71,7 @@ class _GameScreenState extends State<GameScreen> {
                 controller: _gamePathController,
                 style: const TextStyle(color: Colors.white70, fontSize: 12),
                 decoration: const InputDecoration(
-                  labelText: '游戏目录（相对 Documents）',
+                  labelText: '游戏目录（相对 Documents，如 Essentials）',
                   labelStyle: TextStyle(color: Colors.white38, fontSize: 11),
                   enabledBorder: UnderlineInputBorder(
                       borderSide: BorderSide(color: Colors.white24)),

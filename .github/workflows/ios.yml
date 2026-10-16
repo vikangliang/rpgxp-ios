@@ -52,6 +52,19 @@ jobs:
           rm -rf lib && cp -r /tmp/app_lib lib
           flutter pub get
 
+      # 开文件共享：M2 的导入功能做好前，靠 iTunes 文件共享 / iMazing /「文件」App
+      # 把游戏文件夹（顶层含 Game.ini + Data/）拖进沙盒 Documents/。
+      - name: Enable file sharing
+        run: |
+          set -eo pipefail
+          for kv in "UIFileSharingEnabled bool true" "UISupportsDocumentBrowser bool true"; do
+            key=${kv%% *}; rest=${kv#* }
+            /usr/libexec/PlistBuddy -c "Add :$key $rest" ios/Runner/Info.plist 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :$key $rest" ios/Runner/Info.plist
+          done
+          /usr/libexec/PlistBuddy -c "Print" ios/Runner/Info.plist \
+            | grep -E "FileSharing|DocumentBrowser" | tee -a /tmp/ios-build.log
+
       # 取本次提交的 build-mkxp 产物 MKXP.framework，放到插件目录供 pod 链接。
       # workflow_run 触发时用触发运行的 id（同一次提交的框架）；
       # 手动触发（workflow_dispatch）时退而求其次取最近一次成功。
