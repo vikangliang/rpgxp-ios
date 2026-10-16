@@ -1,12 +1,10 @@
 name: iOS Build
 
 on:
-  # 不直接在 push 上触发：等 build-mkxp.yml 完成后用【同一次提交】的
-  # MKXP.framework 编 App。此前两 workflow 并行触发，iOS 只能拿到上一个
-  # 提交的旧框架——引擎修复要晚一轮才生效（Context.o 问题就这么被掩埋过）。
-  workflow_run:
-    workflows: ["Build MKXP framework (M1a)"]
-    types: [completed]
+  # 已合并进 build-mkxp.yml 的 build-ios job（workflow_run 触发的 GITHUB_TOKEN 只读，
+  # 失败摘要依赖 PAT，PAT 过期即静默丢日志）。本文件仅保留手动触发作备用通道，
+  # 手动跑时发布步骤仍走 CI_PUSH_TOKEN（若未配置则退回只读 token、发布可能失败，
+  # 但构建日志已由 build-mkxp.yml 的 ios-build-log artifact 兜底）。
   workflow_dispatch:
 
 jobs:

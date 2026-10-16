@@ -108,3 +108,145 @@ jobs:
           git add ci-status/last-failure.md
           git commit -m "ci: mkxp build failure summary [skip ci]"
           git push origin HEAD:ci-status --force
+
+  # ============================================================================
+  # iOS App 打包（原 ios.yml 的 workflow_run 链，合并进来）。
+  # 为什么合并：workflow_run 触发的 workflow 里 GITHUB_TOKEN 对 contents 只读，
+  # 失败摘要要推回分支只能依赖 CI_PUSH_TOKEN（PAT）——PAT 一过期就静默丢日志
+  # （continue-on-error 吞掉），无人能看到编译错误。合并后本 workflow 由 push
+  # 触发，GITHUB_TOKEN 可写，发布不再依赖任何 PAT。
+  # ============================================================================
+  build-ios:
+    runs-on: macos-15
+    needs: build-mkxp
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          flutter --version
+          pod --version
+
+      # flutter create 会重新生成根目录 pubspec.yaml/lib/ios ，先备份我们的源码
+      - name: Backup app sources
+        run: |
+          cp pubspec.yaml /tmp/app_pubspec.yaml
+          cp -r lib /tmp/app_lib
+
+      - name: Generate iOS project (flutter create)
+        run: flutter create --platforms=ios --org com.yourapp --project-name rpgxp_loader .
+
+      - name: Restore sources & integrate plugin
+        run: |
+          cp -f /tmp/app_pubspec.yaml pubspec.yaml
+          rm -rf lib && cp -r /tmp/app_lib lib
+          flutter pub get
+
+      - name: Enable file sharing
+        run: |
+          set -eo pipefail
+          for kv in "UIFileSharingEnabled bool true" "UISupportsDocumentBrowser bool true"; do
+            key=${kv%% *}; rest=${kv#* }
+            /usr/libexec/PlistBuddy -c "Add :$key $rest" ios/Runner/Info.plist 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :$key $rest" ios/Runner/Info.plist
+          done
+          /usr/libexec/PlistBuddy -c "Print" ios/Runner/Info.plist \
+            | grep -E "FileSharing|DocumentBrowser" | tee -a /tmp/ios-build.log
+
+      # 同一 run 内直取上游 job 的 MKXP.framework（不再经 gh run download）
+      - name: Download MKXP.framework
+        uses: actions/download-artifact@v4
+        with:
+          name: MKXP-framework
+          path: mkxp/ios/MKXP.framework
+
+      - name: Normalize framework layout
+        run: |
+          set -eo pipefail
+          {
+            # 兼容两种 zip 布局：内容在根 / 多嵌一层 MKXP.framework
+            if [ -d mkxp/ios/MKXP.framework/MKXP.framework ]; then
+              mv mkxp/ios/MKXP.framework/MKXP.framework/* mkxp/ios/MKXP.framework/
+              rmdir mkxp/ios/MKXP.framework/MKXP.framework
+            fi
+            ls -R mkxp/ios/MKXP.framework
+            test -f mkxp/ios/MKXP.framework/MKXP \
+              || { echo "::error::MKXP.framework layout unexpected"; exit 1; }
+          } 2>&1 | tee /tmp/ios-build.log
+
+      - name: Link MKXP.framework into Runner
+        run: |
+          set -eo pipefail
+          cp -f scripts/mkxp-link-anchor.m ios/Runner/MkxpLinkAnchor.m
+          ruby -e "require 'xcodeproj'" 2>/dev/null || sudo gem install xcodeproj
+          ruby scripts/ios-link-mkxp.rb ios/Runner.xcodeproj mkxp/ios/MKXP.framework ios/Runner/MkxpLinkAnchor.m 2>&1 | tee -a /tmp/ios-build.log
+
+      - name: Build iOS (no codesign)
+        run: |
+          set -eo pipefail
+          flutter build ios --release --no-codesign 2>&1 | tee -a /tmp/ios-build.log
+
+      - name: Package unsigned IPA
+        run: |
+          set -eo pipefail
+          {
+            mkdir -p build/Payload
+            cp -r build/ios/iphoneos/Runner.app build/Payload/
+            cd build && zip -r app.ipa Payload
+          } 2>&1 | tee -a /tmp/ios-build.log
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpgxp-loader-ipa
+          path: build/app.ipa
+
+      - name: Upload ios-build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: /tmp/ios-build.log
+          if-no-files-found: warn
+
+      # push 触发 → GITHUB_TOKEN 可写，直接推 ci-status-ios（与 ci-status 分开避免
+      # build-mkxp 的快照 force-push 冲掉）。[skip ci] 防重触发。
+      - name: Publish build status
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p ci-status
+          if [ "${{ job.status }}" = "success" ]; then STATUS="success"; else STATUS="failure"; fi
+          {
+            echo "# iOS build $STATUS"
+            echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "commit: ${GITHUB_SHA::7} $(git log -1 --format=%s)"
+            echo "date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo '## error lines'
+            echo '```'
+            { grep -nE "error:|Error:|Xcode build done|FAILED|Undefined symbol|duplicate symbol" /tmp/ios-build.log 2>/dev/null || true; } | tail -80
+            echo '```'
+            echo '## duplicate/undefined symbols (aggregated)'
+            echo '```'
+            grep -oE "(duplicate symbol|Undefined symbol): .*" /tmp/ios-build.log 2>/dev/null \
+              | sed -E "s/.*'(_.*)'.*/\1/" | sort | uniq -c | sort -rn | head -60 || true
+            echo '```'
+            echo '## ios-build.log (tail 160)'
+            echo '```'
+            tail -160 /tmp/ios-build.log 2>/dev/null || echo '(no log)'
+            echo '```'
+          } > ci-status/last-failure.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ci-status/last-failure.md
+          git commit -m "ci: ios build status [skip ci]"
+          git push origin HEAD:ci-status-ios --force
