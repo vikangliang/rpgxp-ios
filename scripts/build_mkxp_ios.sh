@@ -219,9 +219,11 @@ EOF
     # 【关键】--with-static-linked-ext 的扩展是独立目标（build-ext / extinit.c），
     # 只 make libruby.3.3-static.a 不会触发——真机日志已证实这样产出的 libruby 里
     # 没有 Init_zlib。这里显式先建扩展与 extinit 注册代码，再编静态库。
+    # 注意：脚本开了 set -o pipefail，诊断命令必须显式吞掉非零退出码，
+    # 否则 grep 无匹配就会掐断整个构建（上一轮 exit code 2 就是这么来的）。
     echo "== ext 配置状态 =="
-    grep -E '^(EXTS|EXTSTATIC|EXTLIBS|EXTA)' ext/configure-ext.mk 2>/dev/null | head -20
-    ls ext/ 2>/dev/null | tr '\n' ' '
+    { grep -E '^(EXTS|EXTSTATIC|EXTLIBS|EXTA)' ext/configure-ext.mk 2>/dev/null | head -20; } || true
+    { ls ext/ 2>/dev/null | tr '\n' ' '; } || true
     echo ""
     make -j"$(sysctl -n hw.ncpu)" build-ext \
       MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY" \
@@ -237,7 +239,7 @@ EOF
       echo "zlib static ext: OK ($(find .ext -name 'zlib.a' | tr '\n' ' '))"
     else
       echo "::warning::zlib 扩展未编译出来——检查 --with-zlib-dir 与 vcpkg 头文件"
-      find .ext -maxdepth 2 -type d 2>/dev/null | head -30
+      { find .ext -maxdepth 2 -type d 2>/dev/null | head -30; } || true
     fi
     # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物。
     # 静态库可能叫 libruby.a 或 libruby-static.a，挑存在的那个。
