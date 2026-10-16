@@ -17,14 +17,24 @@ class _ImportPageState extends State<ImportPage> {
 
   bool _importing = false;
   String _status = '';
+  double _progress = 0;
+  String _currentFile = '';
 
   Future<void> _pick() async {
     setState(() {
       _importing = true;
-      _status = '正在选择并解压…（大游戏请耐心等待）';
+      _progress = 0;
+      _currentFile = '';
+      _status = '正在解压…（大游戏请耐心等待）';
     });
     try {
-      final name = await GameLibrary.importZip();
+      final name = await GameLibrary.importZip(onProgress: (p, file) {
+        if (!mounted) return;
+        setState(() {
+          _progress = p;
+          _currentFile = file;
+        });
+      });
       if (!mounted) return;
       setState(() => _status = name.isEmpty ? '已取消导入' : '导入完成：$name');
       if (name.isNotEmpty) {
@@ -89,6 +99,36 @@ class _ImportPageState extends State<ImportPage> {
                     : const Icon(Icons.folder_zip_outlined),
                 label: Text(_importing ? '解压中…' : '选择游戏 Zip'),
               ),
+              const SizedBox(height: 20),
+              if (_importing) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: _progress <= 0 ? null : _progress,
+                    minHeight: 8,
+                    backgroundColor: const Color(0xFF26262E),
+                    valueColor: const AlwaysStoppedAnimation(_primary),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Text('${(_progress * 100).toStringAsFixed(1)}%',
+                        style: const TextStyle(
+                            color: _primary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(_currentFile,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 11)),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 16),
               if (_status.isNotEmpty)
                 Text(_status,
