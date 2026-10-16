@@ -316,10 +316,10 @@ index 355b698..91ddec7 100644
                          gameScreen.x = event.user.windowID;
                          gameScreen.y = event.user.code;
 diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
-index f7f293a..1c754e6 100644
+index f7f293a..1739827 100644
 --- a/binding/binding-mri.cpp
 +++ b/binding/binding-mri.cpp
-@@ -55,10 +55,13 @@ extern "C" {
+@@ -55,10 +55,12 @@ extern "C" {
  #endif
  
  #include <assert.h>
@@ -327,13 +327,12 @@ index f7f293a..1c754e6 100644
  #include <zlib.h>
 +#include <chrono>
 +#include <dlfcn.h>
-+extern "C" void rb_provide_feature(const char *feature);
  
  #include <SDL_cpuinfo.h>
  #include <SDL_filesystem.h>
  #include <SDL_loadso.h>
  #include <SDL_power.h>
-@@ -272,10 +275,18 @@ static void mriBindingInit() {
+@@ -272,10 +274,19 @@ static void mriBindingInit() {
      
      // Automatically load zlib if it's present -- the correct way this time
      int state;
@@ -344,7 +343,8 @@ index f7f293a..1c754e6 100644
 +        if (zlibSym) {
 +            static bool zlibInited = false;
 +            if (!zlibInited) { ((ZlibInitFn)zlibSym)(); zlibInited = true; }
-+            rb_provide_feature("zlib");
++            int st2 = 0;
++            rb_eval_string_protect("$LOADED_FEATURES << 'zlib'", &st2);
 +            Debug() << "rgss: zlib fallback init done";
 +        }
          Debug() << "Could not load Zlib. If this is important, make sure Ruby was built with static extensions, or that"
