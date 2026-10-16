@@ -67,6 +67,10 @@ jobs:
             echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "commit: ${GITHUB_SHA::7} $(git log -1 --format=%s)"
             echo "date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo '## ruby/zlib build facts'
+            echo '```'
+            grep -E "zlib (static )?ext|Init_zlib|ruby static lib|with-zlib" build-mkxp.log 2>/dev/null || echo '(no zlib lines)'
+            echo '```'
             echo '```'
             grep -E "^COLLISION" build-mkxp.log 2>/dev/null || echo '(no collisions)'
             echo '```'

@@ -194,6 +194,8 @@ EOF
       --with-static-linked-ext \
       --with-out-ext=win32,win32ole,dbm,gdbm,coverage,fiddle,pty \
       --with-zlib-dir="$VCPKG_INSTALL" \
+      --with-zlib-include="$VCPKG_INSTALL/include" \
+      --with-zlib-lib="$VCPKG_INSTALL/lib" \
       cflags="$ARCH_FLAGS" LDFLAGS="$ARCH_FLAGS -L$VCPKG_INSTALL/lib" \
       CROSS_COMPILING=yes \
       ac_cv_func_getentropy=no \
@@ -218,11 +220,11 @@ EOF
       MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY" \
       ASFLAGS="$ARCH_FLAGS"
     # 自检：zlib 扩展必须真的编进来了（真机日志曾因缺它 require zlib LoadError）
-    if ls .ext/aarch64-darwin*/zlib/zlib.a >/dev/null 2>&1 \
-       || find .ext -name 'zlib.a' 2>/dev/null | grep -q .; then
-      echo "zlib static ext: OK"
+    if find .ext -name 'zlib.a' 2>/dev/null | grep -q .; then
+      echo "zlib static ext: OK ($(find .ext -name 'zlib.a' | tr '\n' ' '))"
     else
       echo "::warning::zlib 扩展未编译出来——检查 --with-zlib-dir 与 vcpkg 头文件"
+      find .ext -maxdepth 2 -type d 2>/dev/null | head -30
     fi
     # 交叉编译不能跑 make install（会执行目标架构二进制），手动收集产物。
     # 静态库可能叫 libruby.a 或 libruby-static.a，挑存在的那个。
@@ -232,6 +234,14 @@ EOF
     [ -f libruby-static.a ] && RUBY_A=libruby-static.a
     [ -f libruby.a ] && RUBY_A=libruby.a
     echo "ruby static lib: ${RUBY_A:-NONE}"
+    # 关键自检：libruby 里必须能找到 Init_zlib（require 'zlib' 运行时的实体）
+    if [ -n "$RUBY_A" ]; then
+      if nm "$RUBY_A" 2>/dev/null | grep -q "Init_zlib"; then
+        echo "libruby contains Init_zlib: OK"
+      else
+        echo "::error::libruby-static.a 里没有 Init_zlib——require zlib 运行时必失败"
+      fi
+    fi
     cp -f "$RUBY_A" "$PREFIX/lib/libruby-static.a"
     cp -f ./*.h "$PREFIX/include" 2>/dev/null || true
     cp -f ../*.h "$PREFIX/include/" 2>/dev/null || true
