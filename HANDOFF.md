@@ -2,9 +2,21 @@
 
 > 本文件专门写给「接手继续云编译」的会话/人。AI 记忆**不随仓库走**，所以把接力上下文写在这里。
 
-## 当前状态（2026-10-16）
+## 当前状态（2026-10-16，更新于 `15ab649`）
 
-- 最新提交：`625cbd5`（核心 force_load + 依赖按需加载）。已 `git push origin main`，**工作区干净**。
+> 里程碑盘点：
+
+| 里程碑 | 状态 | 说明 |
+|---|---|---|
+| M0 流水线 | ✅ | Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出 |
+| M1 编译/框架化 | ✅✅✅ | 双 workflow 全绿；`MKXP.framework` 含引擎；12 编译坑 + 6 链接坑全填平 |
+| M1 真机首测（闪退） | ✅ 已修 | 装包/壳/桥接/链接全通；点启动闪退 → `625cbd5` 派发到主线程修掉 |
+| M2 阶段一（导入+启动链路） | ✅ | 文件选择器/ZIP 导入/游戏库/启动·删除/日志对话框/透明浮层就位 |
+| **M2 关键 Bug：启动后无画面** | 🔧 已修待 CI 确认 | 点启动卡「正在启动」、无游戏画面 → `15ab649` 把阻塞事件循环甩后台线程 |
+| M2 阶段二（虚拟按键/设置/常驻日志） | ⬜ 未开始 | 见下 |
+
+- 最新提交：`15ab649`（引擎事件循环后台化）。其前 `625cbd5` 及更早均双 workflow 全绿；
+  **工作区干净**，已 `git push origin main`。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
 - **M1 全部完成 ✅✅✅**（`625cbd5` 起双 workflow 全绿）：
   - `MKXP.framework`：核心 = libmkxp + 静态 Ruby + SDL2_sound（`-force_load` 全量载入）；
@@ -12,15 +24,20 @@
   - `rpgxp-loader-ipa` **12.26MB**（M0 时约 7.5MB，差额 = 引擎 + 4.5MB CJK 字体），
     即 IPA 已含引擎；App 侧桥接（launch/quit/key）与透明浮层均已就位；
   - 编译期十二坑（#3/#6-#12）+ 链接期六坑（#13-#18）全填平。
-- **M1 剩余唯一事项：真机验证**——Sideloadly 装包 → 填游戏目录（如 `games/Essentials`）→
+- **M1 真机验证（已完成）**：Sideloadly 装包 → 填游戏目录（如 `games/Essentials`）→
   点「启动引擎」→ 看 `mkxp.log`（主界面有 启动/关机/读取原生日志 三按钮 + 目录输入框）。
-  **真机首测结果（2026-10-16）**：装包/Flutter 壳/桥接/链接全通，但**点启动即闪退**——
-  根因：引擎整体跑在后台 `std::thread`，SDL2 的 iOS 后端（UIWindow/CAEAGLLayer/UIKit
-  事件泵）只支持主线程。已修（`625cbd5` 之后的 `mkxp_framework.cpp` 改为
-  `dispatch_async(dispatch_get_main_queue())` 派发到主线程、立即返回）。若再崩，
-  取 iPhone 设置→隐私→分析与改进→分析数据里最新的 `rpgxpLoader-*.ips` 崩溃日志定位。
-  另注意：游戏文件目前只能经 Finder 文件共享进入沙盒（`Info.plist` 的
-  `UIFileSharingEnabled` 尚未开，需要的话 CI 加一步 patch）。
+  **真机首测（2026-10-16）**：装包/Flutter 壳/桥接/链接全通，但**点启动即闪退**——
+  根因：引擎整体跑后台 `std::thread`，SDL2 的 iOS 后端（UIWindow/CAEAGLLayer/UIKit
+  事件泵）只支持主线程。已修于 `625cbd5` 后的 `mkxp_framework.cpp`（`dispatch_async`
+  派发到主线程、立即返回）。若再崩，取 iPhone 设置→隐私→分析与改进→分析数据里最新的
+  `rpgxpLoader-*.ips` 崩溃日志定位。
+- **M2 关键 Bug（已修待 CI 确认，`15ab649`）**：闪退修掉后**点启动卡在「正在启动」、永远
+  不出现游戏画面**。根因：`EventThread.process()` 这个阻塞事件循环在主线程永不退出，占死
+  iOS 主线程 run loop → Core Animation 无法上屏（画面冻在 Flutter 浮层）。`15ab649` 把
+  SDL 初始化+建窗+起 RGSS 线程留在主线程（UIKit 安全，后台线程 SDL_Init/CreateWindow 会崩），
+  **阻塞事件循环与终止清理挪到后台 `std::thread`**，`mkxp_z_main` 立即返回 → 主线程 run loop
+  恢复、画面才上得去。**接手后先查 Actions 确认 `15ab649` 的 iOS 构建变绿。**
+- 游戏文件目前只能经 Finder 文件共享进入沙盒（`UIFileSharingEnabled` 尚未开，需的话 CI 加 patch）。
 - 已跑通的子步骤（CI 已验证）：
   - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` + 头文件 staged；
   - vcpkg `arm64-ios-static` 静态 triplet 编出全部 C 依赖；
@@ -38,8 +55,9 @@
 - `Mkxp.launchGame` 改为透出错误（PlatformException，message 含 mkxp_run 返回码含义）。
 
 **阶段二（界面功能，未开始）**：虚拟摇杆+动作键（Essentials 键位）、设置页、常驻日志页。
-注意：引擎占主线程期间 Flutter 界面冻结——阶段二做浮层前需先解决这个
-（候选：原生 overlay UIWindow 盖在 SDL 窗口上，按钮直调 mkxp_key，不依赖 Flutter 主线程）。
+引擎事件循环已挪到后台线程（`15ab649`），主线程不再被占死，Flutter 浮层在引擎未启动时
+可正常响应；但游戏运行时 SDL 全屏窗口盖在最上层、吞掉触摸，阶段二做浮层按键时需用原生
+overlay UIWindow 盖在 SDL 窗口上、按钮直调 `mkxp_key`（不依赖 Flutter 主线程）。
 
 ## 环境要求
 
@@ -183,18 +201,21 @@
     （Runner 自身引用 mkxp_run/mkxp_key/mkxp_quit，未决状态在链接最开始就存在，顺序无关）；
     MKXP.framework 经 frameworks 阶段按需链接。
 
-## 下一步该做什么（编译关已通，2026-10-16）
+## 下一步该做什么（2026-10-16 更新）
 
-`libmkxp.a` → `MKXP.framework`（9.96MB）已由 `e7d7019` 的 CI 产出，编译期十二个坑全部填平。
-接下来按优先级做「M1 后续必做」A/B/C（见下），把引擎接进 App：
+编译关 + 引擎接入（A 引擎入口 / B 透明浮层 / C workflow 串接）**已全部完成**，IPA 已含引擎、
+App 可启动引擎。当前真实待办，按优先级：
 
-1. **A（引擎入口）**：`main.cpp` 的 `int main()` → `mkxp_run(gamePath)` 后台线程 + `mkxp_key`/`mkxp_quit`；
-   注意 `int main()` 目前仍编在静态库里，不解决的话最终链进 Flutter App 会符号冲突。
-2. **C（workflow 串接）**：`ios.yml` 加 `needs: build-mkxp` + `download-artifact` 取 `MKXP-framework`，
-   否则 App 包里永远没有引擎。
-3. **B（Flutter 侧）**：桥接改透明浮层（依赖 A 的 `mkxp_run`）。
+1. **【最高优先】真机验证 `15ab649`**：侧载最新 IPA → 导入游戏 → 点启动，确认**不再卡「正在启动」、
+   游戏画面正常出现**。`15ab649` 的 iOS 构建在我写文档时尚未出结果，接手第一步先查 Actions 确认绿，
+   再上真机。若仍无画面/崩，取 iPhone 上 `rpgxpLoader-*.ips` 崩溃日志，对照 `framework-entry.patch`
+   的线程拆分与 `mkxp_framework.cpp` 的 `g_engineRunning` 复位逻辑排查。
+2. **M2 阶段二（未开始）**：虚拟摇杆+动作键（Essentials 键位）、设置页、常驻日志页。游戏运行时
+   SDL 全屏窗盖在最上层吞触摸，浮层按键要走原生 overlay UIWindow + `mkxp_key`（见 M2 进度段）。
+3. **可选打磨**：开 `UIFileSharingEnabled` 让游戏文件可经 Finder 文件共享进沙盒；横竖屏/触感适配；
+   `mkxp.log` 实时刷新等。
 
-## M1 后续必做（`libmkxp.a` 编通后）
+## M1 后续必做（`libmkxp.a` 编通后，A/B/C 均已实现，仅作决策留档）
 
 **A. 重构 `src/main.cpp` 的 `int main()` → `mkxp_run(const char* gamePath)`**
 - 去掉 `uiView` 参数（浮层方案：SDL 自建全屏窗口，不需要 Flutter 给 UIView）；
@@ -220,6 +241,34 @@
 **SDL 全屏窗 + Flutter 透明浮层**。理由：mkxp-z 是独立 app、永远自己 `SDL_CreateWindow`，
 无 `SDL_CreateWindowFrom` / `SDL_WINDOW_EXTERNAL`，也无 iOS UIView 嵌入代码，只导出标准
 `int main()`。详见 README「嵌入方式决策」一节。
+
+## 接手须知 / 协作约定（来自 AI 记忆，跨电脑保留）
+
+> 换电脑后 AI 记忆不随仓库走，这几条是踩过坑才定下的，务必遵守：
+
+1. **进度汇报要给「里程碑表」，不是只报当前单步**。每次 CI 出结果或被人问进度，先甩一张
+   整体进度表（M0/M1/M2 各子项 完成/进行中/未开始），再讲细节。用户连续两次追问
+   "现在到哪一步了" 才意识到单步汇报不够用。
+2. **本仓库 commit message 绝对不能出现 `[skip ci]`（正文也不行）**。GitHub 只要在 HEAD
+   提交信息**任意位置**看到这串就跳过 workflow，白等一轮 16 分钟。需要提"跳过机制"时写成
+   `skip 标记` / `skip-ci`（去掉方括号）。若推送后 CI 没触发，第一反应查 HEAD 提交信息。
+3. **免登录轮询 `api.github.com` 限额 60 次/小时**，CI 轮询要节制；配了 token 自动升到 5000。
+   查失败摘要优先读 `ci-status` / `ci-status-ios` 分支的 `last-failure.md`（公开仓库免登录）。
+4. **给 CI `git apply` 用的 patch 千万别带 CRLF**。在本机（Windows）用 Python 生成 patch 时，
+   写文件必须 `open(path, "w", encoding="utf-8", newline="\n")`——否则 Windows 默认把 `\n`
+   转 `\r\n`，patch 在 Linux 的 `git apply` 行尾对不上（CI 大多能容错，但本机校验会假失败、
+   误以为 patch 写错）。本会话的 `framework-entry.patch` 已因此重生成过，切记。
+5. **框架化改动只动两处**：`scripts/mkxp-framework/framework-entry.patch`（作用于 mkxp-z
+   v2.4.2 源码：input.cpp 的 rgssKey→scancode 反查表 + main.cpp 的线程拆分）+ 
+   `scripts/mkxp-framework/mkxp_framework.cpp`（引擎入口 `mkxp_run`/`mkxp_key`/`mkxp_quit`
+   与 `g_engineRunning` 标志）。**改 mkxp-z 源码一律走 patch，不要直接改 clone**——CI 每次
+   重新 clone mkxp-z 再 apply，直接改本地 clone 不会进仓库。
+6. **线程模型（2026-10-16 定型）**：SDL_Init / 建窗 / 起 RGSS 线程在主线程（UIKit 安全，
+   后台线程 `SDL_Init(VIDEO)`/`SDL_CreateWindow` 直接崩）；`EventThread.process()` 这个阻塞
+   事件循环由 `mkxp_z_main` 内部甩到后台 `std::thread`，`mkxp_z_main` 立即返回，主线程 run loop
+   不被占死 → Core Animation 才上得了屏。`MKXPZ_INIT_GL_LATER` 已在 CMake 定义，GL 上下文在
+   rgssThread 创建，与事件循环线程无关。`g_engineRunning` 由后台线程在引擎真正退出时复位，
+   框架层 `mkxp_run` 用它防重入（去掉了原 `static` 以便 main.cpp `extern` 引用）。
 
 ## 关键文件速查
 
