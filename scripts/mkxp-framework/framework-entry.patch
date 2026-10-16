@@ -316,30 +316,52 @@ index 355b698..91ddec7 100644
                          gameScreen.x = event.user.windowID;
                          gameScreen.y = event.user.code;
 diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
-index f7f293a..a2715e6 100644
+index f7f293a..66216fb 100644
 --- a/binding/binding-mri.cpp
 +++ b/binding/binding-mri.cpp
-@@ -55,10 +55,11 @@ extern "C" {
+@@ -55,10 +55,12 @@ extern "C" {
  #endif
  
  #include <assert.h>
  #include <string>
  #include <zlib.h>
 +#include <chrono>
++#include <dlfcn.h>
  
  #include <SDL_cpuinfo.h>
  #include <SDL_filesystem.h>
  #include <SDL_loadso.h>
  #include <SDL_power.h>
-@@ -863,10 +864,18 @@ bool evalScript(VALUE string, const char *filename)
+@@ -272,10 +274,21 @@ static void mriBindingInit() {
+     
+     // Automatically load zlib if it's present -- the correct way this time
+     int state;
+     rb_eval_string_protect("require('zlib') if !Kernel.const_defined?(:Zlib)", &state);
+     if (state) {
++        /* iOS 兜底：交叉编译产物里可能没有 Ruby 的 zlib 扩展（`require`
++         * 失败）。若二进制里能找到 Init_zlib（构建时手工合并进 libruby），
++         * 直接初始化并注册特性，让后续 require "zlib" 命中而非抛出。*/
++        typedef void (*ZlibInitFn)(void);
++        void *zlibSym = dlsym(RTLD_DEFAULT, "Init_zlib");
++        if (zlibSym) {
++            static bool zlibInited = false;
++            if (!zlibInited) { ((ZlibInitFn)zlibSym)(); zlibInited = true; }
++            rb_provide_feature("zlib");
++            Debug() << "rgss: zlib 兜底初始化完成";
++        }
+         Debug() << "Could not load Zlib. If this is important, make sure Ruby was built with static extensions, or that"
+         << ((MKXPZ_PLATFORM == MKXPZ_PLATFORM_MACOS) ? "zlib.bundle" : "zlib.so")
+         << "is present and reachable by Ruby's loadpath.";
+     }
+     
+@@ -863,10 +876,17 @@ bool evalScript(VALUE string, const char *filename)
  }
  
  
  #define SCRIPT_SECTION_FMT (rgssVer >= 3 ? "{%04ld}" : "Section%03ld")
  
 +
-+/* iOS 嵌入式调试：脚本加载进度打点——真机日志此前在 Essentials 启动期
-+ * 全程无输出，无法区分「慢」与「卡死」。 */
++/* iOS 嵌入式调试：脚本加载进度打点，区分「慢」与「卡死」。*/
 +static long long msSinceStart() {
 +    static const auto t0 = std::chrono::steady_clock::now();
 +    return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -350,7 +372,7 @@ index f7f293a..a2715e6 100644
      const std::string &scriptPack = conf.game.scripts;
      
      if (scriptPack.empty()) {
-@@ -896,10 +905,11 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -896,10 +916,11 @@ static void runRMXPScripts(BacktraceData &btData) {
      }
      
      rb_gv_set("$RGSS_SCRIPTS", scriptArray);
@@ -362,7 +384,7 @@ index f7f293a..a2715e6 100644
      decodeBuffer.resize(0x1000);
      
      for (long i = 0; i < scriptCount; ++i) {
-@@ -941,12 +951,15 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -941,11 +962,14 @@ static void runRMXPScripts(BacktraceData &btData) {
              showMsg(buffer);
              
              break;
@@ -371,14 +393,13 @@ index f7f293a..a2715e6 100644
 +        if ((i % 100) == 0)
 +            Debug() << "rgss: inflate " << i << "/" << scriptCount << " (t=" << msSinceStart() << "ms)";
          rb_ary_store(script, 3, rb_utf8_str_new_cstr(decodeBuffer.c_str()));
-     }
 +    Debug() << "rgss: all scripts inflated (t=" << msSinceStart() << "ms)";
+     }
      
      /* Execute preloaded scripts */
      for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
           i != conf.preloadScripts.end(); ++i)
-         runCustomScript(*i);
-@@ -955,10 +968,12 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -955,10 +979,12 @@ static void runRMXPScripts(BacktraceData &btData) {
      if (exc != Qnil)
          return;
      

@@ -249,6 +249,24 @@ EOF
     [ -f libruby-static.a ] && RUBY_A=libruby-static.a
     [ -f libruby.a ] && RUBY_A=libruby.a
     echo "ruby static lib: ${RUBY_A:-NONE}"
+
+    # 手工编译 zlib 扩展并合进 libruby：交叉编译下 `make build-ext` 用 HOST ruby 的
+    # RbConfig（macOS 编译器）产不出 iOS 对象，扩展等于没编。这里直接用 iOS 工具链
+    # 编译 ext/zlib/zlib.c，再 libtool 合进静态库；binding-mri.cpp 会用 dlsym 兜底
+    # 调 Init_zlib + rb_provide_feature，让 require "zlib" 命中。
+    ZLIB_C="$RUBY_SRC/ext/zlib/zlib.c"
+    if [ -f "$ZLIB_C" ] && [ -n "$RUBY_A" ]; then
+      echo "== 手工编译 zlib 扩展 =="
+      clang $ARCH_FLAGS -O2 -fPIC -DHAVE_ZLIB_H -c "$ZLIB_C" -o zlib_ext.o \
+        -I"$PREFIX/include" -I"$PREFIX/include/ruby" -I"../include" -I".." -I"." \
+        -I"$RUBY_SRC" -I"$RUBY_SRC/include" -I"$VCPKG_INSTALL/include" 2>&1 | tail -5 || true
+      if [ -f zlib_ext.o ]; then
+        libtool -static -o "$RUBY_A.new" "$RUBY_A" zlib_ext.o && mv -f "$RUBY_A.new" "$RUBY_A"
+        echo "zlib 扩展已合并进 $RUBY_A"
+      else
+        echo "::warning::zlib_ext.o 未生成（头文件路径？），zlib 仍不可用"
+      fi
+    fi
     # 关键自检：libruby 里必须能找到 Init_zlib（require 'zlib' 运行时的实体）
     if [ -n "$RUBY_A" ]; then
       if nm "$RUBY_A" 2>/dev/null | grep -q "Init_zlib"; then
