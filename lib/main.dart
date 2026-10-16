@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'services/game_library.dart';
 import 'services/mkxp.dart';
-import 'widgets/game_view.dart';
 
 void main() => runApp(const MyApp());
 
@@ -20,103 +22,178 @@ class GameScreen extends StatefulWidget {
 }
 
 class _GameScreenState extends State<GameScreen> {
-  String _log = '尚未读取';
-  final _gamePathController = TextEditingController(text: 'games/Essentials');
+  List<GameInfo> _games = [];
+  bool _loading = true;
+  bool _importing = false;
+  String _status = '';
 
   @override
-  void dispose() {
-    _gamePathController.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    setState(() => _loading = true);
+    final games = await GameLibrary.scan();
+    if (!mounted) return;
+    setState(() {
+      _games = games;
+      _loading = false;
+    });
+  }
+
+  Future<void> _import() async {
+    setState(() {
+      _importing = true;
+      _status = '正在选择并解压…（大游戏请稍候）';
+    });
+    try {
+      final name = await GameLibrary.importZip();
+      setState(() => _status = name.isEmpty ? '已取消导入' : '导入完成：$name');
+      if (name.isNotEmpty) await _refresh();
+    } catch (e) {
+      setState(() => _status = '导入失败：$e');
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  Future<void> _launch(GameInfo g) async {
+    setState(() => _status = '正在启动 ${g.name}…');
+    try {
+      await Mkxp.launchGame('games/${g.name}');
+      // 启动成功：引擎跑在主线程，界面随后冻结（M1 已知状态，属正常）
+      if (mounted) setState(() => _status = '${g.name} 运行中');
+    } on PlatformException catch (e) {
+      if (mounted) setState(() => _status = '启动失败：${e.message}');
+    }
+  }
+
+  Future<void> _delete(GameInfo g) async {
+    await GameLibrary.delete(g.name);
+    setState(() => _status = '已删除 ${g.name}');
+    await _refresh();
+  }
+
+  Future<void> _showLog() async {
+    final log = await Mkxp.readLog();
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('mkxp.log',
+            style: TextStyle(color: Colors.white70, fontSize: 14)),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 320,
+          child: SingleChildScrollView(
+            child: Text(log,
+                style: const TextStyle(color: Colors.white54, fontSize: 10)),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭')),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: Colors.black,
-        body: Stack(
-          children: [
-            // 游戏画面由 MKXP 的 SDL 全屏窗口渲染；这里是透明控件浮层（M1 起）
-            const GameView(),
-            Positioned(
-              top: 48,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Container(
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.1),
+                    color: Colors.white.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: const Text('M1 · 引擎已链接，启动后由 SDL 全屏窗渲染',
+                  child: const Text('M2 · 游戏库（MKXP-Z 引擎）',
                       style: TextStyle(color: Colors.white70)),
                 ),
-              ),
-            ),
-            Positioned(
-              bottom: 176,
-              left: 24,
-              right: 24,
-              child: Center(
-                child: Text(_log,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white54, fontSize: 10)),
-              ),
-            ),
-            Positioned(
-              bottom: 112,
-              left: 24,
-              right: 24,
-              child: TextField(
-                controller: _gamePathController,
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-                decoration: const InputDecoration(
-                  labelText: '游戏目录（相对 Documents，如 Essentials）',
-                  labelStyle: TextStyle(color: Colors.white38, fontSize: 11),
-                  enabledBorder: UnderlineInputBorder(
-                      borderSide: BorderSide(color: Colors.white24)),
+                const SizedBox(height: 8),
+                Text(_status,
+                    style: const TextStyle(color: Colors.amber, fontSize: 11)),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: _loading
+                      ? const Center(
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : _games.isEmpty
+                          ? const Center(
+                              child: Text(
+                                '还没有游戏\n\n点下方「导入游戏」选择游戏 Zip，\n或用 iTunes 文件共享把游戏文件夹\n放进 Documents/',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                    color: Colors.white38, fontSize: 12),
+                              ),
+                            )
+                          : RefreshIndicator(
+                              onRefresh: _refresh,
+                              child: ListView.separated(
+                                itemCount: _games.length,
+                                separatorBuilder: (_, __) =>
+                                    const Divider(color: Colors.white12, height: 1),
+                                itemBuilder: (_, i) {
+                                  final g = _games[i];
+                                  return ListTile(
+                                    title: Text(g.name,
+                                        style: const TextStyle(
+                                            color: Colors.white)),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(
+                                              Icons.delete_outline,
+                                              color: Colors.white38),
+                                          tooltip: '删除',
+                                          onPressed: () => _delete(g),
+                                        ),
+                                        ElevatedButton(
+                                          onPressed: () => _launch(g),
+                                          child: const Text('启动'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
                 ),
-              ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: _importing ? null : _import,
+                      icon: _importing
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.folder_zip_outlined, size: 18),
+                      label: Text(_importing ? '解压中…' : '导入游戏'),
+                    ),
+                    OutlinedButton(
+                        onPressed: _refresh, child: const Text('刷新')),
+                    OutlinedButton(
+                        onPressed: _showLog, child: const Text('日志')),
+                  ],
+                ),
+              ],
             ),
-            Positioned(
-              bottom: 40,
-              left: 0,
-              right: 0,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  ElevatedButton(
-                    onPressed: () async {
-                      final path = _gamePathController.text.trim();
-                      if (path.isEmpty) return;
-                      setState(() => _log = '正在启动引擎：$path …');
-                      await Mkxp.launchGame(path);
-                      final log = await Mkxp.readLog();
-                      setState(() => _log = log);
-                    },
-                    child: const Text('启动引擎'),
-                  ),
-                  const SizedBox(width: 12),
-                  ElevatedButton(
-                    onPressed: () async {
-                      await Mkxp.quitGame();
-                      final log = await Mkxp.readLog();
-                      setState(() => _log = log);
-                    },
-                    child: const Text('关机'),
-                  ),
-                  const SizedBox(width: 12),
-                  ElevatedButton(
-                    onPressed: () async {
-                      final log = await Mkxp.readLog();
-                      setState(() => _log = log);
-                    },
-                    child: const Text('读取原生日志'),
-                  ),
-                ],
-              ),
-            ),
-          ],
+          ),
         ),
       );
 }

@@ -27,6 +27,20 @@
   - `SDL2_sound` v2.0.6 源码交叉编译出 `libSDL2_sound.a`；
   - mkxp-z v2.4.2 编译 + 框架化入口 `mkxp_run/mkxp_key/mkxp_quit`（M1-A）。
 
+## M2 进度（2026-10-16 起）
+
+**阶段一（导入+启动链路，进行中）**：
+- 依赖：`file_picker`（选 Zip）、`archive`（解压）、`path_provider`（沙盒目录）；
+- `lib/services/game_library.dart`：扫描 `Documents/games/`（顶层含 Game.ini 即一个游戏）、
+  Zip 导入（自动定位游戏根——兼容「根目录直铺」与「套一层文件夹」两种打包，跳过
+  `__MACOSX`/`.DS_Store`/`._*`）、删除游戏；
+- `lib/main.dart`：游戏库界面（列表 + 启动/删除 + 导入 + 刷新 + 日志对话框）；
+- `Mkxp.launchGame` 改为透出错误（PlatformException，message 含 mkxp_run 返回码含义）。
+
+**阶段二（界面功能，未开始）**：虚拟摇杆+动作键（Essentials 键位）、设置页、常驻日志页。
+注意：引擎占主线程期间 Flutter 界面冻结——阶段二做浮层前需先解决这个
+（候选：原生 overlay UIWindow 盖在 SDL 窗口上，按钮直调 mkxp_key，不依赖 Flutter 主线程）。
+
 ## 环境要求
 
 ### 本地（另一台电脑）——只需能推代码，其余全在云端

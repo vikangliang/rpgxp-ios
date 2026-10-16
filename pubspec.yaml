@@ -13,7 +13,10 @@ dependencies:
   # 原生桥接插件（承载 MKXP 引擎与 UiKitView），源码在 ./mkxp
   mkxp:
     path: ./mkxp
-  # M2 将在此添加：file_picker、archive（导入/解压游戏）
+  # M2：导入/解压游戏 + 沙盒目录
+  file_picker: ^13.1.0
+  archive: ^4.5.2
+  path_provider: ^2.1.6
 
 dev_dependencies:
   flutter_test:

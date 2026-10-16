@@ -44,11 +44,10 @@ class Mkxp {
   }
 
   /// 启动引擎。gamePath 为游戏目录（含 Game.ini/Data/），相对路径由原生侧
-  /// 按沙盒 Documents 解析（M2 导入解压的目标目录）。
+  /// 按沙盒 Documents 解析（如 'games/Essentials'）。
+  /// 失败会抛出 PlatformException（code=runFailed/badArgs，message 含返回码含义）。
   static Future<void> launchGame(String gamePath) async {
-    try {
-      await _ch.invokeMethod('launch', {'path': gamePath});
-    } catch (_) {}
+    await _ch.invokeMethod('launch', {'path': gamePath});
   }
 
   /// 请求关机（引擎走完清理流程后线程退出）。
