@@ -8,10 +8,15 @@
 # vendored_frameworks 仅让 pod 编译期能找到 MKXP 模块（import MKXP），App 的
 # 最终链接阶段看不到该框架，于是 Undefined symbol: _mkxp_run/_mkxp_key/_mkxp_quit。
 #
-# 故在 flutter create 生成工程后、flutter build ios 前，用本脚本把框架加进
-# Runner 的 "Link Binary With Libraries"，并把引擎所需的系统框架/静态库
-# （与 scripts/mkxp-cmake/CMakeLists.txt 的 target_link_libraries 对应）
-# 补进 Runner 的 OTHER_LDFLAGS。
+# 故在 flutter create 生成工程后、flutter build ios 前，用本脚本给 Runner 补：
+#   1. FRAMEWORK_SEARCH_PATHS：插件目录（Runner 在 ios/，框架在仓库根 mkxp/ios/）；
+#   2. OTHER_LDFLAGS：-framework MKXP + 引擎所需系统框架/静态库（与
+#      scripts/mkxp-cmake/CMakeLists.txt 的 target_link_libraries 对应）。
+#
+# 注意【不要】再加 -force_load，也【不要】再把框架加进 "Link Binary With Libraries"：
+# 两种机制与 -framework 重复加载同一个静态归档会产生大量 duplicate symbols
+# （实测 875 个）。按需加载即可——引擎内部高度互联，mkxp_run 被引用会递归拉起
+# 所有依赖成员。
 #
 # 用法： ruby scripts/ios-link-mkxp.rb [Runner.xcodeproj 路径] [MKXP.framework 路径]
 
@@ -31,21 +36,6 @@ project = Xcodeproj::Project.open(proj_path)
 target = project.targets.find { |t| t.name == 'Runner' }
 abort "Runner target not found in #{proj_path}" unless target
 
-# 以相对工程目录的路径加入 Frameworks 组（避免绝对路径写进工程文件）
-proj_dir = File.expand_path(File.dirname(proj_path))
-rel_from_proj = Pathname.new(fw_abs).relative_path_from(Pathname.new(proj_dir)).to_s
-group = project.main_group
-ref = group.files.find { |f| f.real_path.to_s == fw_abs }
-ref ||= group.new_file(rel_from_proj)
-
-phase = target.frameworks_build_phase
-if phase.files_references.include?(ref)
-  puts "#{fw_rel} already in link phase"
-else
-  phase.add_file_reference(ref)
-  puts "added #{fw_rel} to Runner Link Binary With Libraries"
-end
-
 # 引擎（libtool -static 合并产物）不携带依赖信息，App 链接所需的系统框架/库在此补齐。
 ENGINE_FRAMEWORKS = %w[
   UIKit Foundation QuartzCore CoreGraphics GameController
@@ -64,11 +54,11 @@ target.build_configurations.each do |config|
   search << marker unless search.include?(marker)
   settings['FRAMEWORK_SEARCH_PATHS'] = search
 
-  # 2) 链接参数：force_load 静态归档（按需抽取可能漏符号，全量载入更稳）
+  # 2) 链接参数：-framework MKXP + 系统框架/库
   flags = settings['OTHER_LDFLAGS'] || ['$(inherited)']
   flags = [flags] if flags.is_a?(String)
-  force = %(-force_load "$(SRCROOT)/../mkxp/ios/MKXP.framework/MKXP")
-  flags << force unless flags.include?(force)
+  fw_flag = '-framework "MKXP"'
+  flags << fw_flag unless flags.include?(fw_flag)
   ENGINE_FRAMEWORKS.each do |fw|
     flag = %(-framework "#{fw}")
     flags << flag unless flags.include?(flag)
@@ -81,4 +71,4 @@ target.build_configurations.each do |config|
 end
 
 project.save
-puts "saved #{proj_path} (force_load + #{ENGINE_FRAMEWORKS.size} frameworks + #{ENGINE_LIBS.size} libs)"
+puts "saved #{proj_path} (-framework MKXP + #{ENGINE_FRAMEWORKS.size} frameworks + #{ENGINE_LIBS.size} libs)"
