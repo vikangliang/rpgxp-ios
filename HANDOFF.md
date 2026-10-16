@@ -4,16 +4,18 @@
 
 ## 当前状态（2026-10-16）
 
-- 最新提交：`863fa6d`（xxd 清单补 wqymicrohei.ttf）。待 `git push origin main` 触发下一轮 CI。
+- 最新提交：`e7d7019`（修 binding 层两个错误）。已 `git push origin main`，**工作区干净**。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
-- **M1 进行中**，卡在「手搓 CMake 编译 `libmkxp.a`」这一关。configure / xxd / find_library / 头文件路径
-  / assert 截胡 / Metal 守卫 / TTF_Font 改名 / CJK 字体均已过（坑 #3/#6-#10），编译进度约 81%，
-  当前卡点为 binding 层：`system()` iOS 不可用 + 根相对 include 缺源码根（坑 #11/#12，已修），待验证。
+- **M1 编译关已通** ✅✅：`e7d7019` 起 `build-mkxp.yml` 全绿——`libmkxp.a` 编通并合并出
+  `MKXP.framework`（artifact 9.96MB = libmkxp + 全部 vcpkg 静态依赖 + libruby-static + 4.5MB CJK 字体）。
+  configure / xxd / find_library / 头文件路径 / assert 截胡 / Metal 守卫 / TTF_Font 改名 / CJK 字体 /
+  system() / 根相对 include 十关全过（坑 #3/#6-#12）。
+- **M1 剩余**：见下方「M1 后续必做」A/B/C（`mkxp_run()` 重构 → 透明浮层 → workflow 串接），
+  改的是 C++/Swift/Dart/workflow，引擎本体已不必再大改。
 - 已跑通的子步骤（CI 已验证）：
   - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` 链接成功 + 头文件 staged；
   - vcpkg `arm64-ios-static` 静态 triplet 编出全部 C 依赖（脚本内有诊断会列出 `libSDL2*` 等）；
   - `SDL2_sound` v2.0.6 源码交叉编译出 `libSDL2_sound.a` 成功。
-- 两个前置炸弹已修（见下「已踩的坑」）。
 
 ## 环境要求
 
@@ -107,20 +109,16 @@
 12. **binding 层按仓库根相对路径 include**：`binding/*.cpp` 有 4 处 `#include "src/..."`
     （util.h/config.h），需把 `${MKXP_SRC}` 本身加进 MKXP_INC（此前只有 src/ 各子目录）。
 
-## 下一步该看什么（`ffc7dfa` 之后的构建）
+## 下一步该做什么（编译关已通，2026-10-16）
 
-`ffc7dfa`（xxd 修复）+ `c02b881`（find_library 修复）都已在树里，下一次 build-mkxp.yml 会一起吃进去。预期顺序：
+`libmkxp.a` → `MKXP.framework`（9.96MB）已由 `e7d7019` 的 CI 产出，编译期十二个坑全部填平。
+接下来按优先级做「M1 后续必做」A/B/C（见下），把引擎接进 App：
 
-1. **cmake configure**：若 `find_library` 仍挂，看诊断输出里 `libSDL2` 的**真实形态**
-   （`.a` 还是 `.framework`），据实在 `find_mkxp_lib` 补匹配规则。
-2. **cmake build / xxd 生成**：确认 `gen/` 下 `.xxd` 产出、符号名 `___shader_*` 正确。
-3. **mkxp-z C++ 真正编译** → 深水区（逐条 error 贴回，按文件定位）：
-   - GLES2 后端在某 iOS SDK 上的兼容（已 `-DGLES2_HEADER`；`MKXPZ_INIT_GL_LATER` 控制 init 时机）；
-   - iOS 缺失的 POSIX API（已处理 `system()`/`vm_dump`，可能还有别的）；
-   - openal-soft `ALCdevice` 结构体名（已 `-DMKXPZ_ALCDEVICE=ALCdevice`）；
-   - `src/main.cpp` 的 `int main()` 编进静态库 OK，但**最终链接进 Flutter App 会冲突**（见下 A）。
-4. `libmkxp.a` 编通后，`build-mkxp.yml` 的 stage 5 会用 `libtool -static` 把
-   `libmkxp.a` + 全部 vcpkg `.a` + `libruby-static.a` 合并成 `MKXP.framework`。
+1. **A（引擎入口）**：`main.cpp` 的 `int main()` → `mkxp_run(gamePath)` 后台线程 + `mkxp_key`/`mkxp_quit`；
+   注意 `int main()` 目前仍编在静态库里，不解决的话最终链进 Flutter App 会符号冲突。
+2. **C（workflow 串接）**：`ios.yml` 加 `needs: build-mkxp` + `download-artifact` 取 `MKXP-framework`，
+   否则 App 包里永远没有引擎。
+3. **B（Flutter 侧）**：桥接改透明浮层（依赖 A 的 `mkxp_run`）。
 
 ## M1 后续必做（`libmkxp.a` 编通后）
 
