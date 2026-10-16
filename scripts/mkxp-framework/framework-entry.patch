@@ -315,3 +315,48 @@ index 355b698..91ddec7 100644
                      case UPDATE_SCREEN_RECT :
                          gameScreen.x = event.user.windowID;
                          gameScreen.y = event.user.code;
+diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
+index f7f293a..aa0a089 100644
+--- a/binding/binding-mri.cpp
++++ b/binding/binding-mri.cpp
+@@ -896,10 +896,11 @@ static void runRMXPScripts(BacktraceData &btData) {
+     }
+     
+     rb_gv_set("$RGSS_SCRIPTS", scriptArray);
+     
+     long scriptCount = RARRAY_LEN(scriptArray);
++    Debug() << "rgss: Scripts.rxdata loaded, N=" << scriptCount << " (t=" << SDL_GetTicks() << "ms)";
+     
+     std::string decodeBuffer;
+     decodeBuffer.resize(0x1000);
+     
+     for (long i = 0; i < scriptCount; ++i) {
+@@ -941,12 +942,15 @@ static void runRMXPScripts(BacktraceData &btData) {
+             showMsg(buffer);
+             
+             break;
+         }
+         
++        if ((i % 100) == 0)
++            Debug() << "rgss: inflate " << i << "/" << scriptCount << " (t=" << SDL_GetTicks() << "ms)";
+         rb_ary_store(script, 3, rb_utf8_str_new_cstr(decodeBuffer.c_str()));
+     }
++    Debug() << "rgss: all scripts inflated (t=" << SDL_GetTicks() << "ms)";
+     
+     /* Execute preloaded scripts */
+     for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
+          i != conf.preloadScripts.end(); ++i)
+         runCustomScript(*i);
+@@ -955,10 +959,12 @@ static void runRMXPScripts(BacktraceData &btData) {
+     if (exc != Qnil)
+         return;
+     
+     while (true) {
+         for (long i = 0; i < scriptCount; ++i) {
++            if ((i % 50) == 0)
++                Debug() << "rgss: exec " << i << "/" << scriptCount << " (t=" << SDL_GetTicks() << "ms)";
+             VALUE script = rb_ary_entry(scriptArray, i);
+             VALUE scriptDecoded = rb_ary_entry(script, 3);
+             VALUE string =
+             newStringUTF8(RSTRING_PTR(scriptDecoded), RSTRING_LEN(scriptDecoded));
+             
