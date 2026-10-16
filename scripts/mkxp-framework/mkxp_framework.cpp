@@ -94,6 +94,17 @@ int mkxp_run(const char *gamePath)
      * requestGeometryUpdate 配合，避免 SDL 建窗后旋转/尺寸错乱。 */
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeRight LandscapeLeft");
 
+    /* Ruby GC 调优（iOS 无 JIT，Ruby 只能纯解释执行）：Essentials 启动期要
+     * 解释 1MB 脚本并定义上万对象（宝可梦/技能/道具…），默认 GC 阈值会触发
+     * 海量 GC，是启动慢的主因。放大堆初始槽位与 malloc 阈值可显著缩短启动时间。
+     * ruby_init 会读取这些环境变量，故必须在引擎线程创建 VM 之前设置。 */
+    setenv("RUBY_GC_HEAP_INIT_SLOTS", "2000000", 0);
+    setenv("RUBY_GC_HEAP_GROWTH_FACTOR", "2.0", 0);
+    setenv("RUBY_GC_MALLOC_LIMIT", "256000000", 0);
+    setenv("RUBY_GC_OLDMALLOC_LIMIT", "256000000", 0);
+    setenv("RUBY_GC_MALLOC_LIMIT_MAX", "512000000", 0);
+    setenv("RUBY_GC_OLDMALLOC_LIMIT_MAX", "512000000", 0);
+
     /* 引擎初始化（SDL_Init/建窗/RGSS 线程）在主线程（UIKit 安全），阻塞事件循环由
      * mkxp_z_main 内部甩到后台线程；本函数立即返回，主线程 run loop 不被占死，iOS 合成器
      * 才能上屏。g_engineRunning 由后台线程在引擎真正退出时复位。argv 用块内复合字面量，避免悬空指针。 */
