@@ -4,6 +4,8 @@ import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'app_settings.dart';
+
 /// 一个已安装的游戏。
 class GameInfo {
   final String name;
@@ -49,6 +51,18 @@ class GameLibrary {
     final dir = await gamesDir();
     final target = Directory('${dir.path}/$name');
     if (await target.exists()) await target.delete(recursive: true);
+  }
+
+  /// 重命名游戏目录，并迁移以游戏名为键的统计（时长/次数/最近游玩）。
+  static Future<void> rename(String oldName, String newName) async {
+    final clean = newName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_').trim();
+    if (clean.isEmpty || clean == oldName) return;
+    final dir = await gamesDir();
+    final from = Directory('${dir.path}/$oldName');
+    final to = Directory('${dir.path}/$clean');
+    if (await to.exists()) throw Exception('已存在同名游戏');
+    await from.rename(to.path);
+    await AppSettings.migrateName(oldName, clean);
   }
 
   /// 导入 Zip：选择文件 → 解压到 games/<名>/，返回游戏名（取消返回空串）。

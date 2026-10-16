@@ -31,6 +31,7 @@ class _GameRunPageState extends State<GameRunPage> {
     await Mkxp.setKeepAwake(settings.keepAwake);
     await Mkxp.setOrientation(settings.lockLandscape);
     await AppSettings.touchLastPlayed(widget.game.name);
+    await AppSettings.addPlayCount(widget.game.name);
     try {
       await Mkxp.launchGame('games/${widget.game.name}');
       if (!mounted) return;

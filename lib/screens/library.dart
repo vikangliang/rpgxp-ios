@@ -4,8 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../services/app_settings.dart';
 import '../services/game_library.dart';
-import '../services/mkxp.dart';
-import 'game_run.dart';
+import 'game_detail.dart';
 
 /// 游戏库页（M2）——「我的游戏」：
 /// 搜索栏 + 排序/筛选行 + 游戏列表（圆形图标/名称/引擎副标题/最近游玩）。
@@ -226,7 +225,7 @@ class _LibraryPageState extends State<LibraryPage> {
   Widget _gameTile(GameInfo g) => InkWell(
         onTap: () async {
           await Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => GameRunPage(game: GameEntry(id: g.name, name: g.name))));
+              builder: (_) => GameDetailPage(game: g)));
           _refresh();
         },
         onLongPress: () => _delete(g),

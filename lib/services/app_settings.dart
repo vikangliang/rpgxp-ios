@@ -98,4 +98,33 @@ class AppSettings {
     if (seconds < 3600) return '${seconds ~/ 60} 分钟';
     return '${(seconds / 3600).toStringAsFixed(1)} 小时';
   }
+
+  static const _kPlayCountPrefix = 'playCount:';
+
+  /// 游玩次数（每次真正调 launchGame 计一次）。
+  static Future<void> addPlayCount(String gameName) async {
+    final m = await _read();
+    final prev = m['$_kPlayCountPrefix$gameName'] as int? ?? 0;
+    m['$_kPlayCountPrefix$gameName'] = prev + 1;
+    await _write(m);
+  }
+
+  static Future<int> playCount(String gameName) async {
+    final m = await _read();
+    return m['$_kPlayCountPrefix$gameName'] as int? ?? 0;
+  }
+
+  /// 重命名游戏时迁移以名字为键的统计项。
+  static Future<void> migrateName(String oldName, String newName) async {
+    final m = await _read();
+    for (final prefix in [
+      _kLastPlayedPrefix,
+      _kPlaytimePrefix,
+      _kPlayCountPrefix
+    ]) {
+      final k = '$prefix$oldName';
+      if (m.containsKey(k)) m['$prefix$newName'] = m.remove(k);
+    }
+    await _write(m);
+  }
 }
