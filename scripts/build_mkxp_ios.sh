@@ -243,6 +243,17 @@ if [ -f "$MKXP_SRC/src/config.cpp" ]; then
   echo "patched config.cpp Metal guards -> macOS-only"
 fi
 
+# SDL2_ttf 2.20.0 起把不透明结构体 _TTF_Font 改名为 TTF_Font（vcpkg 现装 2.24.0，
+# 头文件为 typedef struct TTF_Font TTF_Font;）。mkxp-z v2.4.2 的 font.h/font.cpp 仍按
+# 旧名 forward-declare/返回 _TTF_Font*，而 settingsmenu.cpp 经 SDL_ttf.h 拿到新类型
+# TTF_Font*（其私有成员 p->font 即该类型）→ 'incompatible pointer types assigning to
+# TTF_Font* from _TTF_Font*'。仅这两个文件引用该类型，统一改名对齐新版。
+if [ -f "$MKXP_SRC/src/display/font.h" ]; then
+  sed -i '' 's/_TTF_Font/TTF_Font/g' \
+    "$MKXP_SRC/src/display/font.h" "$MKXP_SRC/src/display/font.cpp"
+  echo "patched _TTF_Font -> TTF_Font (SDL2_ttf >= 2.20 opaque struct rename)"
+fi
+
 # ---------- 4. 编译 mkxp-z 为静态库 libmkxp.a（手搓 CMake，链接 vcpkg + 静态 Ruby） ----------
 # 确保构建工具（CI macos runner 可能缺 xxd；默认用 Unix Makefiles 生成器，无需 ninja）
 brew install xxd >/dev/null 2>&1 || true
