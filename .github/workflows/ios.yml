@@ -9,6 +9,8 @@ jobs:
   build:
     # 钉在 macos-15：默认 Xcode 16.4，且自带 CocoaPods（macos-26 默认 Xcode 26，旧版 Flutter 不兼容）
     runs-on: macos-15
+    permissions:
+      contents: write   # 供失败摘要推回 ci-status 分支
     steps:
       - uses: actions/checkout@v4
 
@@ -45,39 +47,74 @@ jobs:
 
       # 取【最近一次成功】的 build-mkxp 产物 MKXP.framework，放到插件目录供 pod 链接。
       # 刻意不串行依赖：引擎构建翻车时用上一个好版本框架继续出 IPA（M0 安全网不破）。
+      # 输出 tee 到 /tmp/ios-build.log，失败摘要步骤读它。
       - name: Download MKXP.framework
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-mkxp.yml \
-                     --status success --limit 1 --json databaseId --jq '.[0].databaseId')
-          echo "latest successful build-mkxp run: ${RUN_ID:-<none>}"
-          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-            echo "::error::找不到成功的 build-mkxp 运行，无 MKXP.framework 可用"; exit 1
-          fi
-          mkdir -p mkxp/ios/MKXP.framework
-          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name MKXP-framework --dir mkxp/ios/MKXP.framework --clobber
-          # 兼容两种 zip 布局：内容在根 / 多嵌一层 MKXP.framework
-          if [ -d mkxp/ios/MKXP.framework/MKXP.framework ]; then
-            mv mkxp/ios/MKXP.framework/MKXP.framework/* mkxp/ios/MKXP.framework/
-            rmdir mkxp/ios/MKXP.framework/MKXP.framework
-          fi
-          ls -R mkxp/ios/MKXP.framework
-          test -f mkxp/ios/MKXP.framework/MKXP || { echo "::error::MKXP.framework 布局异常"; exit 1; }
+          set -eo pipefail
+          {
+            gh --version
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow build-mkxp.yml \
+              --status success --limit 3 --json databaseId,headSha,conclusion
+            RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-mkxp.yml \
+                       --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+            echo "RUN_ID=${RUN_ID:-<empty>}"
+            if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+              echo "::error::找不到成功的 build-mkxp 运行，无 MKXP.framework 可用"; exit 1
+            fi
+            rm -rf mkxp/ios/MKXP.framework
+            gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name MKXP-framework --dir mkxp/ios/MKXP.framework --clobber
+            # 兼容两种 zip 布局：内容在根 / 多嵌一层 MKXP.framework
+            if [ -d mkxp/ios/MKXP.framework/MKXP.framework ]; then
+              mv mkxp/ios/MKXP.framework/MKXP.framework/* mkxp/ios/MKXP.framework/
+              rmdir mkxp/ios/MKXP.framework/MKXP.framework
+            fi
+            ls -R mkxp/ios/MKXP.framework
+            test -f mkxp/ios/MKXP.framework/MKXP \
+              || { echo "::error::MKXP.framework 布局异常"; exit 1; }
+          } 2>&1 | tee /tmp/ios-build.log
 
-      # 不签名编译（Sideloadly 在 Windows 侧重签安装）
+      # 不签名编译（Sideloadly 在 Windows 侧重签安装）。首次真正链接 MKXP.framework。
       - name: Build iOS (no codesign)
-        run: flutter build ios --release --no-codesign
+        run: |
+          set -eo pipefail
+          flutter build ios --release --no-codesign 2>&1 | tee -a /tmp/ios-build.log
 
       - name: Package unsigned IPA
         run: |
-          mkdir -p build/Payload
-          cp -r build/ios/iphoneos/Runner.app build/Payload/
-          cd build && zip -r app.ipa Payload
+          set -eo pipefail
+          {
+            mkdir -p build/Payload
+            cp -r build/ios/iphoneos/Runner.app build/Payload/
+            cd build && zip -r app.ipa Payload
+          } 2>&1 | tee -a /tmp/ios-build.log
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: rpgxp-loader-ipa
           path: build/app.ipa
+
+      # 失败时把日志推回 ci-status 分支（与 build-mkxp.yml 同机制，免 token 可读）。
+      # [skip ci] 防重触发。
+      - name: Publish failure summary
+        if: failure()
+        run: |
+          mkdir -p ci-status
+          {
+            echo "# iOS build failure"
+            echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "commit: ${GITHUB_SHA::7} $(git log -1 --format=%s)"
+            echo "date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo '## ios-build.log (tail 200)'
+            echo '```'
+            tail -200 /tmp/ios-build.log 2>/dev/null || echo '(no log)'
+            echo '```'
+          } > ci-status/last-failure.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ci-status/last-failure.md
+          git commit -m "ci: ios build failure summary [skip ci]"
+          git push origin HEAD:ci-status --force
