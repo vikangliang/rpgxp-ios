@@ -1,8 +1,12 @@
 name: iOS Build
 
 on:
-  push:
-    branches: [main, master]
+  # 不直接在 push 上触发：等 build-mkxp.yml 完成后用【同一次提交】的
+  # MKXP.framework 编 App。此前两 workflow 并行触发，iOS 只能拿到上一个
+  # 提交的旧框架——引擎修复要晚一轮才生效（Context.o 问题就这么被掩埋过）。
+  workflow_run:
+    workflows: ["Build MKXP framework (M1a)"]
+    types: [completed]
   workflow_dispatch:
 
 jobs:
@@ -13,6 +17,9 @@ jobs:
       contents: write   # 供失败摘要推回 ci-status 分支
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 检出触发本次构建的那次提交（workflow_run 携带；手动触发时用默认 ref）
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -45,8 +52,9 @@ jobs:
           rm -rf lib && cp -r /tmp/app_lib lib
           flutter pub get
 
-      # 取【最近一次成功】的 build-mkxp 产物 MKXP.framework，放到插件目录供 pod 链接。
-      # 刻意不串行依赖：引擎构建翻车时用上一个好版本框架继续出 IPA（M0 安全网不破）。
+      # 取本次提交的 build-mkxp 产物 MKXP.framework，放到插件目录供 pod 链接。
+      # workflow_run 触发时用触发运行的 id（同一次提交的框架）；
+      # 手动触发（workflow_dispatch）时退而求其次取最近一次成功。
       # 输出 tee 到 /tmp/ios-build.log，失败摘要步骤读它。
       - name: Download MKXP.framework
         env:
@@ -54,14 +62,14 @@ jobs:
         run: |
           set -eo pipefail
           {
-            gh --version
-            gh run list --repo "$GITHUB_REPOSITORY" --workflow build-mkxp.yml \
-              --status success --limit 3 --json databaseId,headSha,conclusion
-            RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-mkxp.yml \
-                       --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+            RUN_ID="${{ github.event.workflow_run.id }}"
+            if [ -z "$RUN_ID" ]; then
+              RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-mkxp.yml \
+                         --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+            fi
             echo "RUN_ID=${RUN_ID:-<empty>}"
             if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-              echo "::error::找不到成功的 build-mkxp 运行，无 MKXP.framework 可用"; exit 1
+              echo "::error::找不到可用的 build-mkxp 运行，无 MKXP.framework"; exit 1
             fi
             rm -rf mkxp/ios/MKXP.framework
             gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \

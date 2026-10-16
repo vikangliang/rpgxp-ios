@@ -12,11 +12,13 @@
   system() / 根相对 include 十关全过（坑 #3/#6-#12）。
 - **M1-A 已完成** ✅（`baeb52f` CI 验证）：`mkxp_run`/`mkxp_key`/`mkxp_quit` 框架化入口落地
   （`scripts/mkxp-framework/`：patch + mkxp_framework.cpp），`MKXP.framework` 含全部三个符号。
-- **M1-C/B 已完成（待 CI 验证）**：`ios.yml` 下载最近一次成功的 `MKXP-framework` 到
-  `mkxp/ios/`（引擎翻车不挡 IPA 流水线）；podspec 放开 `vendored_frameworks` 并补齐
-  系统框架/库（与 CMake 的 target_link_libraries 对应）；Swift 侧 `MkxpBridge` +
-  MethodChannel 的 launch/quit/key；Dart 侧 `GameView` 改透明浮层、主界面加启动/关机入口。
-  **真机验证清单**：装包 → 填游戏目录（如 games/Essentials）→ 启动引擎 → 看 `mkxp.log`。
+- **M1-C/B 已完成（待 CI 验证）**：`ios.yml` 改为 **`workflow_run` 触发**——等 `build-mkxp.yml`
+  完成后用**同一次提交**的 `MKXP.framework` 编 App（此前两 workflow 并行触发只能拿到上一个
+  提交的旧框架，引擎修复晚一轮生效，`Context.o` 问题就是这么被掩埋的；手动 dispatch 时
+  退而取最近成功）。podspec 放开 `vendored_frameworks` 并补齐系统框架/库；Swift 侧
+  `MkxpBridge` + MethodChannel 的 launch/quit/key；Dart 侧 `GameView` 改透明浮层、
+  主界面加启动/关机入口。**真机验证清单**：装包 → 填游戏目录（如 games/Essentials）→
+  启动引擎 → 看 `mkxp.log`。
 - **M1 剩余**：真机验证（上述清单）+ M2（游戏库扫描/导入解压/虚拟摇杆）。
 - **M1-A 进行中（2026-10-16）**：框架化入口已落地并由 `baeb52f` 验证通过——
   `scripts/mkxp-framework/` 下 `framework-entry.patch`（`main()`→`extern "C" mkxp_z_main()`；
