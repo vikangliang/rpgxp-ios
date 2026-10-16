@@ -331,11 +331,17 @@ echo "== package MKXP.framework =="
 rm -rf "$FW_DIR"
 mkdir -p "$FW_DIR/Headers" "$FW_DIR/Modules"
 
-# 收集全部 .a（libmkxp + vcpkg + ruby）
+# 收集全部 .a（libmkxp + vcpkg + ruby + 自编 SDL2_sound）
 LIBS=()
 [ -f "$MKXP_SRC/build-ios/libmkxp.a" ] && LIBS+=("$MKXP_SRC/build-ios/libmkxp.a")
-while IFS= read -r f; do LIBS+=("$f"); done < <(find "$VCPKG_INSTALL/lib" -name '*.a')
+# 排除 libSDL2main.a：iOS 上 SDL 不接管 main，且本工程的 main 已改名
+# mkxp_z_main，链入只会带来对不存在符号的引用（SDL_main 引用由
+# mkxp_framework.cpp 的桩兜底）。
+while IFS= read -r f; do LIBS+=("$f"); done < <(find "$VCPKG_INSTALL/lib" -name '*.a' ! -name 'libSDL2main.a')
 LIBS+=("$RUBY_LIB")
+# SDL2_sound 是 vcpkg 外的自编静态库——曾漏合并，导致 App 链接期
+# Sound_Init/Sound_Decode 等齐 undefined。
+[ -f "$SDLSOUND_PREFIX/lib/libSDL2_sound.a" ] && LIBS+=("$SDLSOUND_PREFIX/lib/libSDL2_sound.a")
 
 libtool -static -o "$FW_DIR/MKXP" "${LIBS[@]}"
 

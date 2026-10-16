@@ -21,6 +21,7 @@ Pod::Spec.new do |s|
   s.frameworks = %w[
     UIKit Foundation QuartzCore CoreGraphics GameController
     Metal AudioToolbox CoreAudio CoreHaptics AVFoundation OpenGLES
+    CoreMotion CoreBluetooth
   ]
   s.libraries = ['c++', 'z', 'iconv']
 end

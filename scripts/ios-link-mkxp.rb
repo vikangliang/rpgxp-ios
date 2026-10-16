@@ -50,6 +50,7 @@ end
 ENGINE_FRAMEWORKS = %w[
   UIKit Foundation QuartzCore CoreGraphics GameController
   Metal AudioToolbox CoreAudio CoreHaptics AVFoundation OpenGLES
+  CoreMotion CoreBluetooth
 ].freeze
 ENGINE_LIBS = %w[c++ z iconv].freeze
 

@@ -36,6 +36,14 @@
 /* 由 framework-entry.patch 改名的原 main() */
 extern "C" int mkxp_z_main(int argc, char *argv[]);
 
+/* iOS 上 SDL 不接管 main（libSDL2main 已从框架合并中排除），但个别 SDL2 对象
+ * 仍可能引用 SDL_main；提供无害桩——永远不会被调用（入口是 mkxp_z_main）。 */
+extern "C" int SDL_main(int argc, char *argv[]) {
+  (void)argc;
+  (void)argv;
+  return 0;
+}
+
 /* 由 input.cpp 发布：rgssKey(Input::ButtonCode) -> SDL_Scancode */
 extern std::unordered_map<int, SDL_Scancode> g_buttonToScancode;
 extern std::mutex g_buttonToScancodeMtx;

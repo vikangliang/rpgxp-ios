@@ -140,6 +140,13 @@
     pod 编译期能 `import MKXP`，App 最终链接看不到框架 → `Undefined symbol: _mkxp_run`。
     已用 `scripts/ios-link-mkxp.rb`（CI 在 flutter build 前跑）把框架显式注入 Runner 的
     Link Binary With Libraries + force_load + 补齐系统框架/库。
+16. **框架合并漏了自编 SDL2_sound + SDL2main 捣乱 + 缺 CoreMotion/Bluetooth**：合并列表原先只有
+    libmkxp + vcpkg 的 `.a` + ruby，`libSDL2_sound.a` 在 vcpkg 外被漏掉 → App 链接期
+    `Sound_Init/Sound_Decode` 齐 undefined；`libSDL2main.a` 在 iOS 上无意义且引用已改名的
+    main → 排除 + `mkxp_framework.cpp` 里放 `SDL_main` 无害桩；SDL2 的 iOS sensor/joystick
+    代码引用 CoreMotion/CoreBluetooth → 两个框架补进链接参数（ios-link-mkxp.rb 与 podspec）。
+17. **workflow 竞态**：两 workflow 并行触发时，iOS 只能拿到上一个提交的框架，引擎修复晚一轮
+    生效（`Context.o` 问题曾被这么掩埋）。`ios.yml` 已改 `workflow_run` 触发，用同次提交的产物。
 
 ## 下一步该做什么（编译关已通，2026-10-16）
 
