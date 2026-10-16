@@ -12,11 +12,12 @@
 | M1 编译/框架化 | ✅✅✅ | 双 workflow 全绿；`MKXP.framework` 含引擎；12 编译坑 + 6 链接坑全填平 |
 | M1 真机首测（闪退） | ✅ 已修 | 装包/壳/桥接/链接全通；点启动闪退 → `625cbd5` 派发到主线程修掉 |
 | M2 阶段一（导入+启动链路） | ✅ | 文件选择器/ZIP 导入/游戏库/启动·删除/日志对话框/透明浮层就位 |
-| **M2 关键 Bug：启动后无画面** | 🔧 已修待 CI 确认 | 点启动卡「正在启动」、无游戏画面 → `15ab649` 把阻塞事件循环甩后台线程 |
+| **M2 关键 Bug：启动后无画面** | 🔧 已修，CI 绿待真机验 | 点启动卡「正在启动」、无游戏画面 → `15ab649`+`baa3646` 把阻塞事件循环甩后台线程 |
 | M2 阶段二（虚拟按键/设置/常驻日志） | ⬜ 未开始 | 见下 |
 
-- 最新提交：`15ab649`（引擎事件循环后台化）。其前 `625cbd5` 及更早均双 workflow 全绿；
-  **工作区干净**，已 `git push origin main`。
+- 最新提交：`baa3646`（引擎事件循环后台化 + 编译修复）。`15ab649` 引入线程拆分但编译期因
+  `RGSSThreadData` 构造实参误写成解引用（`*evThread`，应为指针 `evThread`）报错；`baa3646` 修正后
+  双 workflow 全绿（IPA 已产出）。其前 `625cbd5` 及更早均双 workflow 全绿；**工作区干净**。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
 - **M1 全部完成 ✅✅✅**（`625cbd5` 起双 workflow 全绿）：
   - `MKXP.framework`：核心 = libmkxp + 静态 Ruby + SDL2_sound（`-force_load` 全量载入）；
@@ -31,12 +32,13 @@
   事件泵）只支持主线程。已修于 `625cbd5` 后的 `mkxp_framework.cpp`（`dispatch_async`
   派发到主线程、立即返回）。若再崩，取 iPhone 设置→隐私→分析与改进→分析数据里最新的
   `rpgxpLoader-*.ips` 崩溃日志定位。
-- **M2 关键 Bug（已修待 CI 确认，`15ab649`）**：闪退修掉后**点启动卡在「正在启动」、永远
-  不出现游戏画面**。根因：`EventThread.process()` 这个阻塞事件循环在主线程永不退出，占死
+- **M2 关键 Bug（已修，CI 绿待真机验，`15ab649`+`baa3646`）**：闪退修掉后**点启动卡在「正在启动」、
+  永远不出现游戏画面**。根因：`EventThread.process()` 这个阻塞事件循环在主线程永不退出，占死
   iOS 主线程 run loop → Core Animation 无法上屏（画面冻在 Flutter 浮层）。`15ab649` 把
   SDL 初始化+建窗+起 RGSS 线程留在主线程（UIKit 安全，后台线程 SDL_Init/CreateWindow 会崩），
   **阻塞事件循环与终止清理挪到后台 `std::thread`**，`mkxp_z_main` 立即返回 → 主线程 run loop
-  恢复、画面才上得去。**接手后先查 Actions 确认 `15ab649` 的 iOS 构建变绿。**
+  恢复、画面才上得去。`15ab649` 编译期曾因 `RGSSThreadData(EventThread*, ...)` 实参误写成解引用
+  `*evThread` 报错，`baa3646` 改回传指针后双 workflow 全绿——**IPA 已可侧载真机验证**。
 - 游戏文件目前只能经 Finder 文件共享进入沙盒（`UIFileSharingEnabled` 尚未开，需的话 CI 加 patch）。
 - 已跑通的子步骤（CI 已验证）：
   - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` + 头文件 staged；
@@ -206,10 +208,10 @@ overlay UIWindow 盖在 SDL 窗口上、按钮直调 `mkxp_key`（不依赖 Flut
 编译关 + 引擎接入（A 引擎入口 / B 透明浮层 / C workflow 串接）**已全部完成**，IPA 已含引擎、
 App 可启动引擎。当前真实待办，按优先级：
 
-1. **【最高优先】真机验证 `15ab649`**：侧载最新 IPA → 导入游戏 → 点启动，确认**不再卡「正在启动」、
-   游戏画面正常出现**。`15ab649` 的 iOS 构建在我写文档时尚未出结果，接手第一步先查 Actions 确认绿，
-   再上真机。若仍无画面/崩，取 iPhone 上 `rpgxpLoader-*.ips` 崩溃日志，对照 `framework-entry.patch`
-   的线程拆分与 `mkxp_framework.cpp` 的 `g_engineRunning` 复位逻辑排查。
+1. **【最高优先】真机验证 `15ab649`+`baa3646`**：侧载最新 IPA（`baa3646` 版，双 workflow 已绿）
+   → 导入游戏 → 点启动，确认**不再卡「正在启动」、游戏画面正常出现**。CI 只能证明编译/打包过，
+   画面是否真出来必须真机看。若仍无画面/崩，取 iPhone 上 `rpgxpLoader-*.ips` 崩溃日志，对照
+   `framework-entry.patch` 的线程拆分与 `mkxp_framework.cpp` 的 `g_engineRunning` 复位逻辑排查。
 2. **M2 阶段二（未开始）**：虚拟摇杆+动作键（Essentials 键位）、设置页、常驻日志页。游戏运行时
    SDL 全屏窗盖在最上层吞触摸，浮层按键要走原生 overlay UIWindow + `mkxp_key`（见 M2 进度段）。
 3. **可选打磨**：开 `UIFileSharingEnabled` 让游戏文件可经 Finder 文件共享进沙盒；横竖屏/触感适配；
