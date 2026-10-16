@@ -78,10 +78,13 @@ echo "== install C deps via vcpkg (arm64-ios-static) =="
 # CMake 的 find_library(SDL2) 直接命中，也无法被 libtool -static 合并进框架。
 "$VCPKG/vcpkg" install --triplet arm64-ios-static \
   --overlay-triplets "$ROOT/scripts/vcpkg-triplets" \
-  sdl2 sdl2-image sdl2-ttf \
+  sdl2 "sdl2-image[libjpeg-turbo]" sdl2-ttf \
   physfs openal-soft \
   libtheora libvorbis libogg \
   freetype pixman libpng libjpeg-turbo zlib uchardet
+# 注：sdl2-image 默认 feature 集不含 JPEG——真机日志实测
+# "Error initializing SDL_image: JPEG images are not supported"（Essentials 有 .jpg 资源）。
+# [libjpeg-turbo] 显式打开 JPG 解码；PNG 内置不受影响。
 VCPKG_INSTALL=$VCPKG/installed/arm64-ios-static
 # 诊断：确认静态 triplet 确实产出了 .a（尤其是 libSDL2*），避免 find_library 黑盒
 echo "== vcpkg installed 顶层 =="
