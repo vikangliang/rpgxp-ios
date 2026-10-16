@@ -64,6 +64,19 @@ class Mkxp {
     } catch (_) {}
   }
 
+  /// 展示 / 隐藏 / 切换原生触摸浮层（M2 阶段二：SDL 之上的 UIWindow 控件）
+  static Future<void> showControls() async {
+    try { await _ch.invokeMethod('showControls'); } catch (_) {}
+  }
+
+  static Future<void> hideControls() async {
+    try { await _ch.invokeMethod('hideControls'); } catch (_) {}
+  }
+
+  static Future<void> toggleControls() async {
+    try { await _ch.invokeMethod('toggleControls'); } catch (_) {}
+  }
+
   static Future<void> setOrientation(bool landscape) async {
     try {
       await _ch.invokeMethod('setOrientation', {'landscape': landscape});

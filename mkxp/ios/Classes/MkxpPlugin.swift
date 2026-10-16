@@ -34,6 +34,7 @@ class MkxpMethodHandler: NSObject {
       }
       let rc = MkxpBridge.run(gamePath: path)
       if rc == 0 {
+        MkxpTouchOverlay.shared.show()   // M2 阶段二：引擎起后展示原生触摸浮层
         result(nil)
       } else {
         result(FlutterError(code: "runFailed",
@@ -52,10 +53,45 @@ class MkxpMethodHandler: NSObject {
       }
       MkxpBridge.key(k, down: down)
       result(nil)
-    case "importZip", "setOrientation", "haptic":
-      result(nil) // M0 占位
+    case "importZip":
+      result(nil) // M2 由原生扫描/解压，占位
+    case "showControls":
+      MkxpTouchOverlay.shared.show(); result(nil)
+    case "hideControls":
+      MkxpTouchOverlay.shared.hide(); result(nil)
+    case "toggleControls":
+      MkxpTouchOverlay.shared.toggle(); result(nil)
+    case "setOrientation":
+      if let args = call.arguments as? [String: Any],
+         let landscape = args["landscape"] as? Bool {
+        MkxpOrientation.lockLandscape(landscape)
+      }
+      result(nil)
+    case "haptic":
+      MkxpHaptic.tap(); result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+}
+
+// MARK: - 横竖屏锁定（M2 设置：固定横屏游戏）
+final class MkxpOrientation {
+  static func lockLandscape(_ on: Bool) {
+    let ori: UIDeviceOrientation = on ? .landscapeRight : .portrait
+    UIDevice.current.setValue(ori.rawValue, forKey: "orientation")
+    UIViewController.attemptRotationToDeviceOrientation()
+    if #available(iOS 16.0, *) {
+      let scene = UIApplication.shared.connectedScenes
+        .first { $0.activationState == .foregroundActive } as? UIWindowScene
+      scene?.requestGeometryUpdate(.iOS(interfaceOrientations: on ? .landscapeRight : .portrait))
+    }
+  }
+}
+
+// MARK: - 控制器振动（M2 设置：控制器振动）
+final class MkxpHaptic {
+  static func tap() {
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
   }
 }
