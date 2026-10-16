@@ -216,6 +216,19 @@ EOF
     # `$(CC) $(ASFLAGS) -c`，【不吃 CFLAGS】——不传就会按宿主编成 macOS 对象，
     # libtool -static 又不校验平台，直到最终链进 App 才炸
     # "linking object file built for 'macOS'"。
+    # 【关键】--with-static-linked-ext 的扩展是独立目标（build-ext / extinit.c），
+    # 只 make libruby.3.3-static.a 不会触发——真机日志已证实这样产出的 libruby 里
+    # 没有 Init_zlib。这里显式先建扩展与 extinit 注册代码，再编静态库。
+    echo "== ext 配置状态 =="
+    grep -E '^(EXTS|EXTSTATIC|EXTLIBS|EXTA)' ext/configure-ext.mk 2>/dev/null | head -20
+    ls ext/ 2>/dev/null | tr '\n' ' '
+    echo ""
+    make -j"$(sysctl -n hw.ncpu)" build-ext \
+      MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY" \
+      ASFLAGS="$ARCH_FLAGS" || echo "::warning::build-ext 失败（继续，稍后自检会暴露）"
+    make -j"$(sysctl -n hw.ncpu)" ext/extinit.o \
+      MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY" \
+      ASFLAGS="$ARCH_FLAGS" 2>/dev/null || echo "(ext/extinit.o 目标不存在，忽略)"
     make libruby.3.3-static.a -j"$(sysctl -n hw.ncpu)" \
       MINIRUBY="$HOST_RUBY" BUILTRUBY="$HOST_RUBY" PREP="$HOST_RUBY" \
       ASFLAGS="$ARCH_FLAGS"
