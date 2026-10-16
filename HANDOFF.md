@@ -4,33 +4,23 @@
 
 ## 当前状态（2026-10-16）
 
-- 最新提交：见 git log（M1-A 框架化入口 `8f263e1` + vcpkg 缓存修复）。待 CI 验证。
+- 最新提交：`625cbd5`（核心 force_load + 依赖按需加载）。已 `git push origin main`，**工作区干净**。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
-- **M1 编译关已通** ✅✅：`e7d7019` 起 `build-mkxp.yml` 全绿——`libmkxp.a` 编通并合并出
-  `MKXP.framework`（artifact 9.96MB = libmkxp + 全部 vcpkg 静态依赖 + libruby-static + 4.5MB CJK 字体）。
-  configure / xxd / find_library / 头文件路径 / assert 截胡 / Metal 守卫 / TTF_Font 改名 / CJK 字体 /
-  system() / 根相对 include 十关全过（坑 #3/#6-#12）。
-- **M1-A 已完成** ✅（`baeb52f` CI 验证）：`mkxp_run`/`mkxp_key`/`mkxp_quit` 框架化入口落地
-  （`scripts/mkxp-framework/`：patch + mkxp_framework.cpp），`MKXP.framework` 含全部三个符号。
-- **M1-C/B 已完成（待 CI 验证）**：`ios.yml` 改为 **`workflow_run` 触发**——等 `build-mkxp.yml`
-  完成后用**同一次提交**的 `MKXP.framework` 编 App（此前两 workflow 并行触发只能拿到上一个
-  提交的旧框架，引擎修复晚一轮生效，`Context.o` 问题就是这么被掩埋的；手动 dispatch 时
-  退而取最近成功）。podspec 放开 `vendored_frameworks` 并补齐系统框架/库；Swift 侧
-  `MkxpBridge` + MethodChannel 的 launch/quit/key；Dart 侧 `GameView` 改透明浮层、
-  主界面加启动/关机入口。**真机验证清单**：装包 → 填游戏目录（如 games/Essentials）→
-  启动引擎 → 看 `mkxp.log`。
-- **M1 剩余**：真机验证（上述清单）+ M2（游戏库扫描/导入解压/虚拟摇杆）。
-- **M1-A 进行中（2026-10-16）**：框架化入口已落地并由 `baeb52f` 验证通过——
-  `scripts/mkxp-framework/` 下 `framework-entry.patch`（`main()`→`extern "C" mkxp_z_main()`；
-  input.cpp 发布 rgssKey→scancode 反查表带 mutex）+ `mkxp_framework.cpp`
-  （`mkxp_run` 后台线程 / `mkxp_key` SDL 事件注入 / `mkxp_quit` SDL_QUIT），
-  CMake 加 `WORKDIR_CURRENT`（游戏目录由 mkxp_run 设为工作目录，不 chdir 到 bundle）。
-  已知待验证风险：后台线程里 `SDL_Init(VIDEO)`/`SDL_CreateWindow` 在 iOS 上是否
-  稳（已先调 `SDL_SetMainReady()`）；真机跑起来看 `mkxp.log`。
+- **M1 全部完成 ✅✅✅**（`625cbd5` 起双 workflow 全绿）：
+  - `MKXP.framework`：核心 = libmkxp + 静态 Ruby + SDL2_sound（`-force_load` 全量载入）；
+    vcpkg 依赖在 `MKXP.framework/Libs/*.a` **按需加载**（去重，见坑 #18）；
+  - `rpgxp-loader-ipa` **12.26MB**（M0 时约 7.5MB，差额 = 引擎 + 4.5MB CJK 字体），
+    即 IPA 已含引擎；App 侧桥接（launch/quit/key）与透明浮层均已就位；
+  - 编译期十二坑（#3/#6-#12）+ 链接期六坑（#13-#18）全填平。
+- **M1 剩余唯一事项：真机验证**——Sideloadly 装包 → 填游戏目录（如 `games/Essentials`）→
+  点「启动引擎」→ 看 `mkxp.log`（主界面有 启动/关机/读取原生日志 三按钮 + 目录输入框）。
+  已知待验证风险：后台线程里 `SDL_Init(VIDEO)`/`SDL_CreateWindow` 在 iOS 上是否稳
+  （已先调 `SDL_SetMainReady()`）。
 - 已跑通的子步骤（CI 已验证）：
-  - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` 链接成功 + 头文件 staged；
-  - vcpkg `arm64-ios-static` 静态 triplet 编出全部 C 依赖（脚本内有诊断会列出 `libSDL2*` 等）；
-  - `SDL2_sound` v2.0.6 源码交叉编译出 `libSDL2_sound.a` 成功。
+  - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` + 头文件 staged；
+  - vcpkg `arm64-ios-static` 静态 triplet 编出全部 C 依赖；
+  - `SDL2_sound` v2.0.6 源码交叉编译出 `libSDL2_sound.a`；
+  - mkxp-z v2.4.2 编译 + 框架化入口 `mkxp_run/mkxp_key/mkxp_quit`（M1-A）。
 
 ## 环境要求
 
@@ -147,6 +137,16 @@
     代码引用 CoreMotion/CoreBluetooth → 两个框架补进链接参数（ios-link-mkxp.rb 与 podspec）。
 17. **workflow 竞态**：两 workflow 并行触发时，iOS 只能拿到上一个提交的框架，引擎修复晚一轮
     生效（`Context.o` 问题曾被这么掩埋）。`ios.yml` 已改 `workflow_run` 触发，用同次提交的产物。
+18. **静态框架链接终解=核心 force_load + 依赖按需加载**：`-framework MKXP` 无论放
+    OTHER_LDFLAGS 还是 frameworks 阶段都拉不到符号（疑似 Xcode/ld 对「框架壳+归档内核」
+    的处理问题）；而整个框架 `-force_load` 全量载入会炸 duplicate symbols——nm 对账实锤
+    libc++/fmt 的符号被嵌进 `libopenal.a`/`libfmt.a`/`libmkxp.a` 多个归档（454 个重复定义，
+    fmt↔openal 59 + mkxp↔openal 36 + …）。终解：框架二进制只合并**核心**（libmkxp + 静态
+    Ruby + SDL2_sound）并 `-force_load`（全量载入、无视顺序）；vcpkg 各依赖 `.a` 放进
+    `MKXP.framework/Libs/`，在 `-force_load` **之后**逐个按需加载——按需加载天然去重
+    （ld 只取第一个定义），且排在核心之后不会再有顺序问题。另：两个 workflow 的失败摘要
+    要推不同分支（`ci-status` / `ci-status-ios`），都 `--force` 推同一分支会互相覆盖。
+    诊断工具：`build_mkxp_ios.sh` 5b 节的 nm 跨归档对账（COLLISION 行）。
 18. **静态框架链接的三难**（都在 App 最终链接期暴露）：① podspec `vendored_frameworks` 会被
     静态 framework 的 pod 并进 `Pods-mkxp.framework`，与 App 侧加载重复；② 仅 `-framework MKXP`
     放 OTHER_LDFLAGS 会排在 Pods 之前扫描，pod 归档里的引用方还没进场 → Undefined symbol；
