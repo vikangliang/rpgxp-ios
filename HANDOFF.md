@@ -147,6 +147,14 @@
     代码引用 CoreMotion/CoreBluetooth → 两个框架补进链接参数（ios-link-mkxp.rb 与 podspec）。
 17. **workflow 竞态**：两 workflow 并行触发时，iOS 只能拿到上一个提交的框架，引擎修复晚一轮
     生效（`Context.o` 问题曾被这么掩埋）。`ios.yml` 已改 `workflow_run` 触发，用同次提交的产物。
+18. **静态框架链接的三难**（都在 App 最终链接期暴露）：① podspec `vendored_frameworks` 会被
+    静态 framework 的 pod 并进 `Pods-mkxp.framework`，与 App 侧加载重复；② 仅 `-framework MKXP`
+    放 OTHER_LDFLAGS 会排在 Pods 之前扫描，pod 归档里的引用方还没进场 → Undefined symbol；
+    ③ `-force_load` 全量载入会把 Ruby `--with-static-linked-ext` 烘进的 zlib 等对象与 vcpkg 的
+    libz/libpng 重叠符号一起载入 → 800+ duplicate symbols。**正解=按需加载 + 链接锚点**：
+    podspec 只留编译期 FRAMEWORK_SEARCH_PATHS；`scripts/mkxp-link-anchor.m` 加入 Runner 编译源
+    （Runner 自身引用 mkxp_run/mkxp_key/mkxp_quit，未决状态在链接最开始就存在，顺序无关）；
+    MKXP.framework 经 frameworks 阶段按需链接。
 
 ## 下一步该做什么（编译关已通，2026-10-16）
 

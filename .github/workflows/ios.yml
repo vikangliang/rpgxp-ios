@@ -86,13 +86,15 @@ jobs:
 
       # 静态 framework 的 pod target 不解析外部依赖，App 链接看不到 MKXP.framework
       # （Undefined symbol: _mkxp_run）。这里显式把它注入 Runner 的链接阶段，
-      # 并补齐引擎需要的系统框架/库。详见 scripts/ios-link-mkxp.rb 注释。
+      # 并补一个链接锚点让 Runner 自身引用引擎符号（顺序无关），
+      # 同时补齐引擎需要的系统框架/库。详见 scripts/ios-link-mkxp.rb 注释。
       - name: Link MKXP.framework into Runner
         run: |
           set -eo pipefail
+          cp -f scripts/mkxp-link-anchor.m ios/Runner/MkxpLinkAnchor.m
           # macos runner 的 CocoaPods 自带 xcodeproj gem；万一缺失就装（runner 上 sudo 免密）
           ruby -e "require 'xcodeproj'" 2>/dev/null || sudo gem install xcodeproj
-          ruby scripts/ios-link-mkxp.rb ios/Runner.xcodeproj mkxp/ios/MKXP.framework 2>&1 | tee -a /tmp/ios-build.log
+          ruby scripts/ios-link-mkxp.rb ios/Runner.xcodeproj mkxp/ios/MKXP.framework ios/Runner/MkxpLinkAnchor.m 2>&1 | tee -a /tmp/ios-build.log
 
       # 不签名编译（Sideloadly 在 Windows 侧重签安装）。首次真正链接 MKXP.framework。
       - name: Build iOS (no codesign)
