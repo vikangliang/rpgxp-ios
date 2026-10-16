@@ -78,6 +78,7 @@ echo "== install C deps via vcpkg (arm64-ios-static) =="
 # CMake 的 find_library(SDL2) 直接命中，也无法被 libtool -static 合并进框架。
 "$VCPKG/vcpkg" install --triplet arm64-ios-static \
   --overlay-triplets "$ROOT/scripts/vcpkg-triplets" \
+  --recurse \
   sdl2 "sdl2-image[libjpeg-turbo]" sdl2-ttf \
   physfs openal-soft \
   libtheora libvorbis libogg \
