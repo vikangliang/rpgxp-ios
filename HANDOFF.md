@@ -4,9 +4,11 @@
 
 ## 当前状态（2026-10-16）
 
-- 最新提交：`07ac284`（更新 README 进度）。已 `git push origin main`，**工作区干净**。
+- 最新提交：`5f78b80`（补第三方头文件 include 路径）。待 `git push origin main` 触发下一轮 CI。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
-- **M1 进行中**，卡在「手搓 CMake 编译 `libmkxp.a`」这一关。
+- **M1 进行中**，卡在「手搓 CMake 编译 `libmkxp.a`」这一关。configure / xxd 嵌入 / find_library 三关已过，
+  最新卡点为**第三方头文件 include 路径**（`al.h`/`alc.h`/`uchardet.h` file not found，另有 pixman/SDL2_sound/ruby 同病），
+  已在 CMakeLists 修复，待下一轮 CI 验证。
 - 已跑通的子步骤（CI 已验证）：
   - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` 链接成功 + 头文件 staged；
   - vcpkg `arm64-ios-static` 静态 triplet 编出全部 C 依赖（脚本内有诊断会列出 `libSDL2*` 等）；
@@ -68,6 +70,15 @@
    - `--with-static-linked-ext`，只 `make libruby.3.3-static.a`（绕过 Ruby 3.3 可执行链接把 Makefile 当目标的坑）；
    - `ulimit -s 65536` 防内建字节码编译栈溢出。
 5. **`SDL2_sound`**：vcpkg 无此端口且其 `main` 已升 SDL3 → 固定源码编 `icculus/SDL_sound` 的 `v2.0.6`。
+6. **第三方头文件不在 `include/` 根下**（configure 过了，编译期炸一片 `'xxx.h' file not found`）→
+   `scripts/mkxp-cmake/CMakeLists.txt` 必须显式加子目录：`include/AL`（openal-soft，mkxp-z 以 `<al.h>` 引用）、
+   `include/uchardet`（uchardet 0.0.8 起装 `${CMAKE_INSTALL_INCLUDEDIR}/uchardet` 子目录）、
+   `include/pixman-1`（对应 meson 的 pkg-config `pixman-1`）、`<SDLSOUND_PREFIX>/include/SDL2`
+   （SDL2_sound v2.0.6 把 `SDL_sound.h` 装进 `SDL2/`）、`${RUBY_INC}/ruby`（mkxp-z 直接 `#include <ruby.h>`，
+   Debian 把 ruby.h 平铺在版本目录根、iOS 没有）。已另加两个 include 根的子目录全量 glob 兜底。
+   排查方法：本地 clone `mkxp-z/mkxp-z` 的 tag `v2.4.2`，grep 全部 `#include <...>`，逐一对照各 port 安装规则。
+   已确认**不会**参与编译的：fluidsynth（`SHARED_FLUID` 未定义）、openssl/HTTPS（`MKXPZ_SSL` 未定义）、
+   boost（sigslot 适配器无人引用）、X11/EGL（`GLES2_HEADER` 已定义走 GLES 路径）。
 
 ## 下一步该看什么（`ffc7dfa` 之后的构建）
 

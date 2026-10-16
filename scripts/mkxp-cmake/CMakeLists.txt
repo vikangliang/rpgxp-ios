@@ -99,6 +99,41 @@ set(MKXP_INC
   ${RUBY_INC}
 )
 
+# ---- vcpkg / 自编依赖的子目录头文件（勿删：不是所有 port 都平铺在 include/ 根下） ----
+# 以下布局均按对应 port 的安装规则核实过，缺一个就炸一个 'xxx.h' file not found：
+#   openal-soft → include/AL/{al,alc,alext}.h      （mkxp-z 以 <al.h> 引用，无 AL/ 前缀；
+#                                                  上游 Linux 靠 pkg-config 的 -I.../include/AL）
+#   uchardet    → include/uchardet/uchardet.h       （uchardet 0.0.8 的 CMake 装入
+#                                                  ${CMAKE_INSTALL_INCLUDEDIR}/uchardet）
+#   pixman      → include/pixman-1/pixman.h         （对应 meson 的 pkg-config pixman-1）
+#   SDL2_sound  → <prefix>/include/SDL2/SDL_sound.h（icculus v2.0.6 CMake 装进 SDL2/）
+#   ruby        → <prefix>/include/ruby/ruby.h      （mkxp-z 直接 <ruby.h>；Debian 布局
+#                                                  把 ruby.h 平铺在版本目录根，iOS 没有）
+list(APPEND MKXP_INC
+  ${DEP_INC}/AL
+  ${DEP_INC}/uchardet
+  ${DEP_INC}/pixman-1
+  ${SDLSOUND_PREFIX}/include/SDL2
+  ${RUBY_INC}/ruby
+)
+# 兜底：把 vcpkg / SDL2_sound 两个 include 根下的【全部子目录】都纳入搜索，
+# 这样即使某个 port 升级后换了布局（如 uchardet 平铺回根目录），也无需改这里。
+file(GLOB _DEP_INC_SUBDIRS LIST_DIRECTORIES true "${DEP_INC}/*")
+foreach(_d ${_DEP_INC_SUBDIRS})
+  if(IS_DIRECTORY "${_d}")
+    list(APPEND MKXP_INC "${_d}")
+  endif()
+endforeach()
+if(SDLSOUND_PREFIX)
+  file(GLOB _SDLSOUND_SUBDIRS LIST_DIRECTORIES true "${SDLSOUND_PREFIX}/include/*")
+  foreach(_d ${_SDLSOUND_SUBDIRS})
+    if(IS_DIRECTORY "${_d}")
+      list(APPEND MKXP_INC "${_d}")
+    endif()
+  endforeach()
+endif()
+message(STATUS "MKXP include dirs = ${MKXP_INC}")
+
 # ---- xxd 嵌入 shader/asset（还原上游 meson 的 custom_target） ----
 # 关键 1：符号名由【相对构建目录】的输入路径决定。上游 meson 在 build/ 下执行
 #   xxd -i ../shader/simple.frag  →  ___shader_simple_frag
