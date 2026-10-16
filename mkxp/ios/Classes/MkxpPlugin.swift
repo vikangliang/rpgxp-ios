@@ -6,6 +6,8 @@ import AVFAudio
 /// 负责注册 MethodChannel 与平台视图工厂。无需修改 AppDelegate。
 public class MkxpPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
+    installCrashLogger()
+
     let channel = FlutterMethodChannel(name: "com.yourapp.mkxp",
                                         binaryMessenger: registrar.messenger())
     let handler = MkxpMethodHandler()
@@ -13,6 +15,17 @@ public class MkxpPlugin: NSObject, FlutterPlugin {
 
     let factory = MkxpPlatformViewFactory(messenger: registrar.messenger())
     registrar.register(factory, withId: "mkxp-game-view")
+  }
+}
+
+/// 崩溃日志器：NSException 一类的崩溃（如后台线程触碰 UIKit 抛出的
+/// NSInternalInconsistencyException）在终止前把**符号化调用栈**写进
+/// mkxp.log——无 Xcode 环境下这是唯一能定位崩溃点的手段。
+private func installCrashLogger() {
+  NSSetUncaughtExceptionHandler { ex in
+    var lines = ["", "[crash] \(ex.name.rawValue): \(ex.reason ?? "")"]
+    lines.append(contentsOf: ex.callStackSymbols.map { "[crash] \($0)" })
+    MkxpLog.append(lines.joined(separator: "\n"))
   }
 }
 

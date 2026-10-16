@@ -229,6 +229,10 @@ target_compile_definitions(mkxp PRIVATE
   # 框架化（M1-A）：游戏目录由 mkxp_run(gamePath) 设为工作目录，
   # 不再 chdir 到 SDL_GetBasePath()（iOS 上是 App bundle 路径，不是游戏目录）。
   WORKDIR_CURRENT
+  # iOS 嵌入式：EventThread::process 跑在后台线程，而 SDL 窗口操作会改 UIKit
+  # 视图（UIKit 只允许主线程）。带此宏时 eventthread.cpp 吞掉窗口尺寸/位置/
+  # 全屏/标题请求——窗口全屏固定，内部分辨率仍由 Screen::setResolution 处理。
+  MKXPZ_IOS_EMBED
   # iOS 没有 Windows/Cocoa 专属 API，必须显式声明为非 Windows 平台，
   # 否则 #if MKXPZ_PLATFORM != MKXPZ_PLATFORM_WINDOWS 因两宏均未定义而
   # 误走 Windows 分支（GetUserDefaultLangID 等不存在）。上游 Linux 构建

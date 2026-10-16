@@ -231,3 +231,87 @@ diff --git a/src/main.cpp b/src/main.cpp
  
      return 0;
  }
+diff --git a/src/eventthread.cpp b/src/eventthread.cpp
+index 355b698..91ddec7 100644
+--- a/src/eventthread.cpp
++++ b/src/eventthread.cpp
+@@ -463,35 +463,65 @@ void EventThread::process(RGSSThreadData &rtData)
+             default :
+                 /* Handle user events */
+                 switch(event.type - usrIdStart)
+                 {
+                     case REQUEST_SETFULLSCREEN :
++#ifdef MKXPZ_IOS_EMBED
++                        /* iOS 嵌入：见 REQUEST_WINRESIZE 注释。 */
++                        break;
++#else
+                         setFullscreen(win, static_cast<bool>(event.user.code));
+                         break;
++#endif
+                         
+                     case REQUEST_WINRESIZE :
++#ifdef MKXPZ_IOS_EMBED
++                        /* iOS 嵌入：EventThread::process 跑在后台线程，而 SDL 窗口操作
++                         * 会改 UIKit 视图——UIKit 只允许主线程，否则崩
++                         * NSInternalInconsistencyException: Call must be made on main thread
++                         * （Essentials 启动脚本 Graphics.resize_screen 必踩）。
++                         * 窗口全屏固定，直接吞掉；内部分辨率由 Screen::setResolution
++                         * 在 RGSS 线程调整，不受影响。 */
++                        rtData.rqWindowAdjust.clear();
++                        break;
++#else
+                         SDL_SetWindowSize(win, event.window.data1, event.window.data2);
+                         rtData.rqWindowAdjust.clear();
+                         break;
++#endif
+                         
+                     case REQUEST_WINREPOSITION :
++#ifdef MKXPZ_IOS_EMBED
++                        /* 见 REQUEST_WINRESIZE 注释 */
++                        rtData.rqWindowAdjust.clear();
++                        break;
++#else
+                         SDL_SetWindowPosition(win, event.window.data1, event.window.data2);
+                         rtData.rqWindowAdjust.clear();
+                         break;
++#endif
+                         
+                     case REQUEST_WINCENTER :
++#ifdef MKXPZ_IOS_EMBED
++                        /* 见 REQUEST_WINRESIZE 注释 */
++                        rtData.rqWindowAdjust.clear();
++                        break;
++#else
+                         rc = SDL_GetDesktopDisplayMode(SDL_GetWindowDisplayIndex(win), &dm);
+                         if (!rc)
+                             SDL_SetWindowPosition(win,
+                                                   (dm.w / 2) - (winW / 2),
+                                                   (dm.h / 2) - (winH / 2));
+                         rtData.rqWindowAdjust.clear();
+                         break;
++#endif
+                         
+                     case REQUEST_WINRENAME :
+                         rtData.config.windowTitle = (const char*)event.user.data1;
++#ifndef MKXPZ_IOS_EMBED
+                         SDL_SetWindowTitle(win, rtData.config.windowTitle.c_str());
++#endif
+                         break;
+                         
+                     case REQUEST_TEXTMODE :
+                         if (event.user.code)
+                         {
+@@ -564,11 +594,13 @@ void EventThread::process(RGSSThreadData &rtData)
+                             havePendingTitle = true;
+                             
+                             break;
+                         }
+                         
++#ifndef MKXPZ_IOS_EMBED
+                         SDL_SetWindowTitle(win, buffer);
++#endif
+                         break;
+                         
+                     case UPDATE_SCREEN_RECT :
+                         gameScreen.x = event.user.windowID;
+                         gameScreen.y = event.user.code;
