@@ -30,4 +30,11 @@ struct MkxpLog {
     let url = docsURL().appendingPathComponent(fileName)
     return (try? String(contentsOf: url, encoding: .utf8)) ?? "（无日志文件）"
   }
+
+  /// 清空日志（日志页"清空"按钮）。引擎的 stderr 重定向持有已打开的文件句柄，
+  /// 删除文件不会断开它——所以用截断（写入空内容）而非删除，保证引擎继续追加。
+  static func clear() {
+    let url = docsURL().appendingPathComponent(fileName)
+    try? "".write(to: url, atomically: false, encoding: .utf8)
+  }
 }

@@ -89,6 +89,20 @@ class Mkxp {
     } catch (_) {}
   }
 
+  /// 保持屏幕常亮（设置页开关；进游戏开、退出关）。
+  static Future<void> setKeepAwake(bool on) async {
+    try {
+      await _ch.invokeMethod('setKeepAwake', {'on': on});
+    } catch (_) {}
+  }
+
+  /// 清空运行日志（mkxp.log）。
+  static Future<void> clearLog() async {
+    try {
+      await _ch.invokeMethod('clearLog');
+    } catch (_) {}
+  }
+
   static Future<String> readLog() async {
     try {
       return await _ch.invokeMethod('readLog') ?? '';

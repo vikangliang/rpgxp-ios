@@ -53,6 +53,7 @@ class MkxpMethodHandler: NSObject {
       }
     case "quit":
       MkxpBridge.quit()
+      MkxpTouchOverlay.shared.hide()
       result(nil)
     case "key":
       guard let args = call.arguments as? [String: Any],
@@ -79,6 +80,14 @@ class MkxpMethodHandler: NSObject {
       result(nil)
     case "haptic":
       MkxpHaptic.tap(); result(nil)
+    case "setKeepAwake":
+      if let args = call.arguments as? [String: Any],
+         let on = args["on"] as? Bool {
+        UIApplication.shared.isIdleTimerDisabled = on
+      }
+      result(nil)
+    case "clearLog":
+      MkxpLog.clear(); result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
