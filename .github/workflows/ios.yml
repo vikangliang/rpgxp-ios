@@ -130,19 +130,22 @@ jobs:
           name: rpgxp-loader-ipa
           path: build/app.ipa
 
-      # 失败时把日志推回 ci-status-ios 分支（与 build-mkxp 的 ci-status 分开，
+      # 把构建状态（成功/失败）推回 ci-status-ios 分支（与 build-mkxp 的 ci-status 分开，
       # 两边都 --force 推同一分支会互相覆盖）。[skip ci] 防重触发。
       # 注意：本 workflow 由 workflow_run 触发，GITHUB_TOKEN 是只读的，无法 push；
       # 改用仓库 Secret CI_PUSH_TOKEN（fine-grained PAT，仅本仓库 Contents: RW）。
-      - name: Publish failure summary
-        if: failure()
+      # 改为 always()：失败有摘要，成功也写一行状态，便于接手者免登录确认 iOS 全绿
+      # （否则只有失败时才有 ci-status-ios 分支，成功与否无法自助判断）。
+      - name: Publish build status
+        if: always()
         continue-on-error: true
         env:
           CI_PUSH_TOKEN: ${{ secrets.CI_PUSH_TOKEN }}
         run: |
           mkdir -p ci-status
+          if [ "${{ job.status }}" = "success" ]; then STATUS="success"; else STATUS="failure"; fi
           {
-            echo "# iOS build failure"
+            echo "# iOS build $STATUS"
             echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "commit: ${GITHUB_SHA::7} $(git log -1 --format=%s)"
             echo "date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -161,5 +164,5 @@ jobs:
           TOKEN="${CI_PUSH_TOKEN:-$GITHUB_TOKEN}"
           git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git add ci-status/last-failure.md
-          git commit -m "ci: ios build failure summary [skip ci]"
+          git commit -m "ci: ios build status [skip ci]"
           git push origin HEAD:ci-status-ios --force

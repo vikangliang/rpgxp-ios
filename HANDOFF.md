@@ -95,10 +95,18 @@ overlay UIWindow 盖在 SDL 窗口上、按钮直调 `mkxp_key`（不依赖 Flut
   - `ios.yml`：编 M0 App 的未签名 IPA（`rpgxp-loader-ipa`）。
 - 接手动作：本机 `git pull` → 改 `scripts/` 或 `CMakeLists.txt` → `commit && push`，CI 自动跑。
 - 看日志：GitHub → Actions → 对应 workflow run → 下载 artifact（尤其 `mkxp-build-log`）。
-- **免 token 看错误**：`build-mkxp.yml` 失败时会把错误摘要+日志尾部自动推到 `ci-status` 分支的
-  `ci-status/last-failure.md`（`[skip ci]` 防重触发）。读取：
-  `GET /repos/vikangliang/rpgxp-ios/contents/ci-status/last-failure.md?ref=ci-status`（公开仓库免登录）。
-  本地也可跑 `powershell -File C:\Users\ginny\.ci\get-ci.ps1` 一次拿到状态+步骤+失败摘要。
+- **免 token 看状态（关键，接手者只读这两个分支即可，无需截图/登 GitHub）**：
+  - `build-mkxp.yml` 永远把跨归档符号冲突报告推到 `ci-status` 分支的 `ci-status/last-collisions.md`
+    （`COLLISION_COUNT` 是预期的重复符号，已被「核心 force_load + 依赖按需加载」消化，非致命）；
+    **仅失败时**额外推 `ci-status/last-failure.md`（错误行 + 日志尾部）。
+  - `ios.yml` 现已 `always()` 把构建状态推到 `ci-status-ios` 分支的 `ci-status/last-failure.md`
+    （成功写 `# iOS build success`，失败写 `# iOS build failure` + 重复/未定义符号聚合 + 日志尾部）。
+  - 本地读取（公开仓库免登录）：`git fetch origin ci-status ci-status-ios`，再
+    `git show origin/ci-status:ci-status/last-collisions.md` /
+    `git show origin/ci-status-ios:ci-status/last-failure.md`；
+    用里面的 `commit: <sha>` 对上自己推送的提交，即知是否轮到本次、绿还是红。
+  注意 `git fetch origin ci-status ci-status-ios` 中若某分支尚不存在会整条报错，
+  需**分开 fetch**（如本机另写 `get-ci.ps1` 逐个拉取并容错）。
 - **iOS 失败摘要需要 PAT（重要）**：`ios.yml` 由 `workflow_run` 触发，拿到的 `GITHUB_TOKEN` 是
   **只读**的，`git push` 到 `ci-status-ios` 会被拒（摘要步骤也会因此崩）。已在 `ios.yml` 的
   Publish 步骤改用仓库 Secret **`CI_PUSH_TOKEN`**（fine-grained PAT，仅本仓库、Contents: RW）推送；
