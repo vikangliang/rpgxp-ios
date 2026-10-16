@@ -42,8 +42,28 @@ brew install --formula cmake ninja automake libtool pkg-config bison 2>/dev/null
 export PATH="$(brew --prefix bison)/bin:$PATH"
 
 # ---------- 1. vcpkg 安装 C 依赖（arm64-ios 静态） ----------
+# 钉死 vcpkg commit：不钉的话每次跑的都是当天 master，port 行为随时间漂移、
+# 且 actions/cache 的 installed/ 可能跨 vcpkg 版本被复用，构建不可复现。
+# 升 vcpkg 时改这里（缓存 key 只跟本脚本哈希走，会自然失效重建）。
+VCPKG_REF=3cd21e48a75f67acfef289da52893ce79144aaa1  # master @ 2026-10-16
 if [ ! -d "$VCPKG/.git" ]; then
+  # actions/cache 的 restore-keys 会把旧运行的 installed/ 还原到 $VCPKG
+  # （目录非空但无 .git），直接 clone 会 "already exists and is not empty"。
+  # 先把还原内容挪开，clone + checkout 钉死版本后再把 installed/ 挪回去
+  # （vcpkg install 认得它，同版本即跳过重建）。
+  if [ -d "$VCPKG" ]; then
+    mv "$VCPKG" "${VCPKG}.restore"
+    echo "== vcpkg dir restored from cache (no .git), moved aside =="
+  fi
   git clone --depth 1 https://github.com/microsoft/vcpkg "$VCPKG"
+  git -C "$VCPKG" fetch --depth 1 origin "$VCPKG_REF" \
+    && git -C "$VCPKG" checkout --detach "$VCPKG_REF" \
+    || echo "WARN: vcpkg pin checkout failed, falling back to master"
+  if [ -d "${VCPKG}.restore/installed" ]; then
+    mv "${VCPKG}.restore/installed" "$VCPKG/installed"
+    echo "== restored cached vcpkg installed/ =="
+  fi
+  rm -rf "${VCPKG}.restore"
 fi
 pushd "$VCPKG" >/dev/null
   ./bootstrap-vcpkg.sh

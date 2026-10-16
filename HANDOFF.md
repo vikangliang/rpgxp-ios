@@ -4,7 +4,7 @@
 
 ## 当前状态（2026-10-16）
 
-- 最新提交：`8f263e1`（框架化入口 M1-A）。待 `git push origin main` 触发 CI 验证。
+- 最新提交：见 git log（M1-A 框架化入口 `8f263e1` + vcpkg 缓存修复）。待 CI 验证。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
 - **M1 编译关已通** ✅✅：`e7d7019` 起 `build-mkxp.yml` 全绿——`libmkxp.a` 编通并合并出
   `MKXP.framework`（artifact 9.96MB = libmkxp + 全部 vcpkg 静态依赖 + libruby-static + 4.5MB CJK 字体）。
@@ -115,6 +115,12 @@
     已 sed 把调用点替换为 `0`（no-op 降级，返回 Qnil 不抛错）。steamshim 的 fork/execvp 不在编译清单，无需处理。
 12. **binding 层按仓库根相对路径 include**：`binding/*.cpp` 有 4 处 `#include "src/..."`
     （util.h/config.h），需把 `${MKXP_SRC}` 本身加进 MKXP_INC（此前只有 src/ 各子目录）。
+13. **缓存还原把 vcpkg 目录搞成「有内容无 .git」**：workflow 的 `restore-keys` 前缀回退会把
+    旧（成功）运行的 `deps/vcpkg/installed` 还原出来，目录非空但无 `.git`，脚本的
+    `[ ! -d $VCPKG/.git ]` 守卫漏判 → `git clone` 报 "already exists and is not an empty directory"。
+    已改为：克隆前把还原内容挪到 `${VCPKG}.restore`，clone + checkout 钉死 commit 后再把
+    `installed/` 挪回。另：vcpkg 已钉死 commit（`VCPKG_REF`），不钉则每次跑当天 master、
+    缓存跨版本复用，构建不可复现。
 
 ## 下一步该做什么（编译关已通，2026-10-16）
 
