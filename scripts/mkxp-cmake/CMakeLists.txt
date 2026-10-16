@@ -221,7 +221,12 @@ target_compile_definitions(mkxp PRIVATE
   MKXPZ_BUILD_MESON
   MKXPZ_VERSION="2.4.2"
   HAVE_NANOSLEEP
-  MKXPZ_INIT_GL_LATER
+  # 【勿加 MKXPZ_INIT_GL_LATER】真机崩溃实证（[crash] 符号栈）：该宏把 GL 上下文
+  # 创建挪进 RGSS 后台线程 → UIKit_GL_CreateContext → setSDLWindow 改视图 →
+  # iOS 26 抛 NSInternalInconsistencyException 'Call must be made on main thread'。
+  # 默认路径（主线程 initGL）下 SDL_uikitview setSDLWindow 对同窗口早退
+  # （if (window == sdlwindow) return），RGSS 线程后续 MakeCurrent 不再触碰 UIKit，
+  # 而 [EAGLContext setCurrentContext] 每线程照常执行。删此宏即根治。
   AL_LIBTYPE_STATIC
   MKXPZ_ALCDEVICE=ALCdevice
   GLES2_HEADER
