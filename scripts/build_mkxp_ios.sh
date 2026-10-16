@@ -254,6 +254,15 @@ if [ -f "$MKXP_SRC/src/display/font.h" ]; then
   echo "patched _TTF_Font -> TTF_Font (SDL2_ttf >= 2.20 opaque struct rename)"
 fi
 
+# iOS 禁用 system()：binding-mri.cpp 的「打开 URL」绑定用 std::system 拼 OPENCMD
+# 启动外部程序（open/xdg-open/start），iPhone 上既无对应语义也编译不过
+# （'system' is unavailable: not available on iOS）。与坑 #4 的 Ruby vm_dump.c
+# 同法：直接把调用点替换为 0，功能静默降级为 no-op（返回 Qnil 不抛错）。
+if [ -f "$MKXP_SRC/binding/binding-mri.cpp" ]; then
+  sed -i '' 's/std::system(command\.c_str())/0/' "$MKXP_SRC/binding/binding-mri.cpp"
+  echo "patched binding-mri.cpp std::system -> 0 (unavailable on iOS)"
+fi
+
 # ---------- 4. 编译 mkxp-z 为静态库 libmkxp.a（手搓 CMake，链接 vcpkg + 静态 Ruby） ----------
 # 确保构建工具（CI macos runner 可能缺 xxd；默认用 Unix Makefiles 生成器，无需 ninja）
 brew install xxd >/dev/null 2>&1 || true

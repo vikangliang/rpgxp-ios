@@ -75,6 +75,7 @@ find_mkxp_lib(L_UCHARDET  uchardet)
 
 # ---- mkxp-z 头搜索路径 ----
 set(MKXP_INC
+  ${MKXP_SRC}
   ${MKXP_SRC}/src
   ${MKXP_SRC}/src/audio
   ${MKXP_SRC}/src/crypto

@@ -7,8 +7,8 @@
 - 最新提交：`863fa6d`（xxd 清单补 wqymicrohei.ttf）。待 `git push origin main` 触发下一轮 CI。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
 - **M1 进行中**，卡在「手搓 CMake 编译 `libmkxp.a`」这一关。configure / xxd / find_library / 头文件路径
-  / assert 截胡 / Metal 守卫五关已过（坑 #3/#6/#7/#8），编译进度约 48%，当前卡点为
-  CJK 兜底字体 wqymicrohei.ttf 未进 xxd 清单（坑 #10，已修），待下一轮 CI 验证。
+  / assert 截胡 / Metal 守卫 / TTF_Font 改名 / CJK 字体均已过（坑 #3/#6-#10），编译进度约 81%，
+  当前卡点为 binding 层：`system()` iOS 不可用 + 根相对 include 缺源码根（坑 #11/#12，已修），待验证。
 - 已跑通的子步骤（CI 已验证）：
   - MRI Ruby 3.3.12 静态库 `libruby.3.3-static.a` 链接成功 + 头文件 staged；
   - vcpkg `arm64-ios-static` 静态 triplet 编出全部 C 依赖（脚本内有诊断会列出 `libSDL2*` 等）；
@@ -101,6 +101,11 @@
     兜底），此时 `font.cpp` 嵌的是 `assets/wqymicrohei.ttf`（4.5MB）而非 liberation → xxd 清单
     漏了它就炸 `'wqymicrohei.ttf.xxd' file not found`。排查法：grep 全部 `#include "*.xxd"`
     与 CMake 的 SHADERS/ASSETS 清单对账（shader 26 + icon/gamecontrollerdb/liberation/wqy）。
+11. **`system()` 在 iOS  unavailable**：`binding-mri.cpp` 的「打开 URL」绑定用 `std::system`
+    拼 `OPENCMD`（open/xdg-open/start）启外部程序 → `'system' is unavailable: not available on iOS`。
+    已 sed 把调用点替换为 `0`（no-op 降级，返回 Qnil 不抛错）。steamshim 的 fork/execvp 不在编译清单，无需处理。
+12. **binding 层按仓库根相对路径 include**：`binding/*.cpp` 有 4 处 `#include "src/..."`
+    （util.h/config.h），需把 `${MKXP_SRC}` 本身加进 MKXP_INC（此前只有 src/ 各子目录）。
 
 ## 下一步该看什么（`ffc7dfa` 之后的构建）
 
