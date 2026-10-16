@@ -332,12 +332,21 @@ rm -rf "$FW_DIR"
 mkdir -p "$FW_DIR/Headers" "$FW_DIR/Modules"
 
 # 收集全部 .a（libmkxp + vcpkg + ruby + 自编 SDL2_sound）
+# 去重与排除（都为了 App 侧 force_load 时不炸 duplicate symbols）：
+#   - 按真实路径去重：vcpkg 的 libpng.a 是 libpng16.a 的符号链接，find 会同时
+#     命中两个路径，libtool 会把同一份内容合并两遍 → 每个 png 符号重复定义；
+#   - 排除 libSDL2main.a：iOS 上 SDL 不接管 main，且 main 已改名 mkxp_z_main；
+#   - 排除 libz.a：Ruby 的 --with-static-linked-ext 已把 zlib 烘进
+#     libruby-static.a（mkxp 的 binding 要静态加载 zlib 扩展），两份定义重叠。
 LIBS=()
 [ -f "$MKXP_SRC/build-ios/libmkxp.a" ] && LIBS+=("$MKXP_SRC/build-ios/libmkxp.a")
-# 排除 libSDL2main.a：iOS 上 SDL 不接管 main，且本工程的 main 已改名
-# mkxp_z_main，链入只会带来对不存在符号的引用（SDL_main 引用由
-# mkxp_framework.cpp 的桩兜底）。
-while IFS= read -r f; do LIBS+=("$f"); done < <(find "$VCPKG_INSTALL/lib" -name '*.a' ! -name 'libSDL2main.a')
+SEEN=""
+while IFS= read -r f; do
+  real=$(python3 -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$f")
+  case " ${SEEN} " in *" ${real} "*) continue ;; esac
+  SEEN="${SEEN} ${real}"
+  LIBS+=("${real}")
+done < <(find "$VCPKG_INSTALL/lib" -name '*.a' ! -name 'libSDL2main.a' ! -name 'libz.a' | sort)
 LIBS+=("$RUBY_LIB")
 # SDL2_sound 是 vcpkg 外的自编静态库——曾漏合并，导致 App 链接期
 # Sound_Init/Sound_Decode 等齐 undefined。
