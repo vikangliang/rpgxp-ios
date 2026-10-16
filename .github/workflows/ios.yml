@@ -132,8 +132,13 @@ jobs:
 
       # 失败时把日志推回 ci-status-ios 分支（与 build-mkxp 的 ci-status 分开，
       # 两边都 --force 推同一分支会互相覆盖）。[skip ci] 防重触发。
+      # 注意：本 workflow 由 workflow_run 触发，GITHUB_TOKEN 是只读的，无法 push；
+      # 改用仓库 Secret CI_PUSH_TOKEN（fine-grained PAT，仅本仓库 Contents: RW）。
       - name: Publish failure summary
         if: failure()
+        continue-on-error: true
+        env:
+          CI_PUSH_TOKEN: ${{ secrets.CI_PUSH_TOKEN }}
         run: |
           mkdir -p ci-status
           {
@@ -146,13 +151,15 @@ jobs:
             grep -oE "(duplicate symbol|Undefined symbol): .*" /tmp/ios-build.log 2>/dev/null \
               | sed -E "s/.*'(_.*)'.*/\1/" | sort | uniq -c | sort -rn | head -60 || true
             echo '```'
-            echo '## ios-build.log (tail 120)'
+            echo '## ios-build.log (tail 140)'
             echo '```'
-            tail -120 /tmp/ios-build.log 2>/dev/null || echo '(no log)'
+            tail -140 /tmp/ios-build.log 2>/dev/null || echo '(no log)'
             echo '```'
           } > ci-status/last-failure.md
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          TOKEN="${CI_PUSH_TOKEN:-$GITHUB_TOKEN}"
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git add ci-status/last-failure.md
           git commit -m "ci: ios build failure summary [skip ci]"
           git push origin HEAD:ci-status-ios --force
