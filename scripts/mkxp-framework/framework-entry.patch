@@ -35,17 +35,197 @@ index 67c7799..83126e1 100644
      
      void initStaticKbBindings()
 diff --git a/src/main.cpp b/src/main.cpp
-index 4779221..cb7329d 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -201,7 +201,9 @@ static void setupWindowIcon(const Config &conf, SDL_Window *win) {
+@@ -35,6 +35,8 @@
+ #include <string>
+ #include <unistd.h>
+ #include <regex>
++#include <thread>
++#include <atomic>
+ 
+ #include "binding.h"
+ #include "sharedstate.h"
+@@ -201,7 +203,11 @@
    }
  }
  
 -int main(int argc, char *argv[]) {
-+// 框架化（iOS 嵌入）：原 main 改名，由 mkxp_framework.cpp 的 mkxp_run() 在
-+// 后台线程调用；extern "C" 避免符号修饰，供框架层按 C 约定调用。
++// 框架化（iOS 嵌入）：原 main 改名，由 mkxp_run 调用；其阻塞事件循环
++// 被本文件尾部甩到后台线程，g_engineRunning 由后台线程在引擎退出时复位。
++extern std::atomic<bool> g_engineRunning;
++
 +extern "C" int mkxp_z_main(int argc, char *argv[]) {
      SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
      SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
  
+@@ -414,7 +420,11 @@
+     if (!mode.refresh_rate)
+       conf.syncToRefreshrate = false;
+ 
+-    EventThread eventThread;
++    // 引擎事件循环（eventThread.process）必须离开主线程：否则 iOS 主线程 run loop
++    // 被占死，Core Animation 无法上屏（黑屏/界面冻结）。SDL 初始化 + 建窗 + 起
++    // RGSS 线程都留在主线程（UIKit 安全），循环与终止清理甩到后台线程。状态用堆分配，
++    // 跨 mkxp_z_main 返回存活；g_engineRunning 由后台线程在引擎退出时复位。
++    EventThread *evThread = new EventThread();
+ 
+ #ifndef MKXPZ_INIT_GL_LATER
+     SDL_GLContext glCtx = initGL(win, conf, 0);
+@@ -422,84 +432,92 @@
+     SDL_GLContext glCtx = NULL;
+ #endif
+ 
+-    RGSSThreadData rtData(&eventThread, argv[0], win, alcDev, mode.refresh_rate,
+-                          mkxp_sys::getScalingFactor(), conf, glCtx);
++    RGSSThreadData *rtData = new RGSSThreadData(*evThread, argv[0], win, alcDev,
++                                               mode.refresh_rate,
++                                               mkxp_sys::getScalingFactor(),
++                                               conf, glCtx);
+ 
+     int winW, winH, drwW, drwH;
+     SDL_GetWindowSize(win, &winW, &winH);
+-    rtData.windowSizeMsg.post(Vec2i(winW, winH));
+-    
++    rtData->windowSizeMsg.post(Vec2i(winW, winH));
++
+     SDL_GL_GetDrawableSize(win, &drwW, &drwH);
+-    rtData.drawableSizeMsg.post(Vec2i(drwW, drwH));
++    rtData->drawableSizeMsg.post(Vec2i(drwW, drwH));
+ 
+     /* Load and post key bindings */
+-    rtData.bindingUpdateMsg.post(loadBindings(conf));
+-    
++    rtData->bindingUpdateMsg.post(loadBindings(conf));
++
+ #ifdef MKXPZ_BUILD_XCODE
+     // Create Touch Bar
+     initTouchBar(win, conf);
+ #endif
+ 
+     /* Start RGSS thread */
+-    SDL_Thread *rgssThread = SDL_CreateThread(rgssThreadFun, "rgss", &rtData);
+-
+-    /* Start event processing */
+-    eventThread.process(rtData);
+-
+-    /* Request RGSS thread to stop */
+-    rtData.rqTerm.set();
+-
+-    /* Wait for RGSS thread response */
+-    for (int i = 0; i < 1000; ++i) {
+-      /* We can stop waiting when the request was ack'd */
+-      if (rtData.rqTermAck) {
+-        Debug() << "RGSS thread ack'd request after" << i * 10 << "ms";
+-        break;
+-      }
+-
+-      /* Give RGSS thread some time to respond */
+-      SDL_Delay(10);
+-    }
+-
+-    /* If RGSS thread ack'd request, wait for it to shutdown,
+-     * otherwise abandon hope and just end the process as is. */
+-    if (rtData.rqTermAck)
+-      SDL_WaitThread(rgssThread, 0);
+-    else
+-      SDL_ShowSimpleMessageBox(
+-          SDL_MESSAGEBOX_ERROR, conf.game.title.c_str(),
+-          std::string("The RGSS script seems to be stuck. "+conf.game.title+" will now force quit.").c_str(),
+-          win);
+-
+-    if (!rtData.rgssErrorMsg.empty()) {
+-      Debug() << rtData.rgssErrorMsg;
+-      SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, conf.game.title.c_str(),
+-                               rtData.rgssErrorMsg.c_str(), win);
+-    }
+-
+-    if (rtData.glContext)
+-      SDL_GL_DeleteContext(rtData.glContext);
+-
+-    /* Clean up any remainin events */
+-    eventThread.cleanup();
+-
+-    Debug() << "Shutting down.";
+-
+-    alcCloseDevice(alcDev);
+-    SDL_DestroyWindow(win);
++    SDL_Thread *rgssThread = SDL_CreateThread(rgssThreadFun, "rgss", rtData);
++
++    std::thread engineLoop([evThread, rtData, rgssThread]() {
++        evThread->process(*rtData);
++
++        /* Request RGSS thread to stop */
++        rtData->rqTerm.set();
++
++        /* Wait for RGSS thread response */
++        for (int i = 0; i < 1000; ++i) {
++          /* We can stop waiting when the request was ack'd */
++          if (rtData->rqTermAck) {
++            Debug() << "RGSS thread ack'd request after" << i * 10 << "ms";
++            break;
++          }
++
++          /* Give RGSS thread some time to respond */
++          SDL_Delay(10);
++        }
++
++        /* If RGSS thread ack'd request, wait for it to shutdown,
++         * otherwise abandon hope and just end the process as is. */
++        if (rtData->rqTermAck)
++          SDL_WaitThread(rgssThread, 0);
++        else
++          SDL_ShowSimpleMessageBox(
++              SDL_MESSAGEBOX_ERROR, rtData->config.game.title.c_str(),
++              std::string("The RGSS script seems to be stuck. "+rtData->config.game.title+" will now force quit.").c_str(),
++              rtData->window);
++
++        if (!rtData->rgssErrorMsg.empty()) {
++          Debug() << rtData->rgssErrorMsg;
++          SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, rtData->config.game.title.c_str(),
++                                   rtData->rgssErrorMsg.c_str(), rtData->window);
++        }
++
++        if (rtData->glContext)
++          SDL_GL_DeleteContext(rtData->glContext);
++
++        /* Clean up any remainin events */
++        evThread->cleanup();
++
++        Debug() << "Shutting down.";
++
++        alcCloseDevice(rtData->alcDev);
++        SDL_DestroyWindow(rtData->window);
+ 
+ #if defined(__WIN32__)
+-    if (wsadata.wVersion)
+-      WSACleanup();
+-#endif
+-
+-#ifdef MKXPZ_STEAM
+-    STEAMSHIM_deinit();
+-#endif
+-    Sound_Quit();
+-    TTF_Quit();
+-    IMG_Quit();
+-    SDL_Quit();
++        if (wsadata.wVersion)
++          WSACleanup();
++#endif
++
++#ifdef MKXPZ_STEAM
++        STEAMSHIM_deinit();
++#endif
++        Sound_Quit();
++        TTF_Quit();
++        IMG_Quit();
++        SDL_Quit();
++
++        g_engineRunning.store(false);
++        delete rtData;
++        delete evThread;
++    });
++    engineLoop.detach();
+ 
+     return 0;
+ }

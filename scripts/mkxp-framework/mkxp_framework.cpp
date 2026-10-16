@@ -15,12 +15,11 @@
 //      使用调用方（mkxp_run）设置的工作目录作为游戏根。
 //   3. MKXP.h（构建脚本生成）中的三个声明与本文件定义一致。
 //
-// 线程模型：引擎整体（SDL_Init/窗口/RGSS 线程/EventThread::process）跑在【主线程】
-// ——SDL2 的 iOS 后端（UIWindow/CAEAGLLayer/UIKit 事件泵）只支持主线程，后台线程里
-// SDL_Init(VIDEO)/SDL_CreateWindow 会直接崩（2026-10-16 真机实测：点启动即闪退）。
-// mkxp_run 由 Flutter 主线程调用，dispatch_async 到主队列后立即返回，Dart 侧不阻塞；
-// 引擎事件循环占用主线程期间 Flutter 浮层暂停响应（M1 无触摸控件，可接受；
-// M2 做浮层时若需要常驻响应再评估拆分）。SDL 事件队列线程安全，按键与退出请求
+// 线程模型：SDL_Init/建窗/RGSS 线程在主线程（UIKit 安全；后台线程里
+// SDL_Init(VIDEO)/SDL_CreateWindow 会直接崩，2026-10-16 真机实测）。EventThread::process
+// 这个阻塞事件循环由 mkxp_z_main 甩到【后台线程】，主线程 run loop 不被占死，Core Animation
+// 才能上屏（否则点启动后画面冻在 Flutter 浮层、无游戏画面）。mkxp_run 立即返回，Dart 侧不阻塞；
+// g_engineRunning 由后台线程在引擎真正退出时复位。SDL 事件队列线程安全，按键与退出请求
 // 经 SDL_PushEvent 投递，走引擎原生输入管线。
 // =============================================================================
 
@@ -51,7 +50,7 @@ extern "C" int SDL_main(int argc, char *argv[]) {
 extern std::unordered_map<int, SDL_Scancode> g_buttonToScancode;
 extern std::mutex g_buttonToScancodeMtx;
 
-static std::atomic<bool> g_engineRunning{false};
+std::atomic<bool> g_engineRunning{false};
 
 extern "C" {
 
@@ -73,11 +72,12 @@ int mkxp_run(const char *gamePath)
      * 接管 UIApplication。必须在 SDL_Init 之前调用（任意线程均可）。 */
     SDL_SetMainReady();
 
-    /* 引擎跑主线程：见文件头「线程模型」。argv 用块内复合字面量，避免悬空指针。 */
+    /* 引擎初始化（SDL_Init/建窗/RGSS 线程）在主线程（UIKit 安全），阻塞事件循环由
+     * mkxp_z_main 内部甩到后台线程；本函数立即返回，主线程 run loop 不被占死，iOS 合成器
+     * 才能上屏。g_engineRunning 由后台线程在引擎真正退出时复位。argv 用块内复合字面量，避免悬空指针。 */
     g_engineRunning.store(true);
     dispatch_async(dispatch_get_main_queue(), ^{
         mkxp_z_main(1, (char *[]){"mkxp", nullptr});
-        g_engineRunning.store(false);
     });
 
     return 0;
