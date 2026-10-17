@@ -1,427 +1,3 @@
-diff --git a/src/input/input.cpp b/src/input/input.cpp
-index 67c7799..83126e1 100644
---- a/src/input/input.cpp
-+++ b/src/input/input.cpp
-@@ -35,9 +35,16 @@
- #include <vector>
- #include <cmath>
- #include <unordered_map>
-+#include <mutex>
- #include <string.h>
- #include <assert.h>
- 
-+/* rgssKey(Input::ButtonCode) -> SDL_Scancode 反查表：由 applyBindingDesc 在
-+ * 绑定变化时重建，供 mkxp_framework.cpp 的 mkxp_key() 做按键注入。
-+ * RGSS 线程写、UI 线程读，访问需持 g_buttonToScancodeMtx。 */
-+std::unordered_map<int, SDL_Scancode> g_buttonToScancode;
-+std::mutex g_buttonToScancodeMtx;
-+
- #define BUTTON_CODE_COUNT 26
- 
- #define m(vk,sc) { vk, SDL_SCANCODE_##sc }
-@@ -965,6 +972,14 @@ struct InputPrivate
-         appendBindings(kbBindings);
-         appendBindings(ctrlABindings);
-         appendBindings(ctrlBBindings);
-+
-+        /* 重建 rgssKey -> scancode 反查表（mkxp_key 注入按键用） */
-+        {
-+            std::lock_guard<std::mutex> _(g_buttonToScancodeMtx);
-+            g_buttonToScancode.clear();
-+            for (const KbBinding &k : kbBindings)
-+                g_buttonToScancode[k.target] = k.source;
-+        }
-     }
-     
-     void initStaticKbBindings()
-diff --git a/src/main.cpp b/src/main.cpp
---- a/src/main.cpp
-+++ b/src/main.cpp
-@@ -35,6 +35,8 @@
- #include <string>
- #include <unistd.h>
- #include <regex>
-+#include <thread>
-+#include <atomic>
- 
- #include "binding.h"
- #include "sharedstate.h"
-@@ -201,7 +203,11 @@
-   }
- }
- 
--int main(int argc, char *argv[]) {
-+// 框架化（iOS 嵌入）：原 main 改名，由 mkxp_run 调用；其阻塞事件循环
-+// 被本文件尾部甩到后台线程，g_engineRunning 由后台线程在引擎退出时复位。
-+extern std::atomic<bool> g_engineRunning;
-+
-+extern "C" int mkxp_z_main(int argc, char *argv[]) {
-     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
-     SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
- 
-@@ -414,7 +420,12 @@
-     if (!mode.refresh_rate)
-       conf.syncToRefreshrate = false;
- 
--    EventThread eventThread;
-+    // 引擎事件循环（eventThread.process）必须离开主线程：否则 iOS 主线程 run loop
-+    // 被占死，Core Animation 无法上屏（黑屏/界面冻结）。SDL 初始化 + 建窗 + 起
-+    // RGSS 线程都留在主线程（UIKit 安全），循环与终止清理甩到后台线程。状态用堆分配，
-+    // 跨 mkxp_z_main 返回存活；g_engineRunning 由后台线程在引擎退出时复位。
-+    EventThread *evThread = new EventThread();
-+    fprintf(stderr, "[stage] %ums evThread ok (window+openal done, initGL next)\n", (unsigned) SDL_GetTicks());
- 
- #ifndef MKXPZ_INIT_GL_LATER
-     SDL_GLContext glCtx = initGL(win, conf, 0);
-@@ -422,84 +432,93 @@
-     SDL_GLContext glCtx = NULL;
- #endif
- 
--    RGSSThreadData rtData(&eventThread, argv[0], win, alcDev, mode.refresh_rate,
--                          mkxp_sys::getScalingFactor(), conf, glCtx);
-+    RGSSThreadData *rtData = new RGSSThreadData(evThread, argv[0], win, alcDev,
-+                                               mode.refresh_rate,
-+                                               mkxp_sys::getScalingFactor(),
-+                                               conf, glCtx);
-+    fprintf(stderr, "[stage] %ums rtData ok (GL context ready)\n", (unsigned) SDL_GetTicks());
- 
-     int winW, winH, drwW, drwH;
-     SDL_GetWindowSize(win, &winW, &winH);
--    rtData.windowSizeMsg.post(Vec2i(winW, winH));
--    
-+    rtData->windowSizeMsg.post(Vec2i(winW, winH));
-+
-     SDL_GL_GetDrawableSize(win, &drwW, &drwH);
--    rtData.drawableSizeMsg.post(Vec2i(drwW, drwH));
-+    rtData->drawableSizeMsg.post(Vec2i(drwW, drwH));
- 
-     /* Load and post key bindings */
--    rtData.bindingUpdateMsg.post(loadBindings(conf));
--    
-+    rtData->bindingUpdateMsg.post(loadBindings(conf));
-+
- #ifdef MKXPZ_BUILD_XCODE
-     // Create Touch Bar
-     initTouchBar(win, conf);
- #endif
- 
-     /* Start RGSS thread */
--    SDL_Thread *rgssThread = SDL_CreateThread(rgssThreadFun, "rgss", &rtData);
--
--    /* Start event processing */
--    eventThread.process(rtData);
--
--    /* Request RGSS thread to stop */
--    rtData.rqTerm.set();
--
--    /* Wait for RGSS thread response */
--    for (int i = 0; i < 1000; ++i) {
--      /* We can stop waiting when the request was ack'd */
--      if (rtData.rqTermAck) {
--        Debug() << "RGSS thread ack'd request after" << i * 10 << "ms";
--        break;
--      }
--
--      /* Give RGSS thread some time to respond */
--      SDL_Delay(10);
--    }
--
--    /* If RGSS thread ack'd request, wait for it to shutdown,
--     * otherwise abandon hope and just end the process as is. */
--    if (rtData.rqTermAck)
--      SDL_WaitThread(rgssThread, 0);
--    else
--      SDL_ShowSimpleMessageBox(
--          SDL_MESSAGEBOX_ERROR, conf.game.title.c_str(),
--          std::string("The RGSS script seems to be stuck. "+conf.game.title+" will now force quit.").c_str(),
--          win);
--
--    if (!rtData.rgssErrorMsg.empty()) {
--      Debug() << rtData.rgssErrorMsg;
--      SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, conf.game.title.c_str(),
--                               rtData.rgssErrorMsg.c_str(), win);
--    }
--
--    if (rtData.glContext)
--      SDL_GL_DeleteContext(rtData.glContext);
--
--    /* Clean up any remainin events */
--    eventThread.cleanup();
--
--    Debug() << "Shutting down.";
--
--    alcCloseDevice(alcDev);
--    SDL_DestroyWindow(win);
-+    SDL_Thread *rgssThread = SDL_CreateThread(rgssThreadFun, "rgss", rtData);
-+    fprintf(stderr, "[stage] %ums rgss thread spawned (ruby+scripts load starts)\n", (unsigned) SDL_GetTicks());
-+
-+    std::thread engineLoop([evThread, rtData, rgssThread]() {
-+        evThread->process(*rtData);
-+
-+        /* Request RGSS thread to stop */
-+        rtData->rqTerm.set();
-+
-+        /* Wait for RGSS thread response */
-+        for (int i = 0; i < 1000; ++i) {
-+          /* We can stop waiting when the request was ack'd */
-+          if (rtData->rqTermAck) {
-+            Debug() << "RGSS thread ack'd request after" << i * 10 << "ms";
-+            break;
-+          }
-+
-+          /* Give RGSS thread some time to respond */
-+          SDL_Delay(10);
-+        }
-+
-+        /* If RGSS thread ack'd request, wait for it to shutdown,
-+         * otherwise abandon hope and just end the process as is. */
-+        if (rtData->rqTermAck)
-+          SDL_WaitThread(rgssThread, 0);
-+        else
-+          /* iOS：SDL_ShowSimpleMessageBox 必须在主线程调用（后台线程会崩/不显示），
-+           * 这里只写日志；stderr 已由 mkxp_run 重定向到 Documents/mkxp.log。 */
-+          Debug() << "The RGSS script seems to be stuck. " << rtData->config.game.title
-+                  << " will now force quit.";
-+
-+        if (!rtData->rgssErrorMsg.empty()) {
-+          Debug() << rtData->rgssErrorMsg;
-+        }
-+
-+        if (rtData->glContext)
-+          SDL_GL_DeleteContext(rtData->glContext);
-+
-+        /* Clean up any remainin events */
-+        evThread->cleanup();
-+
-+        Debug() << "Shutting down.";
-+
-+        alcCloseDevice(rtData->alcDev);
-+        SDL_DestroyWindow(rtData->window);
- 
- #if defined(__WIN32__)
--    if (wsadata.wVersion)
--      WSACleanup();
--#endif
--
--#ifdef MKXPZ_STEAM
--    STEAMSHIM_deinit();
--#endif
--    Sound_Quit();
--    TTF_Quit();
--    IMG_Quit();
--    SDL_Quit();
-+        if (wsadata.wVersion)
-+          WSACleanup();
-+#endif
-+
-+#ifdef MKXPZ_STEAM
-+        STEAMSHIM_deinit();
-+#endif
-+        Sound_Quit();
-+        TTF_Quit();
-+        IMG_Quit();
-+        SDL_Quit();
-+
-+        g_engineRunning.store(false);
-+        delete rtData;
-+        delete evThread;
-+    });
-+    engineLoop.detach();
-+    fprintf(stderr, "[stage] %ums main-thread init complete, main loop free\n", (unsigned) SDL_GetTicks());
- 
-     return 0;
- }
-diff --git a/src/eventthread.cpp b/src/eventthread.cpp
-index 355b698..91ddec7 100644
---- a/src/eventthread.cpp
-+++ b/src/eventthread.cpp
-@@ -463,35 +463,65 @@ void EventThread::process(RGSSThreadData &rtData)
-             default :
-                 /* Handle user events */
-                 switch(event.type - usrIdStart)
-                 {
-                     case REQUEST_SETFULLSCREEN :
-+#ifdef MKXPZ_IOS_EMBED
-+                        /* iOS 嵌入：见 REQUEST_WINRESIZE 注释。 */
-+                        break;
-+#else
-                         setFullscreen(win, static_cast<bool>(event.user.code));
-                         break;
-+#endif
-                         
-                     case REQUEST_WINRESIZE :
-+#ifdef MKXPZ_IOS_EMBED
-+                        /* iOS 嵌入：EventThread::process 跑在后台线程，而 SDL 窗口操作
-+                         * 会改 UIKit 视图——UIKit 只允许主线程，否则崩
-+                         * NSInternalInconsistencyException: Call must be made on main thread
-+                         * （Essentials 启动脚本 Graphics.resize_screen 必踩）。
-+                         * 窗口全屏固定，直接吞掉；内部分辨率由 Screen::setResolution
-+                         * 在 RGSS 线程调整，不受影响。 */
-+                        rtData.rqWindowAdjust.clear();
-+                        break;
-+#else
-                         SDL_SetWindowSize(win, event.window.data1, event.window.data2);
-                         rtData.rqWindowAdjust.clear();
-                         break;
-+#endif
-                         
-                     case REQUEST_WINREPOSITION :
-+#ifdef MKXPZ_IOS_EMBED
-+                        /* 见 REQUEST_WINRESIZE 注释 */
-+                        rtData.rqWindowAdjust.clear();
-+                        break;
-+#else
-                         SDL_SetWindowPosition(win, event.window.data1, event.window.data2);
-                         rtData.rqWindowAdjust.clear();
-                         break;
-+#endif
-                         
-                     case REQUEST_WINCENTER :
-+#ifdef MKXPZ_IOS_EMBED
-+                        /* 见 REQUEST_WINRESIZE 注释 */
-+                        rtData.rqWindowAdjust.clear();
-+                        break;
-+#else
-                         rc = SDL_GetDesktopDisplayMode(SDL_GetWindowDisplayIndex(win), &dm);
-                         if (!rc)
-                             SDL_SetWindowPosition(win,
-                                                   (dm.w / 2) - (winW / 2),
-                                                   (dm.h / 2) - (winH / 2));
-                         rtData.rqWindowAdjust.clear();
-                         break;
-+#endif
-                         
-                     case REQUEST_WINRENAME :
-                         rtData.config.windowTitle = (const char*)event.user.data1;
-+#ifndef MKXPZ_IOS_EMBED
-                         SDL_SetWindowTitle(win, rtData.config.windowTitle.c_str());
-+#endif
-                         break;
-                         
-                     case REQUEST_TEXTMODE :
-                         if (event.user.code)
-                         {
-@@ -564,11 +594,13 @@ void EventThread::process(RGSSThreadData &rtData)
-                             havePendingTitle = true;
-                             
-                             break;
-                         }
-                         
-+#ifndef MKXPZ_IOS_EMBED
-                         SDL_SetWindowTitle(win, buffer);
-+#endif
-                         break;
-                         
-                     case UPDATE_SCREEN_RECT :
-                         gameScreen.x = event.user.windowID;
-                         gameScreen.y = event.user.code;
-diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
-index f7f293a..2e09e80 100644
---- a/binding/binding-mri.cpp
-+++ b/binding/binding-mri.cpp
-@@ -57,6 +57,9 @@ extern "C" {
- #include <assert.h>
- #include <string>
- #include <zlib.h>
-+#include <chrono>
-+#include <dlfcn.h>
-+#include <ruby/encoding.h>
- 
- #include <SDL_cpuinfo.h>
- #include <SDL_filesystem.h>
-@@ -270,6 +273,49 @@ static void mriBindingInit() {
-     rb_str_freeze(vers);
-     rb_define_const(mod, "VERSION", vers);
-     
-+    // Static zlib ext (iOS --with-static-linked-ext): define Zlib module + provide
-+    // the "zlib" feature so require 'zlib' (here and in game scripts) succeeds
-+    // without a zlib.so/bundle to load. Init_zlib / rb_provide_feature live in
-+    // libruby-static.a (-force_load); extern "C" so this C++ TU links them by
-+    // their unmangled names (the earlier "static lib doesn't export it" link
-+    // error was just a missing extern "C" -- name mangling -- not a missing symbol).
-+    if (!rb_const_defined(rb_cObject, rb_intern("Zlib"))) {
-+        static bool s_zlibInit = false;
-+        if (!s_zlibInit) {
-+            typedef void (*VoidFn)(void);
-+            typedef void (*FeatFn)(VALUE);
-+            VoidFn initZlib = (VoidFn)dlsym(RTLD_DEFAULT, "Init_zlib");
-+            FeatFn provideFeature = (FeatFn)dlsym(RTLD_DEFAULT, "rb_provide_feature");
-+            if (initZlib) initZlib();
-+            if (provideFeature) provideFeature(rb_str_new_cstr("zlib"));
-+            s_zlibInit = true;
-+            Debug() << "rgss: zlib static init done";
-+        }
-+    }
-+
-+    // Encoding constants: the cross-compiled static Ruby may register encodings
-+    // without defining their Encoding::* constants (game scripts reference
-+    // Encoding::UTF_8 early -> NameError). Ensure the common ones exist; if an
-+    // encoding itself is not registered, log a WARNING (that means the build is
-+    // missing the enc objects and needs a build-script fix).
-+    {
-+        static const char *encs[] = {"UTF-8", "US-ASCII", "ASCII-8BIT", "UTF-16LE",
-+                                     "UTF-16BE", "EUC-JP", "Shift_JIS", "Windows-31J", 0};
-+        VALUE encClass = rb_const_get(rb_cObject, rb_intern("Encoding"));
-+        for (int i = 0; encs[i]; ++i) {
-+            rb_encoding *e = rb_enc_find(encs[i]);
-+            if (!e) { Debug() << "rgss: WARNING encoding" << encs[i] << "not registered"; continue; }
-+            char cname[64];
-+            snprintf(cname, sizeof(cname), "%s", encs[i]);
-+            for (char *p = cname; *p; ++p) { if (*p == '-') *p = '_'; }
-+            if (!rb_const_defined(encClass, rb_intern(cname))) {
-+                rb_define_const(encClass, cname, rb_enc_from_encoding(e));
-+                Debug() << "rgss: defined Encoding::" << cname;
-+            }
-+        }
-+        Debug() << "rgss: encoding constants guard done";
-+    }
-+
-     // Automatically load zlib if it's present -- the correct way this time
-     int state;
-     rb_eval_string_protect("require('zlib') if !Kernel.const_defined?(:Zlib)", &state);
-@@ -865,6 +911,12 @@ bool evalScript(VALUE string, const char *filename)
- 
- #define SCRIPT_SECTION_FMT (rgssVer >= 3 ? "{%04ld}" : "Section%03ld")
- 
-+
-+static long long msSinceStart() {
-+    static const auto t0 = std::chrono::steady_clock::now();
-+    return std::chrono::duration_cast<std::chrono::milliseconds>(
-+               std::chrono::steady_clock::now() - t0).count();
-+}
- static void runRMXPScripts(BacktraceData &btData) {
-     const Config &conf = shState->rtData().config;
-     const std::string &scriptPack = conf.game.scripts;
-@@ -898,6 +950,7 @@ static void runRMXPScripts(BacktraceData &btData) {
-     rb_gv_set("$RGSS_SCRIPTS", scriptArray);
-     
-     long scriptCount = RARRAY_LEN(scriptArray);
-+    Debug() << "rgss: Scripts.rxdata loaded, N=" << scriptCount << " (t=" << msSinceStart() << "ms)";
-     
-     std::string decodeBuffer;
-     decodeBuffer.resize(0x1000);
-@@ -943,8 +996,11 @@ static void runRMXPScripts(BacktraceData &btData) {
-             break;
-         }
-         
-+        if ((i % 100) == 0)
-+            Debug() << "rgss: inflate " << i << "/" << scriptCount << " (t=" << msSinceStart() << "ms)";
-         rb_ary_store(script, 3, rb_utf8_str_new_cstr(decodeBuffer.c_str()));
-     }
-+    Debug() << "rgss: all scripts inflated (t=" << msSinceStart() << "ms)";
-     
-     /* Execute preloaded scripts */
-     for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
-@@ -957,6 +1013,8 @@ static void runRMXPScripts(BacktraceData &btData) {
-     
-     while (true) {
-         for (long i = 0; i < scriptCount; ++i) {
-+            if ((i % 50) == 0)
-+                Debug() << "rgss: exec " << i << "/" << scriptCount << " (t=" << msSinceStart() << "ms)";
-             VALUE script = rb_ary_entry(scriptArray, i);
-             VALUE scriptDecoded = rb_ary_entry(script, 3);
-             VALUE string =
-
 diff --git a/binding/audio-binding.cpp b/binding/audio-binding.cpp
 index cee5c86..4b00374 100644
 --- a/binding/audio-binding.cpp
@@ -543,4 +119,443 @@ index cee5c86..4b00374 100644
 +    COERCE_TRACK(track, trackVal);
      shState->audio().bgmFade(time, track);
      return Qnil;
+ }
+diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
+index f7f293a..2e09e80 100644
+--- a/binding/binding-mri.cpp
++++ b/binding/binding-mri.cpp
+@@ -57,6 +57,9 @@ extern "C" {
+ #include <assert.h>
+ #include <string>
+ #include <zlib.h>
++#include <chrono>
++#include <dlfcn.h>
++#include <ruby/encoding.h>
+ 
+ #include <SDL_cpuinfo.h>
+ #include <SDL_filesystem.h>
+@@ -270,6 +273,49 @@ static void mriBindingInit() {
+     rb_str_freeze(vers);
+     rb_define_const(mod, "VERSION", vers);
+     
++    // Static zlib ext (iOS --with-static-linked-ext): define Zlib module + provide
++    // the "zlib" feature so require 'zlib' (here and in game scripts) succeeds
++    // without a zlib.so/bundle to load. Init_zlib / rb_provide_feature live in
++    // libruby-static.a (-force_load); extern "C" so this C++ TU links them by
++    // their unmangled names (the earlier "static lib doesn't export it" link
++    // error was just a missing extern "C" -- name mangling -- not a missing symbol).
++    if (!rb_const_defined(rb_cObject, rb_intern("Zlib"))) {
++        static bool s_zlibInit = false;
++        if (!s_zlibInit) {
++            typedef void (*VoidFn)(void);
++            typedef void (*FeatFn)(VALUE);
++            VoidFn initZlib = (VoidFn)dlsym(RTLD_DEFAULT, "Init_zlib");
++            FeatFn provideFeature = (FeatFn)dlsym(RTLD_DEFAULT, "rb_provide_feature");
++            if (initZlib) initZlib();
++            if (provideFeature) provideFeature(rb_str_new_cstr("zlib"));
++            s_zlibInit = true;
++            Debug() << "rgss: zlib static init done";
++        }
++    }
++
++    // Encoding constants: the cross-compiled static Ruby may register encodings
++    // without defining their Encoding::* constants (game scripts reference
++    // Encoding::UTF_8 early -> NameError). Ensure the common ones exist; if an
++    // encoding itself is not registered, log a WARNING (that means the build is
++    // missing the enc objects and needs a build-script fix).
++    {
++        static const char *encs[] = {"UTF-8", "US-ASCII", "ASCII-8BIT", "UTF-16LE",
++                                     "UTF-16BE", "EUC-JP", "Shift_JIS", "Windows-31J", 0};
++        VALUE encClass = rb_const_get(rb_cObject, rb_intern("Encoding"));
++        for (int i = 0; encs[i]; ++i) {
++            rb_encoding *e = rb_enc_find(encs[i]);
++            if (!e) { Debug() << "rgss: WARNING encoding" << encs[i] << "not registered"; continue; }
++            char cname[64];
++            snprintf(cname, sizeof(cname), "%s", encs[i]);
++            for (char *p = cname; *p; ++p) { if (*p == '-') *p = '_'; }
++            if (!rb_const_defined(encClass, rb_intern(cname))) {
++                rb_define_const(encClass, cname, rb_enc_from_encoding(e));
++                Debug() << "rgss: defined Encoding::" << cname;
++            }
++        }
++        Debug() << "rgss: encoding constants guard done";
++    }
++
+     // Automatically load zlib if it's present -- the correct way this time
+     int state;
+     rb_eval_string_protect("require('zlib') if !Kernel.const_defined?(:Zlib)", &state);
+@@ -865,6 +911,12 @@ bool evalScript(VALUE string, const char *filename)
+ 
+ #define SCRIPT_SECTION_FMT (rgssVer >= 3 ? "{%04ld}" : "Section%03ld")
+ 
++
++static long long msSinceStart() {
++    static const auto t0 = std::chrono::steady_clock::now();
++    return std::chrono::duration_cast<std::chrono::milliseconds>(
++               std::chrono::steady_clock::now() - t0).count();
++}
+ static void runRMXPScripts(BacktraceData &btData) {
+     const Config &conf = shState->rtData().config;
+     const std::string &scriptPack = conf.game.scripts;
+@@ -898,6 +950,7 @@ static void runRMXPScripts(BacktraceData &btData) {
+     rb_gv_set("$RGSS_SCRIPTS", scriptArray);
+     
+     long scriptCount = RARRAY_LEN(scriptArray);
++    Debug() << "rgss: Scripts.rxdata loaded, N=" << scriptCount << " (t=" << msSinceStart() << "ms)";
+     
+     std::string decodeBuffer;
+     decodeBuffer.resize(0x1000);
+@@ -943,8 +996,11 @@ static void runRMXPScripts(BacktraceData &btData) {
+             break;
+         }
+         
++        if ((i % 100) == 0)
++            Debug() << "rgss: inflate " << i << "/" << scriptCount << " (t=" << msSinceStart() << "ms)";
+         rb_ary_store(script, 3, rb_utf8_str_new_cstr(decodeBuffer.c_str()));
+     }
++    Debug() << "rgss: all scripts inflated (t=" << msSinceStart() << "ms)";
+     
+     /* Execute preloaded scripts */
+     for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
+@@ -957,6 +1013,8 @@ static void runRMXPScripts(BacktraceData &btData) {
+     
+     while (true) {
+         for (long i = 0; i < scriptCount; ++i) {
++            if ((i % 50) == 0)
++                Debug() << "rgss: exec " << i << "/" << scriptCount << " (t=" << msSinceStart() << "ms)";
+             VALUE script = rb_ary_entry(scriptArray, i);
+             VALUE scriptDecoded = rb_ary_entry(script, 3);
+             VALUE string =
+diff --git a/src/eventthread.cpp b/src/eventthread.cpp
+index 355b698..91ddec7 100644
+--- a/src/eventthread.cpp
++++ b/src/eventthread.cpp
+@@ -465,20 +465,47 @@ void EventThread::process(RGSSThreadData &rtData)
+                 switch(event.type - usrIdStart)
+                 {
+                     case REQUEST_SETFULLSCREEN :
++#ifdef MKXPZ_IOS_EMBED
++                        /* iOS 嵌入：见 REQUEST_WINRESIZE 注释。 */
++                        break;
++#else
+                         setFullscreen(win, static_cast<bool>(event.user.code));
+                         break;
++#endif
+                         
+                     case REQUEST_WINRESIZE :
++#ifdef MKXPZ_IOS_EMBED
++                        /* iOS 嵌入：EventThread::process 跑在后台线程，而 SDL 窗口操作
++                         * 会改 UIKit 视图——UIKit 只允许主线程，否则崩
++                         * NSInternalInconsistencyException: Call must be made on main thread
++                         * （Essentials 启动脚本 Graphics.resize_screen 必踩）。
++                         * 窗口全屏固定，直接吞掉；内部分辨率由 Screen::setResolution
++                         * 在 RGSS 线程调整，不受影响。 */
++                        rtData.rqWindowAdjust.clear();
++                        break;
++#else
+                         SDL_SetWindowSize(win, event.window.data1, event.window.data2);
+                         rtData.rqWindowAdjust.clear();
+                         break;
++#endif
+                         
+                     case REQUEST_WINREPOSITION :
++#ifdef MKXPZ_IOS_EMBED
++                        /* 见 REQUEST_WINRESIZE 注释 */
++                        rtData.rqWindowAdjust.clear();
++                        break;
++#else
+                         SDL_SetWindowPosition(win, event.window.data1, event.window.data2);
+                         rtData.rqWindowAdjust.clear();
+                         break;
++#endif
+                         
+                     case REQUEST_WINCENTER :
++#ifdef MKXPZ_IOS_EMBED
++                        /* 见 REQUEST_WINRESIZE 注释 */
++                        rtData.rqWindowAdjust.clear();
++                        break;
++#else
+                         rc = SDL_GetDesktopDisplayMode(SDL_GetWindowDisplayIndex(win), &dm);
+                         if (!rc)
+                             SDL_SetWindowPosition(win,
+@@ -486,10 +513,13 @@ void EventThread::process(RGSSThreadData &rtData)
+                                                   (dm.h / 2) - (winH / 2));
+                         rtData.rqWindowAdjust.clear();
+                         break;
++#endif
+                         
+                     case REQUEST_WINRENAME :
+                         rtData.config.windowTitle = (const char*)event.user.data1;
++#ifndef MKXPZ_IOS_EMBED
+                         SDL_SetWindowTitle(win, rtData.config.windowTitle.c_str());
++#endif
+                         break;
+                         
+                     case REQUEST_TEXTMODE :
+@@ -566,7 +596,9 @@ void EventThread::process(RGSSThreadData &rtData)
+                             break;
+                         }
+                         
++#ifndef MKXPZ_IOS_EMBED
+                         SDL_SetWindowTitle(win, buffer);
++#endif
+                         break;
+                         
+                     case UPDATE_SCREEN_RECT :
+diff --git a/src/input/input.cpp b/src/input/input.cpp
+index 67c7799..83126e1 100644
+--- a/src/input/input.cpp
++++ b/src/input/input.cpp
+@@ -35,9 +35,16 @@
+ #include <vector>
+ #include <cmath>
+ #include <unordered_map>
++#include <mutex>
+ #include <string.h>
+ #include <assert.h>
+ 
++/* rgssKey(Input::ButtonCode) -> SDL_Scancode 反查表：由 applyBindingDesc 在
++ * 绑定变化时重建，供 mkxp_framework.cpp 的 mkxp_key() 做按键注入。
++ * RGSS 线程写、UI 线程读，访问需持 g_buttonToScancodeMtx。 */
++std::unordered_map<int, SDL_Scancode> g_buttonToScancode;
++std::mutex g_buttonToScancodeMtx;
++
+ #define BUTTON_CODE_COUNT 26
+ 
+ #define m(vk,sc) { vk, SDL_SCANCODE_##sc }
+@@ -965,6 +972,14 @@ struct InputPrivate
+         appendBindings(kbBindings);
+         appendBindings(ctrlABindings);
+         appendBindings(ctrlBBindings);
++
++        /* 重建 rgssKey -> scancode 反查表（mkxp_key 注入按键用） */
++        {
++            std::lock_guard<std::mutex> _(g_buttonToScancodeMtx);
++            g_buttonToScancode.clear();
++            for (const KbBinding &k : kbBindings)
++                g_buttonToScancode[k.target] = k.source;
++        }
+     }
+     
+     void initStaticKbBindings()
+diff --git a/src/main.cpp b/src/main.cpp
+index 4779221..14ab52e 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -35,6 +35,8 @@
+ #include <string>
+ #include <unistd.h>
+ #include <regex>
++#include <thread>
++#include <atomic>
+ 
+ #include "binding.h"
+ #include "sharedstate.h"
+@@ -201,7 +203,11 @@ static void setupWindowIcon(const Config &conf, SDL_Window *win) {
+   }
+ }
+ 
+-int main(int argc, char *argv[]) {
++// 框架化（iOS 嵌入）：原 main 改名，由 mkxp_run 调用；其阻塞事件循环
++// 被本文件尾部甩到后台线程，g_engineRunning 由后台线程在引擎退出时复位。
++extern std::atomic<bool> g_engineRunning;
++
++extern "C" int mkxp_z_main(int argc, char *argv[]) {
+     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
+     SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
+ 
+@@ -351,7 +357,34 @@ int main(int argc, char *argv[]) {
+ #endif
+       return 0;
+     }
+-    
++
++#ifdef MKXPZ_IOS_EMBED
++    /* iOS 嵌入：SDL 自建 UIWindow 的视图控制器 appearance 过渡常与 Flutter 冲突
++     * (日志里 Unbalanced calls to begin/end appearance transitions)，渲染视图未挂
++     * 入窗口 -> 整屏黑。这里把 SDL 渲染视图直接 add 进窗口并抬高层级：盖过 Flutter，
++     * 但低于触摸浮层(MkxpTouchOverlay 用 .alert+2)。纯 C 调用，不碰编译配置。 */
++    {
++#include <SDL_syswm.h>
++#include <objc/objc.h>
++#include <objc/message.h>
++#include <objc/runtime.h>
++        SDL_SysWMinfo wm;
++        SDL_VERSION(&wm.version);
++        if (SDL_GetWindowWMInfo(win, &wm) && wm.info.uikit.window) {
++            id sdlWin  = (id)wm.info.uikit.window;
++            id sdlView = (id)wm.info.uikit.view;
++            if (sdlView && sdlWin &&
++                !((BOOL (*)(id, SEL, id))objc_msgSend)(sdlView,
++                    sel_getUid("isDescendantOfView:"), sdlWin))
++                ((void (*)(id, SEL, id))objc_msgSend)(sdlWin,
++                    sel_getUid("addSubview:"), sdlView);
++            ((void (*)(id, SEL, double))objc_msgSend)(sdlWin,
++                sel_getUid("setWindowLevel:"), 1500.0);
++            ((void (*)(id, SEL))objc_msgSend)(sdlWin, sel_getUid("makeKeyAndVisible"));
++        }
++    }
++#endif
++
+ #ifdef MKXPZ_BUILD_XCODE
+     {
+         std::string downloadsPath = "/Users/" + mkxp_sys::getUserName() + "/Downloads";
+@@ -414,7 +447,12 @@ int main(int argc, char *argv[]) {
+     if (!mode.refresh_rate)
+       conf.syncToRefreshrate = false;
+ 
+-    EventThread eventThread;
++    // 引擎事件循环（eventThread.process）必须离开主线程：否则 iOS 主线程 run loop
++    // 被占死，Core Animation 无法上屏（黑屏/界面冻结）。SDL 初始化 + 建窗 + 起
++    // RGSS 线程都留在主线程（UIKit 安全），循环与终止清理甩到后台线程。状态用堆分配，
++    // 跨 mkxp_z_main 返回存活；g_engineRunning 由后台线程在引擎退出时复位。
++    EventThread *evThread = new EventThread();
++    fprintf(stderr, "[stage] %ums evThread ok (window+openal done, initGL next)\n", (unsigned) SDL_GetTicks());
+ 
+ #ifndef MKXPZ_INIT_GL_LATER
+     SDL_GLContext glCtx = initGL(win, conf, 0);
+@@ -422,84 +460,93 @@ int main(int argc, char *argv[]) {
+     SDL_GLContext glCtx = NULL;
+ #endif
+ 
+-    RGSSThreadData rtData(&eventThread, argv[0], win, alcDev, mode.refresh_rate,
+-                          mkxp_sys::getScalingFactor(), conf, glCtx);
++    RGSSThreadData *rtData = new RGSSThreadData(evThread, argv[0], win, alcDev,
++                                               mode.refresh_rate,
++                                               mkxp_sys::getScalingFactor(),
++                                               conf, glCtx);
++    fprintf(stderr, "[stage] %ums rtData ok (GL context ready)\n", (unsigned) SDL_GetTicks());
+ 
+     int winW, winH, drwW, drwH;
+     SDL_GetWindowSize(win, &winW, &winH);
+-    rtData.windowSizeMsg.post(Vec2i(winW, winH));
+-    
++    rtData->windowSizeMsg.post(Vec2i(winW, winH));
++
+     SDL_GL_GetDrawableSize(win, &drwW, &drwH);
+-    rtData.drawableSizeMsg.post(Vec2i(drwW, drwH));
++    rtData->drawableSizeMsg.post(Vec2i(drwW, drwH));
+ 
+     /* Load and post key bindings */
+-    rtData.bindingUpdateMsg.post(loadBindings(conf));
+-    
++    rtData->bindingUpdateMsg.post(loadBindings(conf));
++
+ #ifdef MKXPZ_BUILD_XCODE
+     // Create Touch Bar
+     initTouchBar(win, conf);
+ #endif
+ 
+     /* Start RGSS thread */
+-    SDL_Thread *rgssThread = SDL_CreateThread(rgssThreadFun, "rgss", &rtData);
++    SDL_Thread *rgssThread = SDL_CreateThread(rgssThreadFun, "rgss", rtData);
++    fprintf(stderr, "[stage] %ums rgss thread spawned (ruby+scripts load starts)\n", (unsigned) SDL_GetTicks());
+ 
+-    /* Start event processing */
+-    eventThread.process(rtData);
++    std::thread engineLoop([evThread, rtData, rgssThread]() {
++        evThread->process(*rtData);
+ 
+-    /* Request RGSS thread to stop */
+-    rtData.rqTerm.set();
++        /* Request RGSS thread to stop */
++        rtData->rqTerm.set();
+ 
+-    /* Wait for RGSS thread response */
+-    for (int i = 0; i < 1000; ++i) {
+-      /* We can stop waiting when the request was ack'd */
+-      if (rtData.rqTermAck) {
+-        Debug() << "RGSS thread ack'd request after" << i * 10 << "ms";
+-        break;
+-      }
++        /* Wait for RGSS thread response */
++        for (int i = 0; i < 1000; ++i) {
++          /* We can stop waiting when the request was ack'd */
++          if (rtData->rqTermAck) {
++            Debug() << "RGSS thread ack'd request after" << i * 10 << "ms";
++            break;
++          }
+ 
+-      /* Give RGSS thread some time to respond */
+-      SDL_Delay(10);
+-    }
++          /* Give RGSS thread some time to respond */
++          SDL_Delay(10);
++        }
+ 
+-    /* If RGSS thread ack'd request, wait for it to shutdown,
+-     * otherwise abandon hope and just end the process as is. */
+-    if (rtData.rqTermAck)
+-      SDL_WaitThread(rgssThread, 0);
+-    else
+-      SDL_ShowSimpleMessageBox(
+-          SDL_MESSAGEBOX_ERROR, conf.game.title.c_str(),
+-          std::string("The RGSS script seems to be stuck. "+conf.game.title+" will now force quit.").c_str(),
+-          win);
+-
+-    if (!rtData.rgssErrorMsg.empty()) {
+-      Debug() << rtData.rgssErrorMsg;
+-      SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, conf.game.title.c_str(),
+-                               rtData.rgssErrorMsg.c_str(), win);
+-    }
++        /* If RGSS thread ack'd request, wait for it to shutdown,
++         * otherwise abandon hope and just end the process as is. */
++        if (rtData->rqTermAck)
++          SDL_WaitThread(rgssThread, 0);
++        else
++          /* iOS：SDL_ShowSimpleMessageBox 必须在主线程调用（后台线程会崩/不显示），
++           * 这里只写日志；stderr 已由 mkxp_run 重定向到 Documents/mkxp.log。 */
++          Debug() << "The RGSS script seems to be stuck. " << rtData->config.game.title
++                  << " will now force quit.";
++
++        if (!rtData->rgssErrorMsg.empty()) {
++          Debug() << rtData->rgssErrorMsg;
++        }
+ 
+-    if (rtData.glContext)
+-      SDL_GL_DeleteContext(rtData.glContext);
++        if (rtData->glContext)
++          SDL_GL_DeleteContext(rtData->glContext);
+ 
+-    /* Clean up any remainin events */
+-    eventThread.cleanup();
++        /* Clean up any remainin events */
++        evThread->cleanup();
+ 
+-    Debug() << "Shutting down.";
++        Debug() << "Shutting down.";
+ 
+-    alcCloseDevice(alcDev);
+-    SDL_DestroyWindow(win);
++        alcCloseDevice(rtData->alcDev);
++        SDL_DestroyWindow(rtData->window);
+ 
+ #if defined(__WIN32__)
+-    if (wsadata.wVersion)
+-      WSACleanup();
++        if (wsadata.wVersion)
++          WSACleanup();
+ #endif
+ 
+ #ifdef MKXPZ_STEAM
+-    STEAMSHIM_deinit();
++        STEAMSHIM_deinit();
+ #endif
+-    Sound_Quit();
+-    TTF_Quit();
+-    IMG_Quit();
+-    SDL_Quit();
++        Sound_Quit();
++        TTF_Quit();
++        IMG_Quit();
++        SDL_Quit();
++
++        g_engineRunning.store(false);
++        delete rtData;
++        delete evThread;
++    });
++    engineLoop.detach();
++    fprintf(stderr, "[stage] %ums main-thread init complete, main loop free\n", (unsigned) SDL_GetTicks());
+ 
+     return 0;
  }
