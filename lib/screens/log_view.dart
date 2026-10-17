@@ -1,4 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../services/mkxp.dart';
 
@@ -25,6 +29,28 @@ class _LogPageState extends State<LogPage> {
     final log = await Mkxp.readLog();
     if (!mounted) return;
     setState(() => _log = log.isEmpty ? '（日志为空）' : log);
+    // 重载后跳到底部，方便看最新输出 / 异常
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) {
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      }
+    });
+  }
+
+  Future<void> _download() async {
+    final log = await Mkxp.readLog();
+    if (!mounted) return;
+    if (log.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('日志为空，无可导出内容')));
+      return;
+    }
+    final dir = await getTemporaryDirectory();
+    final ts = DateTime.now().toIso8601String().replaceAll(':', '-');
+    final file = File('${dir.path}/mkxp_$ts.log');
+    await file.writeAsString(log);
+    await Share.shareXFiles([XFile(file.path)],
+        subject: 'mkxp.log', text: 'MKXP 运行日志');
   }
 
   Future<void> _clear() async {
@@ -61,6 +87,10 @@ class _LogPageState extends State<LogPage> {
         title: const Text('运行日志 (mkxp.log)',
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
         actions: [
+          IconButton(
+              icon: const Icon(Icons.download_outlined),
+              tooltip: '导出/下载日志',
+              onPressed: _download),
           IconButton(icon: const Icon(Icons.refresh), onPressed: _reload),
           IconButton(icon: const Icon(Icons.delete_outline), onPressed: _clear),
         ],

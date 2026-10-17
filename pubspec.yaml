@@ -17,6 +17,8 @@ dependencies:
   file_picker: ^13.1.0
   archive: ^4.5.2
   path_provider: ^2.1.6
+  share_plus: ^10.1.0
+  cross_file: ^0.3.4
 
 dev_dependencies:
   flutter_test:
