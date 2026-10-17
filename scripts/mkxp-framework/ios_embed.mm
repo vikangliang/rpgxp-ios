@@ -32,6 +32,110 @@ static bool g_rbsAllocated = false;
 static int g_rbsW = 0, g_rbsH = 0;
 static uint64_t g_presentTotal = 0, g_presentOK = 0;
 
+/* 由 mkxp 的 graphics.cpp 提供：当前合成结果纹理 + letterbox 几何 */
+extern "C" void mkxp_ios_getScene(GLuint *tex, int *sw, int *sh,
+                                  int *ox, int *oy, int *ww, int *wh);
+
+/* iOS 兜底：present 前一刻由我们完成最后的上屏 blit。
+ * 绘制状态（着色器/VBO）首次使用时惰性建立。 */
+static GLuint g_blitProg = 0, g_blitVbo = 0;
+static GLint g_blitTexLoc = -1;
+static bool g_blitTried = false;
+
+static void mkxp_initBlitProg() {
+    g_blitTried = true;
+    const char *vs =
+        "attribute vec2 a_pos; attribute vec2 a_uv; varying vec2 v_uv;"
+        "void main(){ v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }";
+    const char *fs =
+        "precision mediump float; uniform sampler2D u_tex; varying vec2 v_uv;"
+        "void main(){ gl_FragColor = texture2D(u_tex, v_uv); }";
+    GLuint v = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(v, 1, &vs, NULL);
+    glCompileShader(v);
+    GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(f, 1, &fs, NULL);
+    glCompileShader(f);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glBindAttribLocation(p, 0, "a_pos");
+    glBindAttribLocation(p, 1, "a_uv");
+    glLinkProgram(p);
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char buf[256];
+        glGetProgramInfoLog(p, sizeof(buf), NULL, buf);
+        fprintf(stderr, "[ios-embed] blit link fail: %s\n", buf);
+        return;
+    }
+    g_blitProg = p;
+    g_blitTexLoc = glGetUniformLocation(p, "u_tex");
+    glGenBuffers(1, &g_blitVbo);
+    fprintf(stderr, "[ios-embed] blit ready (prog=%u vbo=%u)\n",
+            g_blitProg, g_blitVbo);
+}
+
+/* 把 mkxp 合成好的场景纹理 letterbox 居中画到默认帧缓冲。
+ * 必须在 present 前一刻调用：只有那时默认帧缓冲才是完整的。 */
+static void mkxp_presentBlit() {
+    if (!g_blitTried) mkxp_initBlitProg();
+    if (!g_blitProg) return;
+
+    GLuint tex = 0;
+    int sw = 0, sh = 0, ox = 0, oy = 0, ww = 0, wh = 0;
+    mkxp_ios_getScene(&tex, &sw, &sh, &ox, &oy, &ww, &wh);
+    if (!tex || ww <= 0 || wh <= 0 || sw <= 0 || sh <= 0) return;
+
+    /* 视口必须是整个 drawable，否则 NDC 会被映射到旧的 512x384 小视口 */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glViewport(0, 0, ww, wh);
+
+    float x0 = ((float)ox / (float)ww) * 2.f - 1.f;
+    float x1 = ((float)(ox + sw) / (float)ww) * 2.f - 1.f;
+    float y0 = ((float)oy / (float)wh) * 2.f - 1.f;
+    float y1 = ((float)(oy + sh) / (float)wh) * 2.f - 1.f;
+
+    /* TL,TR,BR,BL；FBO 纹理第 0 行是游戏底部，故 v 随 y 递增（不翻转） */
+    const float vb[16] = {
+        x0, y1, 0.f, 1.f,
+        x1, y1, 1.f, 1.f,
+        x1, y0, 1.f, 0.f,
+        x0, y0, 0.f, 0.f
+    };
+
+    glClearColor(0.f, 0.f, 0.f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glUseProgram(g_blitProg);
+    if (g_blitTexLoc >= 0) glUniform1i(g_blitTexLoc, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glBindBuffer(GL_ARRAY_BUFFER, g_blitVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vb), vb, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, (const GLvoid *)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, (const GLvoid *)8);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glUseProgram(0);
+
+    static int logged = 0;
+    if (logged < 3) {
+        ++logged;
+        fprintf(stderr,
+            "[ios-embed] presentBlit tex=%u %dx%d -> letterbox(%d,%d %dx%d) "
+            "in %dx%d err=0x%x\n",
+            tex, sw, sh, ox, oy, sw, sh, ww, wh, (unsigned)glGetError());
+    }
+}
+
 static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id drawable) {
     if (drawable != nil) {
         CALayer *layer = (CALayer *)drawable;
@@ -41,18 +145,15 @@ static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id dra
         g_drawW = w;
         g_drawH = h;
 
-        /* 每次 renderbufferStorage 都会重新分配颜色缓冲、内容被丢弃。
-         * 如果 SDL uikit 后端在每次 SwapWindow 都调它，那么本帧在它之前画进
-         * 默认帧缓冲的一切都会被丢弃 => 黑屏（实测：swap 前画的探针不显示、
-         * 画在 present 前一刻的探针却能显示，正与此吻合）。
-         * 尺寸未变时跳过重分配，保住本帧画的内容。 */
-        if (g_rbsAllocated && w == g_rbsW && h == g_rbsH) {
-            static uint64_t skipped = 0;
-            ++skipped;
-            if (skipped <= 3 || skipped % 600 == 0)
-                fprintf(stderr, "[ios-embed] renderbufferStorage: SKIP (same %dx%d, n=%llu)\n",
-                        w, h, (unsigned long long)skipped);
-            return;
+        /* 统计重分配次数：iOS 在 present 后作废颜色缓冲，需要重新
+         * renderbufferStorage 才能让默认帧缓冲恢复完整。
+         * 注意：这里不能跳过它，跳过会让 FBO 0 一直不完整。 */
+        {
+            static uint64_t n = 0;
+            ++n;
+            if (n <= 3 || n % 600 == 0)
+                fprintf(stderr, "[ios-embed] renderbufferStorage #%llu (%dx%d)\n",
+                        (unsigned long long)n, w, h);
         }
 
         g_rbsW = w;
@@ -114,6 +215,9 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
 
         for (int i=0;i<4;i++) lastVP[i] = vp[i];
     }
+
+    /* 兜底：在 present 前一刻自己把画面画上去（该时机 FBO 0 才完整） */
+    mkxp_presentBlit();
 
     BOOL r = g_origPresent(self, _cmd, target);
     if (r) ++g_presentOK;

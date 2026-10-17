@@ -232,7 +232,7 @@ index ad491f4..11ce9df 100644
  
  }
 diff --git a/src/display/graphics.cpp b/src/display/graphics.cpp
-index 64dc47f..c8780a3 100644
+index 64dc47f..58ae5d6 100644
 --- a/src/display/graphics.cpp
 +++ b/src/display/graphics.cpp
 @@ -57,6 +57,7 @@
@@ -243,7 +243,33 @@ index 64dc47f..c8780a3 100644
  #include <errno.h>
  #include <sys/time.h>
  #include <unistd.h>
-@@ -810,6 +811,11 @@ struct GraphicsPrivate {
+@@ -64,6 +65,25 @@
+ #include <cmath>
+ #include <climits>
+ 
++/* iOS 兜底：把最终合成结果(纹理)与 letterbox 几何暴露给 ios_embed.mm。
++ * 原因：iOS 在 present 之后会作废颜色缓冲，使默认帧缓冲(FBO 0)变成不完整帧缓冲，
++ * 之后所有往它的绘制都以 GL_INVALID_OPERATION(0x502) 失败 => 黑屏。
++ * 而"present 前一刻"FBO 0 是完整的(该时机绘制已实测必然显示)，
++ * 故由 ios_embed.mm 在该时机用这里的数据完成最后的上屏 blit。 */
++static GLuint g_iosSceneTex = 0;
++static int g_iosSceneW = 0, g_iosSceneH = 0;
++static int g_iosOx = 0, g_iosOy = 0, g_iosSw = 0, g_iosSh = 0;
++static int g_iosWw = 0, g_iosWh = 0;
++
++extern "C" void mkxp_ios_getScene(GLuint *tex, int *sw, int *sh,
++                                  int *ox, int *oy, int *ww, int *wh)
++{
++    *tex = g_iosSceneTex;
++    *sw = g_iosSceneW;  *sh = g_iosSceneH;
++    *ox = g_iosOx;      *oy = g_iosOy;
++    *ww = g_iosWw;      *wh = g_iosWh;
++}
++
+ 
+ #define DEF_SCREEN_W (rgssVer == 1 ? 640 : 544)
+ #define DEF_SCREEN_H (rgssVer == 1 ? 480 : 416)
+@@ -810,6 +830,11 @@ struct GraphicsPrivate {
      Quad screenQuad;
      
      float backingScaleFactor;
@@ -255,7 +281,7 @@ index 64dc47f..c8780a3 100644
      
      Vec2i integerScaleFactor;
      TEXFBO integerScaleBuffer;
-@@ -952,13 +958,42 @@ struct GraphicsPrivate {
+@@ -952,13 +977,42 @@ struct GraphicsPrivate {
      }
      
      void checkResize(bool skipIntScaleBuffer = false) {
@@ -303,7 +329,7 @@ index 64dc47f..c8780a3 100644
              
              /* Make sure integer buffers are rebuilt before screen offsets are
               * calculated so we have the final allocated buffer size ready */
-@@ -969,6 +1004,12 @@ struct GraphicsPrivate {
+@@ -969,6 +1023,12 @@ struct GraphicsPrivate {
              glState.viewport.refresh();
              recalculateScreenSize(threadData);
              updateScreenResoRatio(threadData);
@@ -316,7 +342,7 @@ index 64dc47f..c8780a3 100644
              
              SDL_Rect screen = {scOffset.x, scOffset.y, scSize.x, scSize.y};
              threadData->ethread->notifyGameScreenChange(screen);
-@@ -1022,8 +1063,88 @@ struct GraphicsPrivate {
+@@ -1022,8 +1082,100 @@ struct GraphicsPrivate {
                                !forceNearestNeighbor && threadData->config.smoothScaling);
      }
      
@@ -401,11 +427,23 @@ index 64dc47f..c8780a3 100644
 +
      void redrawScreen() {
          screen.composite();
++
++        /* 供 ios_embed.mm 在 present 前做最终上屏 blit */
++        {
++            TEXFBO &fb = screen.getPP().frontBuffer();
++            g_iosSceneTex = fb.tex.gl;
++            g_iosSceneW = fb.width;
++            g_iosSceneH = fb.height;
++            g_iosOx = scOffset.x;   g_iosOy = scOffset.y;
++            g_iosSw = scSize.x;     g_iosSh = scSize.y;
++            g_iosWw = winSize.x;    g_iosWh = winSize.y;
++        }
++
 +        probeScenePixels();
          
          // maybe unspaghetti this later
          if (integerScaleStepApplicable() && !integerLastMileScaling)
-@@ -1073,6 +1194,8 @@ struct GraphicsPrivate {
+@@ -1073,6 +1225,8 @@ struct GraphicsPrivate {
          
          GLMeta::blitEnd();
          
