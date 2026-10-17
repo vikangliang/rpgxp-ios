@@ -107,6 +107,29 @@ extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
     } else {
         dispatch_async(dispatch_get_main_queue(), ^{ mkxp_show(sdlWin, 0); });
     }
+    // 遮挡关系可视化：给每个可见 window 贴不同色块（6s），截图即可看出谁挡住了谁。
+    //   SDL 窗口=绿(0.9) / level≈10 的 Flutter 辅助窗口=红 / level>2000 浮层=黄
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (UIWindow *w in UIApplication.sharedApplication.windows) {
+            if (w.isHidden) continue;
+            BOOL isSDL = (w == sdlWin);
+            BOOL isOver = (w.windowLevel > 2000);
+            UIColor *col = isSDL ? [UIColor colorWithRed:0 green:0.9 blue:0.2 alpha:0.9]
+                         : isOver ? [UIColor colorWithRed:1 green:0.85 blue:0 alpha:0.9]
+                         : [UIColor colorWithRed:1 green:0 blue:0 alpha:0.9];
+            UIView *m = [[UIView alloc] initWithFrame:w.bounds];
+            m.backgroundColor = col;
+            m.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            m.tag = 0x5ADE;
+            [w addSubview:m];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                for (UIView *s in [w.subviews copy]) {
+                    if (s.tag == 0x5ADE) [s removeFromSuperview];
+                }
+            });
+        }
+    });
     // 0.5s 后二次上屏（等 SDL 内部对 window 的后续处理与 key 竞争稳定下来）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ mkxp_show(sdlWin, 1); });
