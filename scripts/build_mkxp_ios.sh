@@ -353,6 +353,8 @@ else
 fi
 cp -f "$ROOT/scripts/mkxp-framework/mkxp_framework.cpp" "$MKXP_SRC/src/mkxp_framework.cpp"
 echo "installed mkxp_framework.cpp"
+cp -f "$ROOT/scripts/mkxp-framework/ios_embed.mm" "$MKXP_SRC/src/ios_embed.mm"
+echo "installed ios_embed.mm (Objective-C++, UIKit 窗口提升)"
 
 # ---------- 4. 编译 mkxp-z 为静态库 libmkxp.a（手搓 CMake，链接 vcpkg + 静态 Ruby） ----------
 # 确保构建工具（CI macos runner 可能缺 xxd；默认用 Unix Makefiles 生成器，无需 ninja）

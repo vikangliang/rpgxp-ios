@@ -364,37 +364,18 @@ index 4779221..14ab52e 100644
      SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
      SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
  
-@@ -351,7 +357,34 @@ int main(int argc, char *argv[]) {
+@@ -351,7 +357,15 @@ int main(int argc, char *argv[]) {
  #endif
        return 0;
      }
 -    
 +
 +#ifdef MKXPZ_IOS_EMBED
-+    /* iOS 嵌入：SDL 自建 UIWindow 的视图控制器 appearance 过渡常与 Flutter 冲突
-+     * (日志里 Unbalanced calls to begin/end appearance transitions)，渲染视图未挂
-+     * 入窗口 -> 整屏黑。这里把 SDL 渲染视图直接 add 进窗口并抬高层级：盖过 Flutter，
-+     * 但低于触摸浮层(MkxpTouchOverlay 用 .alert+2)。纯 C 调用，不碰编译配置。 */
-+    {
-+#include <SDL_syswm.h>
-+#include <objc/objc.h>
-+#include <objc/message.h>
-+#include <objc/runtime.h>
-+        SDL_SysWMinfo wm;
-+        SDL_VERSION(&wm.version);
-+        if (SDL_GetWindowWMInfo(win, &wm) && wm.info.uikit.window) {
-+            id sdlWin  = (id)wm.info.uikit.window;
-+            id sdlView = (id)wm.info.uikit.view;
-+            if (sdlView && sdlWin &&
-+                !((BOOL (*)(id, SEL, id))objc_msgSend)(sdlView,
-+                    sel_getUid("isDescendantOfView:"), sdlWin))
-+                ((void (*)(id, SEL, id))objc_msgSend)(sdlWin,
-+                    sel_getUid("addSubview:"), sdlView);
-+            ((void (*)(id, SEL, double))objc_msgSend)(sdlWin,
-+                sel_getUid("setWindowLevel:"), 1500.0);
-+            ((void (*)(id, SEL))objc_msgSend)(sdlWin, sel_getUid("makeKeyAndVisible"));
-+        }
-+    }
++    /* iOS 嵌入：把 SDL 渲染视图挂进其自建 UIWindow 并抬高层级，盖过 Flutter 的占位
++     * 视图（解决整屏黑）。UIKit 窗口操作只能在 Objective-C++ 编译，故抽到
++     * ios_embed.mm（mkxp_ios_raiseWindow），本文件保持纯 C++。 */
++    extern "C" void mkxp_ios_raiseWindow(SDL_Window *win);
++    mkxp_ios_raiseWindow(win);
 +#endif
 +
  #ifdef MKXPZ_BUILD_XCODE

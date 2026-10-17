@@ -6,6 +6,8 @@
 # =============================================================================
 cmake_minimum_required(VERSION 3.20)
 project(mkxp-ios C CXX)
+# iOS 嵌入逻辑（ios_embed.mm）用 Objective-C++ 编写，需显式启用 OBJCXX 语言。
+enable_language(OBJCXX)
 
 set(MKXP_SRC      "" CACHE PATH "mkxp-z 源码根目录")
 set(VCPKG_INSTALL "" CACHE PATH "vcpkg installed/arm64-ios-static")
@@ -204,6 +206,8 @@ set(SRC
   binding/miniffi-binding.cpp binding/miniffi.cpp
   # 框架化入口（M1-A）：mkxp_run/mkxp_key/mkxp_quit，由 build 脚本拷入 src/
   src/mkxp_framework.cpp
+  # iOS 嵌入的 UIKit 窗口操作（Objective-C++），由 build 脚本拷入 src/
+  src/ios_embed.mm
 )
 
 set(SRC_FULL)
