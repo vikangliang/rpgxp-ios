@@ -96,9 +96,13 @@ int mkxp_run(const char *gamePath)
      * 接管 UIApplication。必须在 SDL_Init 之前调用（任意线程均可）。 */
     SDL_SetMainReady();
 
-    /* SDL uikit 窗口允许的朝向：RGSS 游戏为横屏，与 MkxpOrientation 的
-     * requestGeometryUpdate 配合，避免 SDL 建窗后旋转/尺寸错乱。 */
-    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeRight LandscapeLeft");
+    /* SDL uikit 窗口允许的朝向：暂用竖屏打通渲染链路。
+     * 背景：iOS 16+ scene-based 应用里，scene 的实际方向由 Flutter 主窗口控制
+     * （本 App 菜单页竖屏）。SDL 自建 window 若声明横屏，会与 portrait scene 的
+     * 合成空间不一致（实测：窗口被掰成 896×414 而 scene 是 414×896，画面/Marker
+     * 均不可见——见 2026-10-17 日志）。先竖屏跑通画面；横屏后续用
+     * UIWindowScene.requestGeometryUpdate 让整个 scene（含 Flutter 窗口）转横屏。 */
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait");
 
     /* Ruby GC 调优（iOS 无 JIT，Ruby 只能纯解释执行）：Essentials 启动期要
      * 解释 1MB 脚本并定义上万对象（宝可梦/技能/道具…），默认 GC 阈值会触发

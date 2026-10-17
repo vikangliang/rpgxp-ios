@@ -201,6 +201,20 @@ extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
     // 0.5s 后二次上屏（等 SDL 内部对 window 的后续处理与 key 竞争稳定下来）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ mkxp_show(sdlWin, 1); });
+    // 复查：SDL 事件循环启动后可能把窗口重新隐藏。2s/5s 各打一次状态，并强制拉回。
+    for (NSNumber *d in @[ @2.0, @5.0 ]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            fprintf(stderr, "[ios-embed] recheck@%.0fs: hidden=%d key=%d frame=%s alpha=%.2f\n",
+                    d.doubleValue, sdlWin.isHidden, sdlWin.isKeyWindow,
+                    NSStringFromCGRect(sdlWin.frame).UTF8String, (double)sdlWin.alpha);
+            if (sdlWin.isHidden) {
+                sdlWin.hidden = NO;
+                [sdlWin makeKeyAndVisible];
+                fprintf(stderr, "[ios-embed] recheck: window was hidden by SDL, re-shown\n");
+            }
+        });
+    }
 }
 
 // 宿主注入已废弃（官方路径不需要搬视图），保留空实现防止旧 IPA 链接报 undefined。
