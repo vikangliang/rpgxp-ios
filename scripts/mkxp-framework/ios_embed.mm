@@ -12,7 +12,7 @@
 #import <SDL_syswm.h>
 #import <UIKit/UIKit.h>
 
-void mkxp_ios_raiseWindow(SDL_Window *win) {
+extern "C" void mkxp_ios_raiseWindow(SDL_Window *win) {
     if (!win) return;
     SDL_SysWMinfo wm;
     SDL_VERSION(&wm.version);

@@ -376,7 +376,7 @@ index 4779221..14ab52e 100644
 +     * ios_embed.mm；本文件仅作块内前向声明并调用，保持纯 C++（不写 extern "C"，
 +     * 避免块作用域 linkage-spec 在本编译器下报 "expected unqualified-id"）。两侧均为
 +     * 普通 C++ 符号，Apple clang 的 Itanium ABI 名字修饰一致，链接自动匹配。 */
-+    void mkxp_ios_raiseWindow(SDL_Window *win);
++    extern "C" void mkxp_ios_raiseWindow(SDL_Window *win);
 +    mkxp_ios_raiseWindow(win);
 +#endif
 +
