@@ -22,10 +22,17 @@
 // 等 ARC 限定符。宿主 UIView 由 Flutter 的 MkxpPlatformView 强持有，引擎运行期有效，
 // 这里只存裸指针即可。
 static UIView *g_hostView = nil;
+// 引擎建窗时存下 SDL_Window*：Flutter 的 UiKitView 首帧才注入宿主（晚于 launchGame），
+// 届时用已存的 window 补做 embed，解决“启动先于 PlatformView”的时序竞态。
+static SDL_Window *g_win = NULL;
 
 extern "C" void mkxp_ios_setHostView(void *view) {
     g_hostView = (__bridge UIView *)(view);
     fprintf(stderr, "[ios-embed] setHostView=%p\n", view);
+    if (g_win) {
+        // 宿主晚到：立刻把已建好的 SDL 窗口视图搬进来（主线程）
+        dispatch_async(dispatch_get_main_queue(), ^{ mkxp_doEmbed(g_win, g_hostView); });
+    }
 }
 
 static void mkxp_doEmbed(SDL_Window *win, UIView *host) {
@@ -75,9 +82,11 @@ static void mkxp_doEmbed(SDL_Window *win, UIView *host) {
 }
 
 extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
+    g_win = win;
     UIView *host = g_hostView;
     if (!host) {
-        fprintf(stderr, "[ios-embed] embed called but host view not set (did Flutter create the PlatformView?)\n");
+        // 宿主尚未注入（UiKitView 首帧晚于 launchGame）：window 已存，等 setHostView 再补 embed
+        fprintf(stderr, "[ios-embed] embed: window ready but host not set yet (deferring until PlatformView injects)\n");
         return;
     }
     if ([NSThread isMainThread]) {

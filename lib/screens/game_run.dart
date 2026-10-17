@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/app_settings.dart';
 import '../services/mkxp.dart';
+import '../widgets/game_view.dart';
 
 /// 游戏运行页（M2/M3）：全屏黑底。SDL 引擎自建全屏窗口盖在 Flutter 之上，
 /// 虚拟控制为原生浮层（MkxpTouchOverlay）。本页负责：
@@ -70,28 +71,32 @@ class _GameRunPageState extends State<GameRunPage> {
       body: SafeArea(
         child: Stack(
           children: [
-            // 引擎窗口出现前的占位（引擎起后 SDL 全屏窗盖住本页）
-            Center(
-              child: _failed
-                  ? Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Text(_status,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                              color: Color(0xFFFF453A), fontSize: 14, height: 1.6)),
-                    )
-                  : Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const CircularProgressIndicator(
-                            strokeWidth: 2, color: _primary),
-                        const SizedBox(height: 16),
-                        Text(_status,
+            // 底层：MKXP 渲染宿主（UiKitView）。引擎建窗后会把 SDL 视图搬进来填满本层；
+            // 引擎启动前它是黑底占位，启动后画面直接显示在这里，Flutter 控件叠在上面。
+            const GameView(),
+            // 引擎启动中的占位浮层；启动成功后隐藏，露出底层 GameView（SDL 画面）。
+            if (_status == '正在启动…')
+              Center(
+                child: _failed
+                    ? Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(_status,
+                            textAlign: TextAlign.center,
                             style: const TextStyle(
-                                color: Colors.white54, fontSize: 14)),
-                      ],
-                    ),
-            ),
+                                color: Color(0xFFFF453A), fontSize: 14, height: 1.6)),
+                      )
+                    : Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const CircularProgressIndicator(
+                              strokeWidth: 2, color: _primary),
+                          const SizedBox(height: 16),
+                          Text(_status,
+                              style: const TextStyle(
+                                  color: Colors.white54, fontSize: 14)),
+                        ],
+                      ),
+              ),
             // 右上角返回（引擎窗盖住后不可见，但启动失败时可用）
             Positioned(
               top: 4,
