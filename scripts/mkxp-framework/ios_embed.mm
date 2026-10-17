@@ -13,6 +13,24 @@
 #import <SDL_syswm.h>
 #import <UIKit/UIKit.h>
 #import <stdio.h>
+#import <objc/runtime.h>
+#import <OpenGLES/ES2/gl.h>
+
+static void mkxp_glCanary(void);
+static void (*g_origPresent)(id, SEL, NSUInteger);
+static bool g_canaryArmed = false;
+
+static void swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
+    if (g_canaryArmed) mkxp_glCanary();
+    g_origPresent(self, _cmd, target);
+}
+
+static void mkxp_installPresentHook() {
+    Method m = class_getInstanceMethod([EAGLContext class], @selector(presentRenderbuffer:));
+    g_origPresent = (void (*)(id, SEL, NSUInteger))method_getImplementation(m);
+    method_setImplementation(m, (IMP)swz_presentRenderbuffer);
+    fprintf(stderr, "[ios-embed] present hook installed\n");
+}
 
 /// 找当前可见的前台窗口（优先 Flutter 的），用于取其 scene 与做对比日志。
 static UIWindow *mkxp_findVisibleWindow() {
@@ -86,6 +104,31 @@ static void mkxp_show(UIWindow *sdlWin, int pass) {
     }
 }
 
+// =============================================================================
+// DEBUG：present 前用引擎当前上下文向默认帧缓冲写红/蓝相间色（前 40 帧每 4 帧切换）。
+// 本次是【SDL 官方路径、零视图搬运】，若此色仍不上屏 → 引擎/GL 侧问题；
+// 若上屏 → 之前所有黑屏都源于搬运视图损坏了合成链。同时打 viewport/FBO/error。
+// =============================================================================
+static uint64_t g_canaryFrame = 0;
+
+static void mkxp_glCanary() {
+    // 只在前 40 个 present 内生效（避免长期干扰引擎渲染）
+    if (g_canaryFrame >= 40) return;
+    ++g_canaryFrame;
+    int phase = (int)(g_canaryFrame / 4) % 2;
+    GLint fb = 0, vp[4] = {0,0,0,0}, err = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+    glGetIntegerv(GL_VIEWPORT, vp);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 896, 414);
+    glClearColor(phase ? 0.0f : 1.0f, 0.0f, phase ? 1.0f : 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    err = glGetError();
+    fprintf(stderr, "[ios-embed] glcanary: frame=%llu phase=%s fb=%d vp=%dx%d err=%d\n",
+            (unsigned long long)g_canaryFrame, phase ? "BLUE" : "RED",
+            fb, vp[2], vp[3], err);
+}
+
 extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
     if (!win) return;
     SDL_SysWMinfo wm;
@@ -102,6 +145,10 @@ extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
     if (!sdlWin) { fprintf(stderr, "[ios-embed] sdlWin nil\n"); return; }
     fprintf(stderr, "[ios-embed] embedIntoView(show path): win=%p scene=%p\n",
             (void *)sdlWin, (void *)sdlWin.windowScene);
+    mkxp_installPresentHook();
+    // canary 在 initGL 之后才有效（GL 上下文已建）——推迟 1s 武装，避开建窗前的 present
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ g_canaryArmed = true; });
     if ([NSThread isMainThread]) {
         mkxp_show(sdlWin, 0);
     } else {
