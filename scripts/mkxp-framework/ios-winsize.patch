@@ -1,5 +1,5 @@
 diff --git a/src/display/gl/gl-meta.cpp b/src/display/gl/gl-meta.cpp
-index ad491f4..11049f4 100644
+index ad491f4..11ce9df 100644
 --- a/src/display/gl/gl-meta.cpp
 +++ b/src/display/gl/gl-meta.cpp
 @@ -26,6 +26,9 @@
@@ -65,7 +65,7 @@ index ad491f4..11049f4 100644
  		if (smooth)
  			TEX::setSmooth(true);
  
-@@ -220,6 +262,151 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
+@@ -220,6 +262,153 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
  		Quad &quad = shState->gpQuad();
  		quad.setTexPosRect(src, dst);
  		quad.draw();
@@ -100,7 +100,9 @@ index ad491f4..11049f4 100644
 +		if (boundFb == 0)
 +		{
 +			static int abCount = 0;
-+			if (abCount < 600)
++			/* 已判定：红/绿都没显示 => swap 之前画进默认帧缓冲的内容会被丢弃。
++			 * 探针会盖住真实画面，停用（保留代码以备后续取用）。 */
++			if (abCount < 0)
 +			{
 +				++abCount;
 +
@@ -217,7 +219,7 @@ index ad491f4..11049f4 100644
  		glState.blend.pop();
  
  		if (smooth)
-@@ -230,7 +417,11 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
+@@ -230,7 +419,11 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
  void blitEnd()
  {
  	if (!HAVE_NATIVE_BLIT)

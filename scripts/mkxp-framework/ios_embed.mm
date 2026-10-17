@@ -28,22 +28,42 @@ static int g_drawW = 0, g_drawH = 0;         // renderbufferStorage 时记录的
 // ---- 诊断 hook（模块加载即装，早于 SDL initGL 的 renderbufferStorage） ----
 static void (*g_origRBS)(id, SEL, NSUInteger, id);
 static BOOL (*g_origPresent)(id, SEL, NSUInteger);
-static bool g_rbsLogged = false;
+static bool g_rbsAllocated = false;
+static int g_rbsW = 0, g_rbsH = 0;
 static uint64_t g_presentTotal = 0, g_presentOK = 0;
 
 static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id drawable) {
-    if (!g_rbsLogged && drawable != nil) {
+    if (drawable != nil) {
         CALayer *layer = (CALayer *)drawable;
         CGRect b = layer.bounds;
-        g_drawW = (int)(b.size.width * layer.contentsScale);
-        g_drawH = (int)(b.size.height * layer.contentsScale);
+        int w = (int)(b.size.width * layer.contentsScale);
+        int h = (int)(b.size.height * layer.contentsScale);
+        g_drawW = w;
+        g_drawH = h;
+
+        /* 每次 renderbufferStorage 都会重新分配颜色缓冲、内容被丢弃。
+         * 如果 SDL uikit 后端在每次 SwapWindow 都调它，那么本帧在它之前画进
+         * 默认帧缓冲的一切都会被丢弃 => 黑屏（实测：swap 前画的探针不显示、
+         * 画在 present 前一刻的探针却能显示，正与此吻合）。
+         * 尺寸未变时跳过重分配，保住本帧画的内容。 */
+        if (g_rbsAllocated && w == g_rbsW && h == g_rbsH) {
+            static uint64_t skipped = 0;
+            ++skipped;
+            if (skipped <= 3 || skipped % 600 == 0)
+                fprintf(stderr, "[ios-embed] renderbufferStorage: SKIP (same %dx%d, n=%llu)\n",
+                        w, h, (unsigned long long)skipped);
+            return;
+        }
+
+        g_rbsW = w;
+        g_rbsH = h;
+        g_rbsAllocated = true;
         fprintf(stderr,
             "[ios-embed] renderbufferStorage: drawable=%s bounds={%.0f,%.0f,%.0f,%.0f} "
             "scale=%.2f drawablePx=%dx%d opaque=%d\n",
             NSStringFromClass([drawable class]).UTF8String,
             b.origin.x, b.origin.y, b.size.width, b.size.height,
-            (double)layer.contentsScale, g_drawW, g_drawH, (int)layer.opaque);
-        g_rbsLogged = true;
+            (double)layer.contentsScale, w, h, (int)layer.opaque);
     }
     g_origRBS(self, _cmd, target, drawable);
 }
