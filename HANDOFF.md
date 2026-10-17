@@ -253,20 +253,21 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
 21. **zlib 静态扩展：运行时 `require 'zlib'` 必须主动登记 feature（根治经验，2026-10-17）**：
    C++ 侧 libz 解压（inflate）正常，但 Ruby 层 `require 'zlib'` 真机报 LoadError。根因：Ruby 的
    `require` **先按 `$LOAD_PATH` 找文件、找不到即抛 LoadError，根本不会先查 `$LOADED_FEATURES`**——
-   所以往 `$LOADED_FEATURES` 塞裸字符串 `'zlib'` 挡不住；而 `dlsym(RTLD_DEFAULT,"Init_zlib")` 兜底
-   既脆弱（锚点/合并稍有不慎就返 NULL）又救不了 `require`。**正解**：在 `binding-mri.cpp` 的
-   `mriBindingInit` 里、mkxp-z 自带 `require('zlib')` 之前，若 `!const_defined?(:Zlib)` 就直接
+   所以往 `$LOADED_FEATURES` 塞裸字符串 `'zlib'` 挡不住。**正解**：在 `binding-mri.cpp` 的
+   `mriBindingInit` 里、mkxp-z 自带 `require('zlib')` 之前，若 `!const_defined?(:Zlib)` 就
    `Init_zlib()`（定义 Zlib 模块）+ `rb_provide_feature(rb_str_new_cstr("zlib"))`（把 feature 正式
    登记为已加载，此后 `require 'zlib'` 直接成功）。两个符号都在 `libruby-static.a`（`-force_load`
-   全量载入，必定在），`extern "C"` 声明后直接调用即可，不用 dlsym。`extern "C"` 是关键：之前
-   `b2d22c9` 撤掉 `rb_provide_feature` 的"链接失败"其实是 C++ TU 没写 `extern "C"` 导致名字修饰
-   （`_Z18rb_provide_feature...`）的误诊，符号一直都在。`mkxp_framework.cpp` 的 `used` 锚点仍保留
-   （强制保留 `Init_zlib`，无害）。
-   **坑中坑（2026-10-17 实踩）**：`extern "C"` 链接声明**不能写在函数体内部**——C++ 不允许块内
-   linkage-spec，会报 `error: expected unqualified-id`。必须把 `extern "C" void Init_zlib(void);` /
-   `extern "C" void rb_provide_feature(VALUE);` 放在文件作用域（mkxp-z 源码顶部本就在 `extern "C" {`
-   块里，紧跟 include 即可）。此条导致 `e7fb24c` 首次提交 CI 红，修正为 `extern "C"` 声明提到文件
-   作用域后即绿。
+   全量载入）。
+   **两个大坑（2026-10-17 实踩，连红两次 CI）**：
+   ① `extern "C"` 链接声明**不能写在函数体内部**——C++ 不允许块内 linkage-spec，报
+      `error: expected unqualified-id`（`e7fb24c` 红，build-mkxp 编译错）。
+   ② 即便声明提到文件作用域、改为**直接调用** `rb_provide_feature`，最终 iOS App 链接会报
+      `Undefined symbol: _rb_provide_feature`——它没被 `used` 锚点引用、且 MKXP.framework 未必
+      把它重导出，成了链接期未定义符号（`5370dcc` 红，build-mkxp 过但 build-ios 挂）。
+   **最终修法**：`Init_zlib` 与 `rb_provide_feature` 都用 `dlsym(RTLD_DEFAULT, "...")` 在运行时解析
+   再调用，**彻底消除链接期引用**。运行时两符号一定在进程里（`used` 锚点强制保留 `Init_zlib`；
+   `rb_provide_feature` 是 libruby 核心函数、被 `require`/extinit 自身引用，必定在场）。`mkxp_framework.cpp`
+   的 `used` 锚点 `zlib_ext_anchor` 仍保留（确保 `Init_zlib` 不被死剥离，dlsym 才找得到）。
 22. **sdl2-image 需显式开 JPEG**：vcpkg 默认不编 JPEG 解码 → 真机 `'JPEG images are not supported'`，
    启用 sdl2-image 的 JPEG feature（`build-mkxp.yml` 的 vcpkg install 加 `--recurse`）。
 23. **Ruby GC 在 iOS 无 JIT 下是启动慢主因**：默认阈值对 Essentials 量级触发海量 GC；`mkxp_run` 在

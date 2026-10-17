@@ -316,20 +316,19 @@ index 355b698..91ddec7 100644
                          gameScreen.x = event.user.windowID;
                          gameScreen.y = event.user.code;
 diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
-index f7f293a..4dbb475 100644
+index f7f293a..fad7b88 100644
 --- a/binding/binding-mri.cpp
 +++ b/binding/binding-mri.cpp
-@@ -57,6 +57,9 @@ extern "C" {
+@@ -57,6 +57,8 @@ extern "C" {
  #include <assert.h>
  #include <string>
  #include <zlib.h>
 +#include <chrono>
-+extern "C" void Init_zlib(void);
-+extern "C" void rb_provide_feature(VALUE);
++#include <dlfcn.h>
  
  #include <SDL_cpuinfo.h>
  #include <SDL_filesystem.h>
-@@ -270,6 +273,22 @@ static void mriBindingInit() {
+@@ -270,6 +272,26 @@ static void mriBindingInit() {
      rb_str_freeze(vers);
      rb_define_const(mod, "VERSION", vers);
      
@@ -342,8 +341,12 @@ index f7f293a..4dbb475 100644
 +    if (!rb_const_defined(rb_cObject, rb_intern("Zlib"))) {
 +        static bool s_zlibInit = false;
 +        if (!s_zlibInit) {
-+            Init_zlib();
-+            rb_provide_feature(rb_str_new_cstr("zlib"));
++            typedef void (*VoidFn)(void);
++            typedef void (*FeatFn)(VALUE);
++            VoidFn initZlib = (VoidFn)dlsym(RTLD_DEFAULT, "Init_zlib");
++            FeatFn provideFeature = (FeatFn)dlsym(RTLD_DEFAULT, "rb_provide_feature");
++            if (initZlib) initZlib();
++            if (provideFeature) provideFeature(rb_str_new_cstr("zlib"));
 +            s_zlibInit = true;
 +            Debug() << "rgss: zlib static init done";
 +        }
@@ -352,7 +355,7 @@ index f7f293a..4dbb475 100644
      // Automatically load zlib if it's present -- the correct way this time
      int state;
      rb_eval_string_protect("require('zlib') if !Kernel.const_defined?(:Zlib)", &state);
-@@ -865,6 +884,12 @@ bool evalScript(VALUE string, const char *filename)
+@@ -865,6 +887,12 @@ bool evalScript(VALUE string, const char *filename)
  
  #define SCRIPT_SECTION_FMT (rgssVer >= 3 ? "{%04ld}" : "Section%03ld")
  
@@ -365,7 +368,7 @@ index f7f293a..4dbb475 100644
  static void runRMXPScripts(BacktraceData &btData) {
      const Config &conf = shState->rtData().config;
      const std::string &scriptPack = conf.game.scripts;
-@@ -898,6 +923,7 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -898,6 +926,7 @@ static void runRMXPScripts(BacktraceData &btData) {
      rb_gv_set("$RGSS_SCRIPTS", scriptArray);
      
      long scriptCount = RARRAY_LEN(scriptArray);
@@ -373,7 +376,7 @@ index f7f293a..4dbb475 100644
      
      std::string decodeBuffer;
      decodeBuffer.resize(0x1000);
-@@ -943,8 +969,11 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -943,8 +972,11 @@ static void runRMXPScripts(BacktraceData &btData) {
              break;
          }
          
@@ -385,7 +388,7 @@ index f7f293a..4dbb475 100644
      
      /* Execute preloaded scripts */
      for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
-@@ -957,6 +986,8 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -957,6 +989,8 @@ static void runRMXPScripts(BacktraceData &btData) {
      
      while (true) {
          for (long i = 0; i < scriptCount; ++i) {
