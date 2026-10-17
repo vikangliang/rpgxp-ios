@@ -74,9 +74,31 @@ static void mkxp_doEmbed(SDL_Window *win, UIView *host) {
         sdlWin.hidden = YES;
 
         fprintf(stderr,
-            "[ios-embed] embed ok: sdlView=%p host=%p hostFrame=%s hostWin=%p\n",
+            "[ios-embed] embed ok: sdlView=%p host=%p hostFrame=%s hostWin=%p "
+            "sdlFrame=%s screen=%s statusBar=%ld winScene=%ld sdlViewContentsScale=%f\n",
             (void *)sdlView, (void *)host,
-            NSStringFromCGRect(host.bounds).UTF8String, (void *)host.window);
+            NSStringFromCGRect(host.bounds).UTF8String, (void *)host.window,
+            NSStringFromCGRect(sdlWin.frame).UTF8String,
+            NSStringFromCGRect(UIScreen.mainScreen.bounds).UTF8String,
+            (long)[UIApplication sharedApplication].statusBarOrientation,
+            (long)host.window.windowScene.interfaceOrientation,
+            (double)sdlView.layer.contentsScale);
+
+        // DEBUG 判定实验：在宿主顶层叠一块洋红标记（5 秒后自动移除）。
+        // 侧载后看到洋红块 → 宿主可见、布局正确，黑屏根因在引擎 GL 呈现；
+        // 完全看不到洋红 → 宿主/PlatformView 没真正上屏（朝向/层级问题）。
+        UIView *marker = [[UIView alloc] init];
+        marker.backgroundColor = [UIColor colorWithRed:1.0 green:0.0 blue:1.0 alpha:0.85];
+        marker.translatesAutoresizingMaskIntoConstraints = NO;
+        [host addSubview:marker];
+        [NSLayoutConstraint activateConstraints:@[
+            [marker.leadingAnchor  constraintEqualToAnchor:host.leadingAnchor],
+            [marker.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+            [marker.topAnchor      constraintEqualToAnchor:host.topAnchor],
+            [marker.bottomAnchor   constraintEqualToAnchor:host.bottomAnchor],
+        ]];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [marker removeFromSuperview]; });
     } @catch (NSException *e) {
         fprintf(stderr, "[ios-embed] embed exception: %s\n", e.reason.UTF8String);
     }
