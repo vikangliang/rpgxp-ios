@@ -18,6 +18,7 @@
 #import <UIKit/UIKit.h>
 #import <stdio.h>
 #import <objc/runtime.h>
+#import <OpenGLES/ES2/gl.h>
 
 // ---- 全局状态 ----
 // 注意：本文件被 mkxp-z 以 -fno-objc-arc（手动引用计数）编译，不能用 __weak/__strong
@@ -52,20 +53,45 @@ static UIView *mkxp_layerOwner(CALayer *layer) {
 
 static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id drawable) {
     CALayer *layer = (CALayer *)drawable;
-    if (!g_reportedDrawable && layer != nil) {
-        fprintf(stderr, "[ios-embed] GL drawable bound: layer=%p ownerView=%p\n",
-                (void *)layer, (void *)mkxp_layerOwner(layer));
-        g_reportedDrawable = true;
+    if (layer != nil) {
+        if (!g_reportedDrawable) {
+            fprintf(stderr, "[ios-embed] GL drawable bound: layer=%p ownerView=%p\n",
+                    (void *)layer, (void *)mkxp_layerOwner(layer));
+            g_reportedDrawable = true;
+        } else if (layer != g_drawableLayer) {
+            // 引擎重新绑定了新 layer（重建视图/尺寸变化）：更新并重新搬运
+            fprintf(stderr, "[ios-embed] GL drawable REBOUND: layer=%p ownerView=%p (was %p)\n",
+                    (void *)layer, (void *)mkxp_layerOwner(layer), (void *)g_drawableLayer);
+        }
         g_drawableLayer = layer;
-        // GL view 已绑定；若宿主已注入，立即搬运；否则等 setHostView 时补搬
-        if (g_hostView) mkxp_requestRepin();
+        if (g_hostView && mkxp_layerOwner(layer)) {
+            g_repinDone = false;   // 绑定变了，允许重新搬运
+            mkxp_requestRepin();
+        }
     }
     g_origRBS(self, _cmd, target, drawable);
 }
 
+// 读当前 FBO 中心与角落像素，判断引擎到底画没画出内容（每 120 帧一次）。
+// present 之前调用：此时内容完整；调用的 rgss 线程上下文是 current。
+static void mkxp_probePixels() {
+    GLint fb = 0, vp[4] = {0,0,0,0};
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+    glGetIntegerv(GL_VIEWPORT, vp);
+    GLint w = vp[2], h = vp[3];
+    if (w < 8 || h < 8) return;
+    GLubyte c[4] = {0,0,0,0}, e[4] = {0,0,0,0};
+    glReadPixels(w/2, h/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c);
+    glReadPixels(w/8, h/8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, e);
+    fprintf(stderr, "[ios-embed] pxprobe: fb=%d vp=%dx%d center=%d,%d,%d,%d corner=%d,%d,%d,%d\n",
+            fb, w, h, c[0], c[1], c[2], c[3], e[0], e[1], e[2], e[3]);
+}
+
 static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
-    BOOL r = g_origPresent(self, _cmd, target);
+    // present 前读（双缓冲下 present 后 back buffer 内容即失效）
     ++g_presentTotal;
+    if (g_presentTotal % 120 == 1) mkxp_probePixels();
+    BOOL r = g_origPresent(self, _cmd, target);
     if (r) ++g_presentOK; else ++g_presentFail;
     if (g_presentTotal % 300 == 1 || !r) {
         fprintf(stderr, "[ios-embed] present #%llu r=%d ok=%llu fail=%llu\n",
