@@ -80,8 +80,9 @@ final class MkxpTouchOverlay: NSObject {
 
   private func buildJoystick(in ctl: UIView, root: UIView) {
     let size: CGFloat = 168
+    let h = max(root.bounds.height, UIScreen.main.bounds.height)
     let joy = MkxpJoystickView(frame: CGRect(
-      x: 22, y: root.bounds.height - size - 28, width: size, height: size))
+      x: 22, y: h - size - 28, width: size, height: size))
     joy.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
     joy.onDirectionChange = { [weak self] dir in
       self?.applyDirection(dir)
@@ -98,8 +99,10 @@ final class MkxpTouchOverlay: NSObject {
     ]
     let d: CGFloat = 72, gap: CGFloat = 14
     let block = d * 2 + gap
-    let x0 = root.bounds.width - block - 22
-    let y0 = root.bounds.height - block - 36
+    let w = max(root.bounds.width, UIScreen.main.bounds.width)
+    let h = max(root.bounds.height, UIScreen.main.bounds.height)
+    let x0 = w - block - 22
+    let y0 = h - block - 36
     let positions: [CGRect] = [
       CGRect(x: x0,            y: y0,            width: d, height: d),
       CGRect(x: x0 + d + gap,  y: y0,            width: d, height: d),
@@ -120,7 +123,8 @@ final class MkxpTouchOverlay: NSObject {
 
   private func buildMenuButton(in ctl: UIView, root: UIView) {
     let b = makeGlassButton(title: "⋯")
-    b.frame = CGRect(x: root.bounds.width - 56, y: 28, width: 44, height: 44)
+    let w = max(root.bounds.width, UIScreen.main.bounds.width)
+    b.frame = CGRect(x: w - 56, y: 28, width: 44, height: 44)
     b.autoresizingMask = [.flexibleLeftMargin, .flexibleBottomMargin]
     b.addTarget(self, action: #selector(menuTap), for: .touchUpInside)
     ctl.addSubview(b)

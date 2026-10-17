@@ -92,13 +92,46 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
                 (unsigned long long)n, g_drawW, g_drawH);
     }
 
-    // ---- 关键修复：mkxp 只在 init 设一次默认帧缓冲 viewport，且尺寸错误（非真实
-    //      drawable 828x1792），导致最终 blit 被裁到不可见 => 全黑。每帧在 present 前
-    //      强制正确 viewport（用 renderbufferStorage 抓到的真实 drawable 像素尺寸），
-    //      修正 mkxp 的最终 blit，并持久到下一帧（mkxp 不每帧重设）。 ----
-    if (g_drawW > 0) glViewport(0, 0, g_drawW, g_drawH);
+    // ---- 诊断：读 mkxp 在 present 前实际留下的 viewport / scissor（它最终 blit 到
+    //      默认帧缓冲用的区域）。若区域与真实 drawable(828x1792) 不匹配/为 0/越界，
+    //      即"游戏被画到屏幕可见区之外"——印证用户假设。先只读不强行改。 ----
+    {
+        static GLint lastVP[4] = {-1,-1,-1,-1};
+        static GLint lastSc[4] = {-1,-1,-1,-1};
+        static int vpLogged = 0;
+        GLint vp[4] = {0,0,0,0}, sc[4] = {0,0,0,0};
+        glGetIntegerv(GL_VIEWPORT, vp);
+        glGetIntegerv(GL_SCISSOR_BOX, sc);
+        bool changed = (vp[0]!=lastVP[0]||vp[1]!=lastVP[1]||vp[2]!=lastVP[2]||vp[3]!=lastVP[3]||
+                        sc[0]!=lastSc[0]||sc[1]!=lastSc[1]||sc[2]!=lastSc[2]||sc[3]!=lastSc[3]);
+        if (vpLogged < 10 || changed) {
+            fprintf(stderr,
+                "[ios-embed] mkxp pre-present: viewport={%d,%d,%d,%d} scissor={%d,%d,%d,%d} drawablePx=%dx%d\n",
+                (int)vp[0],(int)vp[1],(int)vp[2],(int)vp[3],
+                (int)sc[0],(int)sc[1],(int)sc[2],(int)sc[3], g_drawW, g_drawH);
+            vpLogged++;
+            for (int i=0;i<4;i++){ lastVP[i]=vp[i]; lastSc[i]=sc[i]; }
+        }
+    }
 
-    // ---- 右下角红方块探针（常驻，不遮挡 mkxp 内容；确认 present + 修复后 viewport 真显示） ----
+    // ---- 诊断②：读默认帧缓冲中心像素与红角像素。中心黑+红角红 => mkxp 最终 blit
+    //      输出即黑（FBO 没渲染出内容）；中心若有颜色 => 仅 viewport 偏出可见区。 ----
+    {
+        static int pxLogged = 0;
+        if (pxLogged < 3 && g_drawW > 0) {
+            GLubyte ctr[4] = {0,0,0,0};
+            glReadPixels(g_drawW/2, g_drawH/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, ctr);
+            GLubyte cor[4] = {0,0,0,0};
+            glReadPixels((GLint)(g_drawW*0.8), (GLint)(g_drawH*0.2), 1, 1,
+                         GL_RGBA, GL_UNSIGNED_BYTE, cor);
+            fprintf(stderr,
+                "[ios-embed] readback center={%d,%d,%d,%d} redcorner={%d,%d,%d,%d}\n",
+                ctr[0],ctr[1],ctr[2],ctr[3], cor[0],cor[1],cor[2],cor[3]);
+            pxLogged++;
+        }
+    }
+
+    // ---- 右下角红方块探针（常驻，不遮挡 mkxp 内容；确认 present 真显示） ----
     {
         if (!g_probeTried) mkxp_initProbe();
         if (g_probeProg) {
