@@ -116,17 +116,38 @@ static void mkxp_glCanary() {
     if (g_canaryFrame >= 40) return;
     ++g_canaryFrame;
     int phase = (int)(g_canaryFrame / 4) % 2;
-    GLint fb = 0, vp[4] = {0,0,0,0}, err = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+
+    // 1) 读出引擎当前绑定的 FBO 与 viewport（不改变状态）
+    GLint curFb = 0, vp[4] = {0,0,0,0};
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &curFb);
     glGetIntegerv(GL_VIEWPORT, vp);
+
+    // 2) 在【当前 FBO】中心读一点像素，看引擎到底画了什么
+    GLubyte pxFbo[4] = {0,0,0,0}, pxDef[4] = {0,0,0,0};
+    if (vp[2] > 4 && vp[3] > 4)
+        glReadPixels(vp[2]/2, vp[3]/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pxFbo);
+
+    // 3) 给【当前 FBO】与 default FB(0) 都写 canary 色（覆盖引擎可能呈现任一个的情况）
+    glViewport(0, 0, vp[2], vp[3]);
+    glClearColor(phase ? 0.0f : 1.0f, 0.0f, phase ? 1.0f : 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, 896, 414);
     glClearColor(phase ? 0.0f : 1.0f, 0.0f, phase ? 1.0f : 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    err = glGetError();
-    fprintf(stderr, "[ios-embed] glcanary: frame=%llu phase=%s fb=%d vp=%dx%d err=%d\n",
-            (unsigned long long)g_canaryFrame, phase ? "BLUE" : "RED",
-            fb, vp[2], vp[3], err);
+    GLint vp0[4] = {0,0,0,0};
+    glGetIntegerv(GL_VIEWPORT, vp0);
+    glReadPixels(vp0[2]/2, vp0[3]/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pxDef);
+    glBindFramebuffer(GL_FRAMEBUFFER, curFb);   // 还原
+
+    fprintf(stderr,
+        "[ios-embed] glcanary: frame=%llu phase=%s curFb=%d curVp=%dx%d defVp=%dx%d "
+        "enginePx=%d,%d,%d,%d defPx=%d,%d,%d,%d err=%d\n",
+        (unsigned long long)g_canaryFrame, phase ? "BLUE" : "RED",
+        curFb, vp[2], vp[3], vp0[2], vp0[3],
+        pxFbo[0], pxFbo[1], pxFbo[2], pxFbo[3],
+        pxDef[0], pxDef[1], pxDef[2], pxDef[3],
+        (int)glGetError());
 }
 
 extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
