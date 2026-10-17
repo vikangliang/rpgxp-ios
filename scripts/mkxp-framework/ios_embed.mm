@@ -34,9 +34,97 @@ static bool g_rbsAllocated = false;
 static int g_rbsW = 0, g_rbsH = 0;
 static uint64_t g_presentTotal = 0, g_presentOK = 0;
 
-/* 由 mkxp 的 graphics.cpp 提供：当前合成结果纹理 + letterbox 几何 */
-extern "C" void mkxp_ios_getScene(GLuint *tex, int *sw, int *sh,
+/* 由 mkxp 的 graphics.cpp 提供：当前合成结果纹理/FBO + letterbox 几何 */
+extern "C" void mkxp_ios_getScene(GLuint *tex, GLuint *fbo, int *sw, int *sh,
                                   int *ox, int *oy, int *ww, int *wh);
+
+/* ===================== 方案 B：软呈现（必定可见） =====================
+ * iOS 的 EAGL 呈现链路不可用（present 后颜色缓冲作废 => FBO 0 不完整 =>
+ * 绘制被驱动拒绝）。这里彻底绕开它：
+ *   1) 从场景 FBO 用 glReadPixels 读回像素（该路径已实测可用）；
+ *   2) 行翻转后包成 CGImage（用 CFData 拷贝，避免缓冲复用导致撕裂）；
+ *   3) 主线程交给满屏 UIImageView(ScaleAspectFit) 显示，自动 4:3 居中留黑边。
+ * UIKit 合成必定可见（早期绿块已证明）。 */
+static UIImageView *g_softView = nil;
+static uint8_t *g_softBuf = NULL;    // 读回缓冲（GL 行序：下->上）
+static uint8_t *g_softFlip = NULL;   // 翻转后（上->下，CGImage 需要）
+static int g_softW = 0, g_softH = 0;
+static uint64_t g_softFrames = 0;
+
+static void mkxp_softPresent()
+{
+    GLuint tex = 0, fbo = 0;
+    int sw = 0, sh = 0, ox = 0, oy = 0, ww = 0, wh = 0;
+    mkxp_ios_getScene(&tex, &fbo, &sw, &sh, &ox, &oy, &ww, &wh);
+    if (!fbo || sw <= 0 || sh <= 0) return;
+
+    /* 每 2 帧更新一次，控制 CPU 开销（约 30fps） */
+    if ((++g_softFrames & 1) != 0) return;
+
+    if (sw != g_softW || sh != g_softH) {
+        free(g_softBuf);
+        free(g_softFlip);
+        g_softW = sw;
+        g_softH = sh;
+        g_softBuf = (uint8_t *)malloc((size_t)sw * sh * 4);
+        g_softFlip = (uint8_t *)malloc((size_t)sw * sh * 4);
+    }
+    if (!g_softBuf || !g_softFlip) return;
+
+    GLint prevFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE, g_softBuf);
+    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+
+    GLenum e = glGetError();
+    if (e != GL_NO_ERROR) {
+        static int errLogged = 0;
+        if (errLogged < 3) {
+            ++errLogged;
+            fprintf(stderr, "[ios-embed] softPresent readback err=0x%x\n", (unsigned)e);
+        }
+        return;
+    }
+
+    /* 行翻转：GL 原点左下，CGImage 原点左上 */
+    size_t stride = (size_t)sw * 4;
+    for (int y = 0; y < sh; ++y)
+        memcpy(g_softFlip + (size_t)y * stride,
+               g_softBuf + (size_t)(sh - 1 - y) * stride, stride);
+
+    /* 用 CFData 拷贝一份，避免后续复用 g_softFlip 影响正在显示的图像 */
+    CFDataRef data = CFDataCreate(NULL, g_softFlip, (CFIndex)(stride * (size_t)sh));
+    if (!data) return;
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
+    CFRelease(data);
+    if (!provider) return;
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGImageRef cg = CGImageCreate(sw, sh, 8, 32, (size_t)sw * 4, cs,
+                                  kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast,
+                                  provider, NULL, false, kCGRenderingIntentDefault);
+    CGColorSpaceRelease(cs);
+    CGDataProviderRelease(provider);
+    if (!cg) return;
+
+    /* CFRetain/CFRelease 与 ARC/MRR 无关，可在线程间安全交接 */
+    CFRetain(cg);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_softView) {
+            UIImage *img = [UIImage imageWithCGImage:cg];   // autorelease，两侧通用
+            g_softView.image = img;
+        }
+        CFRelease(cg);
+    });
+
+    static int logged = 0;
+    if (logged < 3) {
+        ++logged;
+        fprintf(stderr, "[ios-embed] softPresent %dx%d (view=%p)\n",
+                sw, sh, (void *)g_softView);
+    }
+}
 
 /* iOS 兜底：present 前一刻由我们完成最后的上屏 blit。
  * 绘制状态（着色器/VBO）首次使用时惰性建立。 */
@@ -85,9 +173,9 @@ static void mkxp_presentBlit() {
     if (!g_blitTried) mkxp_initBlitProg();
     if (!g_blitProg) return;
 
-    GLuint tex = 0;
+    GLuint tex = 0, fbo = 0;
     int sw = 0, sh = 0, ox = 0, oy = 0, ww = 0, wh = 0;
-    mkxp_ios_getScene(&tex, &sw, &sh, &ox, &oy, &ww, &wh);
+    mkxp_ios_getScene(&tex, &fbo, &sw, &sh, &ox, &oy, &ww, &wh);
     if (!tex || ww <= 0 || wh <= 0 || sw <= 0 || sh <= 0) return;
 
     /* 视口必须是整个 drawable，否则 NDC 会被映射到旧的 512x384 小视口 */
@@ -238,8 +326,11 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
         for (int i=0;i<4;i++) lastVP[i] = vp[i];
     }
 
-    /* 兜底：在 present 前一刻自己把画面画上去（该时机 FBO 0 才完整） */
+    /* 方案 A 兜底：在 present 前一刻自己把画面画上去（EAGL 路径） */
     mkxp_presentBlit();
+
+    /* 方案 B：绕开 EAGL 呈现，读回场景 FBO 像素交给 UIImageView 显示 */
+    mkxp_softPresent();
 
     BOOL r = g_origPresent(self, _cmd, target);
     if (r) ++g_presentOK;
@@ -295,6 +386,22 @@ extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
 
     if ([NSThread isMainThread]) mkxp_show(sdlWin);
     else dispatch_async(dispatch_get_main_queue(), ^{ mkxp_show(sdlWin); });
+
+    /* 方案 B：创建承载软件呈现图像的 UIImageView，盖在 GL 视图之上。
+     * ScaleAspectFit + 黑底 => 自动 4:3 居中留黑边。 */
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_softView) return;
+        UIImageView *iv = [[UIImageView alloc] initWithFrame:sdlWin.bounds];
+        iv.backgroundColor = [UIColor blackColor];
+        iv.contentMode = UIViewContentModeScaleAspectFit;
+        iv.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                              UIViewAutoresizingFlexibleHeight;
+        iv.opaque = YES;
+        [sdlWin addSubview:iv];
+        g_softView = iv;   /* 生命期与 App 一致，故意不释放 */
+        fprintf(stderr, "[ios-embed] soft view created frame=%s\n",
+                NSStringFromCGRect(sdlWin.bounds).UTF8String);
+    });
 
     for (NSNumber *d in @[ @2.0, @5.0 ]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d.doubleValue*NSEC_PER_SEC)),
