@@ -275,6 +275,14 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
 24. **framework-entry.patch 现已 4 个 hunk**（原 2 个）：input.cpp（反查表）+ main.cpp（线程拆分）+
    eventthread.cpp（`MKXPZ_IOS_EMBED` 守卫）+ binding-mri.cpp（zlib 兜底+打点）。改 mkxp-z 源码仍以
    patch 为准，勿直接改 clone；生成 patch 务必 `newline="\n"`（见接手须知 #4）。
+25. **交叉编译静态 Ruby 的 Encoding 常量可能缺失（2026-10-17）**：zlib 修好后脚本 `exec` 阶段立刻报
+   `uninitialized constant Encoding::UTF_8 (NameError)`（Section004:5，游戏脚本早期就引用）。
+   根因待定（编码注册了但常量没定义，或 `enc` 对象根本没链进 libruby-static.a）。修法 =
+   `binding-mri.cpp` 初始化里加**编码常量守卫**：对 UTF-8/US-ASCII/ASCII-8BIT/UTF-16LE/UTF-16BE/
+   EUC-JP/Shift_JIS/Windows-31J 逐个 `rb_enc_find`，编码在但常量缺就 `rb_define_const` 补上
+   （日志 `rgss: defined Encoding::X`）；编码本身没注册则打 WARNING（`rgss: WARNING encoding X
+   not registered`）——若真机日志出 WARNING，说明构建缺 `enc` 对象，下一步要去 `build_mkxp_ios.sh`
+   手工编 enc/encdb.c、enc/us_ascii.c、enc/utf_8.c 等合进静态库（同 zlib_ext.o 方案）。
 
 ## 下一步该做什么（2026-10-17 更新）
 

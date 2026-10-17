@@ -316,19 +316,20 @@ index 355b698..91ddec7 100644
                          gameScreen.x = event.user.windowID;
                          gameScreen.y = event.user.code;
 diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
-index f7f293a..fad7b88 100644
+index f7f293a..2e09e80 100644
 --- a/binding/binding-mri.cpp
 +++ b/binding/binding-mri.cpp
-@@ -57,6 +57,8 @@ extern "C" {
+@@ -57,6 +57,9 @@ extern "C" {
  #include <assert.h>
  #include <string>
  #include <zlib.h>
 +#include <chrono>
 +#include <dlfcn.h>
++#include <ruby/encoding.h>
  
  #include <SDL_cpuinfo.h>
  #include <SDL_filesystem.h>
-@@ -270,6 +272,26 @@ static void mriBindingInit() {
+@@ -270,6 +273,49 @@ static void mriBindingInit() {
      rb_str_freeze(vers);
      rb_define_const(mod, "VERSION", vers);
      
@@ -352,10 +353,33 @@ index f7f293a..fad7b88 100644
 +        }
 +    }
 +
++    // Encoding constants: the cross-compiled static Ruby may register encodings
++    // without defining their Encoding::* constants (game scripts reference
++    // Encoding::UTF_8 early -> NameError). Ensure the common ones exist; if an
++    // encoding itself is not registered, log a WARNING (that means the build is
++    // missing the enc objects and needs a build-script fix).
++    {
++        static const char *encs[] = {"UTF-8", "US-ASCII", "ASCII-8BIT", "UTF-16LE",
++                                     "UTF-16BE", "EUC-JP", "Shift_JIS", "Windows-31J", 0};
++        VALUE encClass = rb_const_get(rb_cObject, rb_intern("Encoding"));
++        for (int i = 0; encs[i]; ++i) {
++            rb_encoding *e = rb_enc_find(encs[i]);
++            if (!e) { Debug() << "rgss: WARNING encoding" << encs[i] << "not registered"; continue; }
++            char cname[64];
++            snprintf(cname, sizeof(cname), "%s", encs[i]);
++            for (char *p = cname; *p; ++p) { if (*p == '-') *p = '_'; }
++            if (!rb_const_defined(encClass, rb_intern(cname))) {
++                rb_define_const(encClass, cname, rb_enc_from_encoding(e));
++                Debug() << "rgss: defined Encoding::" << cname;
++            }
++        }
++        Debug() << "rgss: encoding constants guard done";
++    }
++
      // Automatically load zlib if it's present -- the correct way this time
      int state;
      rb_eval_string_protect("require('zlib') if !Kernel.const_defined?(:Zlib)", &state);
-@@ -865,6 +887,12 @@ bool evalScript(VALUE string, const char *filename)
+@@ -865,6 +911,12 @@ bool evalScript(VALUE string, const char *filename)
  
  #define SCRIPT_SECTION_FMT (rgssVer >= 3 ? "{%04ld}" : "Section%03ld")
  
@@ -368,7 +392,7 @@ index f7f293a..fad7b88 100644
  static void runRMXPScripts(BacktraceData &btData) {
      const Config &conf = shState->rtData().config;
      const std::string &scriptPack = conf.game.scripts;
-@@ -898,6 +926,7 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -898,6 +950,7 @@ static void runRMXPScripts(BacktraceData &btData) {
      rb_gv_set("$RGSS_SCRIPTS", scriptArray);
      
      long scriptCount = RARRAY_LEN(scriptArray);
@@ -376,7 +400,7 @@ index f7f293a..fad7b88 100644
      
      std::string decodeBuffer;
      decodeBuffer.resize(0x1000);
-@@ -943,8 +972,11 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -943,8 +996,11 @@ static void runRMXPScripts(BacktraceData &btData) {
              break;
          }
          
@@ -388,7 +412,7 @@ index f7f293a..fad7b88 100644
      
      /* Execute preloaded scripts */
      for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
-@@ -957,6 +989,8 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -957,6 +1013,8 @@ static void runRMXPScripts(BacktraceData &btData) {
      
      while (true) {
          for (long i = 0; i < scriptCount; ++i) {
