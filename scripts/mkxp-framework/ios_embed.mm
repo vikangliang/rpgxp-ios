@@ -17,6 +17,8 @@
 #import <UIKit/UIKit.h>
 #import <OpenGLES/ES2/gl.h>
 #import <OpenGLES/ES2/glext.h>
+#import <OpenGLES/EAGLDrawable.h>
+#import <QuartzCore/QuartzCore.h>
 #import <stdio.h>
 #import <objc/runtime.h>
 
@@ -144,6 +146,26 @@ static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id dra
         int h = (int)(b.size.height * layer.contentsScale);
         g_drawW = w;
         g_drawH = h;
+
+        /* 【方案A】强制 retainedBacking=YES。
+         * iOS 上该属性默认为 NO 时，每次 present 之后颜色缓冲会被系统作废，
+         * 使默认帧缓冲(FBO 0)变为不完整，之后所有往它的绘制都以
+         * GL_INVALID_OPERATION(0x502) 被驱动拒绝 => 黑屏。
+         * 设为 YES 后缓冲内容被保留，FBO 0 始终完整，mkxp 原本的
+         * 渲染链路即可正常工作（也是唯一能同时解释"swap 前绘制 0x502"
+         * 与"present 前一刻能显示"的机制）。必须在原始实现调用前设置。 */
+        if ([drawable isKindOfClass:[CAEAGLLayer class]]) {
+            CAEAGLLayer *egl = (CAEAGLLayer *)drawable;
+            NSMutableDictionary *props = [egl.drawableProperties mutableCopy];
+            if (!props) props = [NSMutableDictionary dictionary];
+            if (![[props objectForKey:(id)kEAGLDrawablePropertyRetainedBacking] boolValue]) {
+                [props setObject:[NSNumber numberWithBool:YES]
+                          forKey:(id)kEAGLDrawablePropertyRetainedBacking];
+                [egl setDrawableProperties:props];
+                fprintf(stderr, "[ios-embed] RetainedBacking=YES on %s\n",
+                        NSStringFromClass([drawable class]).UTF8String);
+            }
+        }
 
         /* 统计重分配次数：iOS 在 present 后作废颜色缓冲，需要重新
          * renderbufferStorage 才能让默认帧缓冲恢复完整。
