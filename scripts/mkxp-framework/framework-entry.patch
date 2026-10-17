@@ -364,22 +364,20 @@ index 4779221..14ab52e 100644
      SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
      SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
  
-@@ -351,7 +357,19 @@ int main(int argc, char *argv[]) {
+@@ -351,7 +357,17 @@ int main(int argc, char *argv[]) {
  #endif
        return 0;
      }
 -    
 +
 +#ifdef MKXPZ_IOS_EMBED
-+    /* iOS 嵌入：把 SDL 渲染视图挂进其自建 UIWindow 并抬高层级，盖过 Flutter 的占位
-+     * 视图（解决整屏黑）。UIKit 窗口操作只能在 Objective-C++ 编译，故抽到
-+     * ios_embed.mm。本文件（main.cpp）实际被 iOS 工具链按 C 编译（.cpp 被当 C 处理），
-+     * 故此处只能写【纯 C 前向声明】void mkxp_ios_raiseWindow(SDL_Window *)；真正带
-+     * extern "C" 的定义在 ios_embed.mm（ObjC++ 侧），两侧同得 flat C 名
-+     * _mkxp_ios_raiseWindow 且默认可见，链接自动匹配。这与 mkxp_run 的 C/C++ 互操作
-+     * 约定一致（C++ 侧 extern "C" 暴露，C 侧纯声明调用）。 */
-+    void mkxp_ios_raiseWindow(SDL_Window *win);
-+    mkxp_ios_raiseWindow(win);
++    /* iOS 嵌入：把 SDL 的渲染视图搬进 Flutter 提供的可见 UIView（由 MkxpPlatformView
++     * 经 mkxp_ios_setHostView 注入），让画面在 PlatformView 里直接出像素，而不是抬一个
++     * 独立 SDL UIWindow 盖屏（那种做法画面进不到可见层级，实测整屏空窗）。UIKit 视图
++     * 操作只能 ObjC++ 编译，抽到 ios_embed.mm；main.cpp 实际被 iOS 工具链按 C 编译，
++     * 故此处只写【纯 C 前向声明】，定义侧 extern "C" 同得 flat 名、默认可见，链接匹配。 */
++    void mkxp_ios_embedIntoView(SDL_Window *win);
++    mkxp_ios_embedIntoView(win);
 +#endif
 +
  #ifdef MKXPZ_BUILD_XCODE

@@ -1,74 +1,86 @@
-// ios_embed.mm — iOS 嵌入所需的 UIKit 窗口操作（Objective-C++）。
+// ios_embed.mm — iOS 嵌入：把 SDL 的渲染视图搬进 Flutter 提供的可见 UIView。
 //
 // 必须独立成 .mm：src/main.cpp 被 iOS 工具链按 C 编译，不能碰 objc 构造；
-// SDL 自建 UIWindow 的 scene/level/hidden/makeKeyAndVisible 都是 ObjC 方法。
+// SDL 自建 UIWindow 的 view、UIKit 的 addSubview/约束/层级都是 ObjC 方法。
 //
-// mkxp_ios_raiseWindow 由 main.cpp（MKXPZ_IOS_EMBED 分支）调用。注意三个 iOS 13+ 的坑：
-//  1) 该调用来自 SDL 事件线程（非主线程），UIKit 操作必须派发到主线程，否则静默不生效；
-//  2) SDL 自建的 UIWindow 若未关联 UIWindowScene，永远不会上屏（黑屏且无任何警告）；
-//  3) SDL/Flutter 随后可能重排窗口层级，需要延时再抬一次兜底。
-// 所有诊断信息走 stderr → mkxp.log，无 Xcode 控制台也能定位卡点。
+// 为什么是“搬 view”而不是“抬 SDL 窗口盖过 Flutter”：
+//   之前的 raise 方案把 SDL 自建 UIWindow 提到 level 1500 盖屏，但 SDL 实际把像素
+//   画进了那个独立窗口——它是否上屏受 iOS 窗口系统摆布，实测就是盖住了 Flutter 却
+//   不出画面（一片空窗）。正确做法是让 SDL 的 view 直接成为【可见的 PlatformView 子视图】，
+//   渲染图层(CAEAGLLayer)挂进 Flutter 真正显示出来的容器，画面才出得来。
+//
+// 流程：MkxpPlatformView 创建时调用 mkxp_ios_setHostView 注入宿主 UIView；
+//      main.cpp（MKXPZ_IOS_EMBED 分支）建窗后调用 mkxp_ios_embedIntoView，
+//      本文件在【主线程】把 SDL 的 rootVC.view 加进宿主并填充满，再隐藏 SDL 自建窗口。
+// 所有诊断走 stderr → mkxp.log（无 Xcode 控制台也能定位）。
 #import <SDL.h>
 #import <SDL_syswm.h>
 #import <UIKit/UIKit.h>
 #import <stdio.h>
 
-static void mkxp_logWin(const char *tag, UIWindow *w) {
-    if (!w) { fprintf(stderr, "[ios-embed] %s: window=nil\n", tag); return; }
-    const char *layer = w.rootViewController.view.layer
-        ? NSStringFromClass([w.rootViewController.view.layer class]).UTF8String : "(nil)";
-    fprintf(stderr,
-        "[ios-embed] %s: win=%p hidden=%d level=%.0f frame=%s scene=%p rootVC=%p layer=%s onMain=%d\n",
-        tag, (void *)w, w.hidden, (double)w.windowLevel,
-        NSStringFromCGRect(w.frame).UTF8String,
-        (void *)w.windowScene, (void *)w.rootViewController,
-        layer, [NSThread isMainThread]);
+static __weak UIView *g_hostView = nil;
+
+extern "C" void mkxp_ios_setHostView(void *view) {
+    g_hostView = (__bridge UIView *)(view);
+    fprintf(stderr, "[ios-embed] setHostView=%p\n", view);
 }
 
-static void mkxp_doRaise(UIWindow *sdlWin) {
+static void mkxp_doEmbed(SDL_Window *win, UIView *host) {
     @try {
-        if (!sdlWin.windowScene) {
-            for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-                if ([s isKindOfClass:[UIWindowScene class]] &&
-                    s.activationState == UISceneActivationStateForegroundActive) {
-                    sdlWin.windowScene = (UIWindowScene *)s;
-                    fprintf(stderr, "[ios-embed] attached missing windowScene=%p\n", (void *)s);
-                    break;
-                }
-            }
+        if (!host) { fprintf(stderr, "[ios-embed] embed: host nil\n"); return; }
+        SDL_SysWMinfo wm;
+        SDL_VERSION(&wm.version);
+        if (!SDL_GetWindowWMInfo(win, &wm)) {
+            fprintf(stderr, "[ios-embed] embed: SDL_GetWindowWMInfo failed: %s\n", SDL_GetError());
+            return;
         }
-        sdlWin.hidden = NO;
-        sdlWin.windowLevel = 1500.0;
-        [sdlWin makeKeyAndVisible];
-        mkxp_logWin("after-raise", sdlWin);
+        if (wm.subsystem != SDL_SYSWM_UIKIT) {
+            fprintf(stderr, "[ios-embed] embed: subsystem=%d not UIKit\n", (int)wm.subsystem);
+            return;
+        }
+        UIWindow *sdlWin = (UIWindow *)wm.info.uikit.window;
+        if (!sdlWin) { fprintf(stderr, "[ios-embed] embed: sdlWin nil\n"); return; }
+        UIViewController *vc = sdlWin.rootViewController;
+        UIView *sdlView = vc.view;
+        if (!sdlView) { fprintf(stderr, "[ios-embed] embed: sdlView nil\n"); return; }
+
+        host.hidden = NO;
+        [host layoutIfNeeded];
+
+        // 解除 SDL 自带约束/变换，改由我们约束填满宿主
+        sdlView.translatesAutoresizingMaskIntoConstraints = NO;
+        [host addSubview:sdlView];
+        [NSLayoutConstraint activateConstraints:@[
+            [sdlView.leadingAnchor  constraintEqualToAnchor:host.leadingAnchor],
+            [sdlView.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+            [sdlView.topAnchor      constraintEqualToAnchor:host.topAnchor],
+            [sdlView.bottomAnchor   constraintEqualToAnchor:host.bottomAnchor],
+        ]];
+        sdlView.frame = host.bounds;
+        [host bringSubviewToFront:sdlView];
+
+        // SDL 自建窗口不再需要显示（避免盖屏/空窗），但保留其存在供 SDL 内部引用
+        sdlWin.hidden = YES;
+
+        fprintf(stderr,
+            "[ios-embed] embed ok: sdlView=%p host=%p hostFrame=%s hostWin=%p\n",
+            (void *)sdlView, (void *)host,
+            NSStringFromCGRect(host.bounds).UTF8String, (void *)host.window);
     } @catch (NSException *e) {
-        fprintf(stderr, "[ios-embed] raise exception: %s\n", e.reason.UTF8String);
+        fprintf(stderr, "[ios-embed] embed exception: %s\n", e.reason.UTF8String);
     }
 }
 
-extern "C" void mkxp_ios_raiseWindow(SDL_Window *win) {
-    if (!win) return;
-    SDL_SysWMinfo wm;
-    SDL_VERSION(&wm.version);
-    if (!SDL_GetWindowWMInfo(win, &wm)) {
-        fprintf(stderr, "[ios-embed] SDL_GetWindowWMInfo failed: %s\n", SDL_GetError());
+extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
+    UIView *host = g_hostView;
+    if (!host) {
+        fprintf(stderr, "[ios-embed] embed called but host view not set (did Flutter create the PlatformView?)\n");
         return;
     }
-    if (wm.subsystem != SDL_SYSWM_UIKIT) {
-        fprintf(stderr, "[ios-embed] subsystem=%d not UIKit\n", (int)wm.subsystem);
-        return;
-    }
-    UIWindow *sdlWin = (UIWindow *)wm.info.uikit.window;
-    mkxp_logWin("pre-raise", sdlWin);
-    if (!sdlWin) return;
-
     if ([NSThread isMainThread]) {
-        mkxp_doRaise(sdlWin);
+        mkxp_doEmbed(win, host);
     } else {
-        // dispatch_async 而非 sync：避免与主线程互相等待造成死锁
-        dispatch_async(dispatch_get_main_queue(), ^{ mkxp_doRaise(sdlWin); });
+        // UIKit 视图操作必须在主线程；dispatch_async 避免与主线程互锁
+        dispatch_async(dispatch_get_main_queue(), ^{ mkxp_doEmbed(win, host); });
     }
-    // 0.6s 后再抬一次，兜底 SDL/Flutter 的窗口重排
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ mkxp_doRaise(sdlWin); });
 }
