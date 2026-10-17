@@ -17,11 +17,11 @@ void mkxp_ios_raiseWindow(SDL_Window *win) {
     SDL_SysWMinfo wm;
     SDL_VERSION(&wm.version);
     if (!SDL_GetWindowWMInfo(win, &wm)) return;
-    UIWindow *sdlWin = wm.info.uikit.window;
-    UIView *sdlView = wm.info.uikit.view;
-    if (!sdlWin || !sdlView) return;
-    if (![sdlView isDescendantOfView:sdlWin])
-        [sdlWin addSubview:sdlView];
-    sdlWin.windowLevel = 1500.0;
+    if (wm.subsystem != SDL_SYSWM_UIKIT) return;
+    // SDL2 UIKit 子系统只暴露 window（UIWindow *），不暴露内部 view。
+    // 直接把 SDL 自建的 UIWindow 抬到 Flutter 之上并设为 key，渲染即盖过占位视图。
+    UIWindow *sdlWin = (UIWindow *)wm.info.uikit.window;
+    if (!sdlWin) return;
+    sdlWin.windowLevel = UIWindowLevelStatusBar + 1;
     [sdlWin makeKeyAndVisible];
 }

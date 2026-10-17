@@ -116,7 +116,7 @@ int mkxp_run(const char *gamePath)
      * 才能上屏。g_engineRunning 由后台线程在引擎真正退出时复位。argv 用块内复合字面量，避免悬空指针。 */
     g_engineRunning.store(true);
     dispatch_async(dispatch_get_main_queue(), ^{
-        mkxp_z_main(1, (char *[]){"mkxp", nullptr});
+        mkxp_z_main(1, (char *[]){ (char *)"mkxp", nullptr });
     });
 
     return 0;
