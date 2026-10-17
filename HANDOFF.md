@@ -2,7 +2,7 @@
 
 > 本文件专门写给「接手继续云编译」的会话/人。AI 记忆**不随仓库走**，所以把接力上下文写在这里。
 
-## 当前状态（2026-10-16，更新于 `15ab649`）
+## 当前状态（2026-10-17，更新于 `cee6bd0`）
 
 > 里程碑盘点：
 
@@ -12,12 +12,14 @@
 | M1 编译/框架化 | ✅✅✅ | 双 workflow 全绿；`MKXP.framework` 含引擎；12 编译坑 + 6 链接坑全填平 |
 | M1 真机首测（闪退） | ✅ 已修 | 装包/壳/桥接/链接全通；点启动闪退 → `625cbd5` 派发到主线程修掉 |
 | M2 阶段一（导入+启动链路） | ✅ | 文件选择器/ZIP 导入/游戏库/启动·删除/日志对话框/透明浮层就位 |
-| **M2 关键 Bug：启动后无画面** | 🔧 已修，CI 绿待真机验 | 点启动卡「正在启动」、无游戏画面 → `15ab649`+`baa3646` 把阻塞事件循环甩后台线程 |
-| M2 阶段二（虚拟按键/设置/常驻日志） | ⬜ 未开始 | 见下 |
+| M2 阶段二（触摸浮层/设置/日志/详情页） | ✅ 已完成 | 原生 `MkxpTouchOverlay`（圆环摇杆+2×2 键直调 mkxp_key）、五页 UI、游戏详情页、退出菜单 |
+| **M2 关键 Bug：启动后无画面** | ✅ 已修已验 | 点启动卡「正在启动」/无画面 → `15ab649`+`baa3646` 循环甩后台线程；真机已出画面（M3 在其上继续调） |
+| M3 真机调通（zlib/GL/UIKit/黑屏无声/JPEG/GC） | 🔧 进行中 | `cee6bd0` 及前序 m3 提交连环修，最新为 zlib 扩展链接锚点 |
 
-- 最新提交：`baa3646`（引擎事件循环后台化 + 编译修复）。`15ab649` 引入线程拆分但编译期因
-  `RGSSThreadData` 构造实参误写成解引用（`*evThread`，应为指针 `evThread`）报错；`baa3646` 修正后
-  双 workflow 全绿（IPA 已产出）。其前 `625cbd5` 及更早均双 workflow 全绿；**工作区干净**。
+- 最新提交：`cee6bd0`（M3：zlib 扩展链接 `used` 锚点）。自 `8eac281` 起进入 M3 真机调通：黑屏无声三连修、
+  UIKit 崩溃根治（`MKXPZ_IOS_EMBED` 守卫）、GL 上下文回主线程、zlib LoadError 根治、sdl2-image JPEG、
+  Ruby GC 调优、脚本加载打点。其前 `baa3646` 及更早均双 workflow 全绿；**拉取后仅 `.vscode/` 未跟踪**
+  （编辑器目录，可忽略，不影响构建）。
 - **M0 流水线 ✅**（Flutter 壳 + mkxp 插件 + 云构建 + 侧载，IPA 可出）。
 - **M1 全部完成 ✅✅✅**（`625cbd5` 起双 workflow 全绿）：
   - `MKXP.framework`：核心 = libmkxp + 静态 Ruby + SDL2_sound（`-force_load` 全量载入）；
@@ -46,20 +48,48 @@
   - `SDL2_sound` v2.0.6 源码交叉编译出 `libSDL2_sound.a`；
   - mkxp-z v2.4.2 编译 + 框架化入口 `mkxp_run/mkxp_key/mkxp_quit`（M1-A）。
 
-## M2 进度（2026-10-16 起）
+## M2 进度（2026-10-16 起，已全部完成 ✅）
 
-**阶段一（导入+启动链路，进行中）**：
-- 依赖：`file_picker`（选 Zip）、`archive`（解压）、`path_provider`（沙盒目录）；
-- `lib/services/game_library.dart`：扫描 `Documents/games/`（顶层含 Game.ini 即一个游戏）、
-  Zip 导入（自动定位游戏根——兼容「根目录直铺」与「套一层文件夹」两种打包，跳过
-  `__MACOSX`/`.DS_Store`/`._*`）、删除游戏；
-- `lib/main.dart`：游戏库界面（列表 + 启动/删除 + 导入 + 刷新 + 日志对话框）；
-- `Mkxp.launchGame` 改为透出错误（PlatformException，message 含 mkxp_run 返回码含义）。
+**阶段一（导入+启动链路）✅**：`file_picker`/`archive`/`path_provider`；`game_library.dart` 扫描
+`Documents/games/`（顶层含 Game.ini 即一个游戏）、Zip 导入（自动定位游戏根，兼容直铺/套一层，
+跳过 `__MACOSX`/`.DS_Store`/`._*`）、删除；`Mkxp.launchGame` 透出错误（含 mkxp_run 返回码含义）。
 
-**阶段二（界面功能，未开始）**：虚拟摇杆+动作键（Essentials 键位）、设置页、常驻日志页。
-引擎事件循环已挪到后台线程（`15ab649`），主线程不再被占死，Flutter 浮层在引擎未启动时
-可正常响应；但游戏运行时 SDL 全屏窗口盖在最上层、吞掉触摸，阶段二做浮层按键时需用原生
-overlay UIWindow 盖在 SDL 窗口上、按钮直调 `mkxp_key`（不依赖 Flutter 主线程）。
+**阶段二（界面功能）✅**：全部做完——
+- 完整 UI 五页：`lib/screens/` 下 `library`（游戏库列表 + 启动/删除 + 导入 + 刷新）/
+  `import`（解压进度条，按未压缩字节计进度 + 当前文件名）/ `log_view`（读 `mkxp.log`）/
+  `settings`（设置 + `app_settings.dart`）/ `game_detail`（点列表先进详情，点"开始游戏"才启动）/
+  `game_run`（运行页）；
+- 原生触摸浮层 `mkxp/ios/Classes/MkxpTouchOverlay.swift`：圆环摇杆 + 2×2 动作键，直调 `mkxp_key`
+  （解决 SDL 全屏窗吞触摸，不依赖 Flutter 主线程）；
+- 游戏内退出菜单、真实图标、游玩时长、`SDL_HINT_ORIENTATIONS` 横屏 hint。
+
+## M3 进度（2026-10-16 起，真机调通中 🔧）
+
+M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修复（提交均带 `m3` 前缀）：
+
+- **黑屏无声三连修**（`f4f36a1`）：① 引擎 C++/Ruby 日志重定向到 `Documents/mkxp.log`
+  （`mkxp_framework.cpp` 里 `freopen` stdout/stderr，App 内日志页可读，是无 Mac 的唯一调试通道）；
+  ② AVAudioSession 激活挪后台；③ 后台线程 `SDL_ShowSimpleMessageBox` 不安全 → 改为只写日志。
+- **UIKit 崩溃根治**（`2c011f0`）：`EventThread::process` 跑在后台线程，而窗口操作（SETFULLSCREEN/
+  WINRESIZE/WINREPOSITION/WINCENTER/WINRENAME/标题设置）会改 UIKit 视图 → 后台线程碰 UIKit 必崩
+  `NSInternalInconsistencyException: Call must be made on main thread`（Essentials 的
+  `Graphics.resize_screen` 必踩）。`framework-entry.patch` 的 `eventthread.cpp` 加 `MKXPZ_IOS_EMBED`
+  守卫，这些操作在嵌入模式全部吞掉（窗口固定全屏，内部分辨率由 RGSS 线程 `Screen.setResolution` 调）。
+- **GL 上下文回主线程**（`0909989`）：实测崩溃栈直指 `SDL_GL_CreateContext@rgssThread` ——
+  GL 上下文创建必须主线程，已从 rgssThread 挪回（与 `MKXPZ_INIT_GL_LATER` 的处理配合）。
+- **zlib LoadError 根治**（多轮：`31912ba`→`ef0e43f`→`b9471ad`→`860d289`→`becd118`→`b2d22c9`→`cee6bd0`）：
+  真机 `require 'zlib'` 报 LoadError。终解 = 手工编译 zlib 扩展（`Init_zlib`）合进 `libruby-static.a`
+  + 运行时 `dlsym(RTLD_DEFAULT,"Init_zlib")` 兜底登记 `$LOADED_FEATURES<<'zlib'`
+  （`binding-mri.cpp`）+ `mkxp_framework.cpp` 里 `used` 锚点 `zlib_ext_anchor` 强制链接器保留该成员
+  （否则静态库按需拉取会丢弃无编译期引用的 `zlib_ext.o`，`dlsym` 返回 NULL）。
+- **sdl2-image JPEG**（`a3584d5`）：真机日志 `'JPEG images are not supported'` → vcpkg `sdl2-image` 启用 JPEG 特性。
+- **Ruby GC 调优**（`05a6dd0`）：iOS 无 JIT，Ruby 纯解释执行；Essentials 启动期解释 1MB 脚本、定义上万对象，
+  默认 GC 阈值触发海量 GC 是启动慢主因。在 `ruby_init` 前 `setenv` 放大 `RUBY_GC_HEAP_INIT_SLOTS`(2M)/
+  `GROWTH_FACTOR`(2.0)/`MALLOC_LIMIT`(256M)/`OLDMALLOC_LIMIT`(256M) 等。
+- **脚本加载打点**（`3ee2341`/`7abee44`）：`binding-mri.cpp` 加 `[stage]`/`rgss: N/t=...ms` 时间戳，
+  区分"慢"与"卡死"（inflate/exec 每 50-100 段打点）。
+- **CI**：iOS 打包并入 `build-mkxp.yml`（build-ios job，`4697b13`），失败/成功状态发布改用可写 `GITHUB_TOKEN`
+  （`4959966`）；`build-mkxp.yml` 增 ~146 行、`ios.yml` 微调。`vcpkg install` 加 `--recurse`（`3597acd`）。
 
 ## 环境要求
 
@@ -211,19 +241,35 @@ overlay UIWindow 盖在 SDL 窗口上、按钮直调 `mkxp_key`（不依赖 Flut
     （Runner 自身引用 mkxp_run/mkxp_key/mkxp_quit，未决状态在链接最开始就存在，顺序无关）；
     MKXP.framework 经 frameworks 阶段按需链接。
 
-## 下一步该做什么（2026-10-16 更新）
+19. **MKXPZ_IOS_EMBED 守卫（UIKit 崩溃）**：`EventThread::process` 后台线程跑，任何 SDL 窗口操作
+   会碰 UIKit 视图 → 后台线程崩 `NSInternalInconsistencyException: Call must be made on main thread`。
+   `eventthread.cpp` 的 SETFULLSCREEN/WINRESIZE/WINREPOSITION/WINCENTER/WINRENAME/标题设置 在
+   `MKXPZ_IOS_EMBED` 下全部吞掉；窗口固定全屏，内部分辨率由 RGSS 线程调。
+20. **GL 上下文必须主线程**：`SDL_GL_CreateContext` 在 rgssThread 创建会崩（崩溃栈 `...@rgssThread`），
+   改回主线程（与 `MKXPZ_INIT_GL_LATER` 的处理配合，见 build 脚本/CMake）。
+21. **zlib 静态扩展链接三连坑**：① `libruby-static.a` 用 `--with-static-linked-ext` 烘进 zlib，但
+   静态库按需拉取会丢无引用的 `zlib_ext.o` → `mkxp_framework.cpp` 加 `__attribute__((used))` 锚点；
+   ② 运行时 Ruby `require('zlib')` 仍可能 LoadError → `binding-mri.cpp` 用 `dlsym Init_zlib` 兜底登记；
+   ③ `rb_provide_feature` 在 C 链接下静态库未导出 → 改用 Ruby 层 `$LOADED_FEATURES<<'zlib'`。
+22. **sdl2-image 需显式开 JPEG**：vcpkg 默认不编 JPEG 解码 → 真机 `'JPEG images are not supported'`，
+   启用 sdl2-image 的 JPEG feature（`build-mkxp.yml` 的 vcpkg install 加 `--recurse`）。
+23. **Ruby GC 在 iOS 无 JIT 下是启动慢主因**：默认阈值对 Essentials 量级触发海量 GC；`mkxp_run` 在
+   `ruby_init` 前 setenv 放大堆/malloc 阈值（见 `mkxp_framework.cpp`）。
+24. **framework-entry.patch 现已 4 个 hunk**（原 2 个）：input.cpp（反查表）+ main.cpp（线程拆分）+
+   eventthread.cpp（`MKXPZ_IOS_EMBED` 守卫）+ binding-mri.cpp（zlib 兜底+打点）。改 mkxp-z 源码仍以
+   patch 为准，勿直接改 clone；生成 patch 务必 `newline="\n"`（见接手须知 #4）。
 
-编译关 + 引擎接入（A 引擎入口 / B 透明浮层 / C workflow 串接）**已全部完成**，IPA 已含引擎、
-App 可启动引擎。当前真实待办，按优先级：
+## 下一步该做什么（2026-10-17 更新）
 
-1. **【最高优先】真机验证 `15ab649`+`baa3646`**：侧载最新 IPA（`baa3646` 版，双 workflow 已绿）
-   → 导入游戏 → 点启动，确认**不再卡「正在启动」、游戏画面正常出现**。CI 只能证明编译/打包过，
-   画面是否真出来必须真机看。若仍无画面/崩，取 iPhone 上 `rpgxpLoader-*.ips` 崩溃日志，对照
-   `framework-entry.patch` 的线程拆分与 `mkxp_framework.cpp` 的 `g_engineRunning` 复位逻辑排查。
-2. **M2 阶段二（未开始）**：虚拟摇杆+动作键（Essentials 键位）、设置页、常驻日志页。游戏运行时
-   SDL 全屏窗盖在最上层吞触摸，浮层按键要走原生 overlay UIWindow + `mkxp_key`（见 M2 进度段）。
-3. **可选打磨**：开 `UIFileSharingEnabled` 让游戏文件可经 Finder 文件共享进沙盒；横竖屏/触感适配；
-   `mkxp.log` 实时刷新等。
+M2 已全部完成（UI 五页 + 原生触摸浮层 + 详情页 + 退出菜单），引擎可启动、画面可上屏、触摸可注入。
+M3 真机调通进行中（zlib/GL/UIKit/黑屏无声/JPEG/GC 已连环修，最新 `cee6bd0`）。当前真实待办：
+
+1. **M3 收尾真机验证**：侧载最新 IPA → 导入 Essentials → 点开始游戏，确认标题画面出现、可用虚拟键
+   操作菜单、不崩、`mkxp.log` 无 LoadError/异常栈。若崩取 `rpgxpLoader-*.ips`，对照
+   `framework-entry.patch`（`MKXPZ_IOS_EMBED`/GL 主线程）与 `mkxp_framework.cpp`（zlib 锚点/GC/日志）。
+2. **M3 剩余**：确认 Essentials 完整进游戏（标题→新游戏→地图）不卡脚本加载（打点区分慢/卡死）；
+   GC 调优后启动时长是否可接受。
+3. **可选打磨**：开 `UIFileSharingEnabled` 让游戏文件经 Finder 共享进沙盒；触感反馈；`mkxp.log` 实时刷新。
 
 ## M1 后续必做（`libmkxp.a` 编通后，A/B/C 均已实现，仅作决策留档）
 
