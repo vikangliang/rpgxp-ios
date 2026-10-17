@@ -1,8 +1,18 @@
 diff --git a/src/display/gl/gl-meta.cpp b/src/display/gl/gl-meta.cpp
-index ad491f4..7d3884a 100644
+index ad491f4..313692f 100644
 --- a/src/display/gl/gl-meta.cpp
 +++ b/src/display/gl/gl-meta.cpp
-@@ -145,6 +145,12 @@ static void _blitBegin(FBO::ID fbo, const Vec2i &size)
+@@ -26,6 +26,9 @@
+ #include "quad.h"
+ #include "config.h"
+ 
++#include <cstdio>
++#include <cstddef>
++
+ namespace GLMeta
+ {
+ 
+@@ -145,6 +148,12 @@ static void _blitBegin(FBO::ID fbo, const Vec2i &size)
  		FBO::bind(fbo);
  		glState.viewport.pushSet(IntRect(0, 0, size.x, size.y));
  
@@ -15,7 +25,95 @@ index ad491f4..7d3884a 100644
  		if (shState->config().lanczos3Scaling)
  		{
  			Lanczos3Shader &shader = shState->shaders().lanczos3;
-@@ -230,7 +236,11 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
+@@ -213,6 +222,39 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
+ 	}
+ 	else
+ 	{
++		GLint boundFb = 0;
++		glGetIntegerv(GL_FRAMEBUFFER_BINDING, &boundFb);
++
++		/* iOS 诊断：记录每次 blit 的完整 GL 状态。
++		 * 场景内的 blit 能工作、屏幕 blit 不出画面，对比两者状态即可定位差异。 */
++		{
++			static int blitLogged = 0;
++			if (blitLogged < 10)
++			{
++				++blitLogged;
++				GLint vp[4] = {0,0,0,0};
++				GLint fb = 0, tex = 0, prog = 0, vbo = 0;
++				GLint scb[4] = {0,0,0,0};
++				GLboolean scOn = glIsEnabled(GL_SCISSOR_TEST);
++				GLboolean blendOn = glIsEnabled(GL_BLEND);
++				glGetIntegerv(GL_VIEWPORT, vp);
++				glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
++				glGetIntegerv(GL_SCISSOR_BOX, scb);
++				glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
++				glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
++				glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &vbo);
++				fprintf(stderr,
++					"[gl-meta] blit#%d src=(%d,%d %dx%d) dst=(%d,%d %dx%d) "
++					"fbo=%d vp=(%d,%d,%d,%d) scissor=%d(%d,%d,%d,%d) blend=%d "
++					"tex=%d prog=%d vbo=%d\n",
++					blitLogged, src.x, src.y, src.w, src.h,
++					dst.x, dst.y, dst.w, dst.h,
++					(int)fb, vp[0], vp[1], vp[2], vp[3],
++					(int)scOn, scb[0], scb[1], scb[2], scb[3], (int)blendOn,
++					(int)tex, (int)prog, (int)vbo);
++			}
++		}
++
+ 		if (smooth)
+ 			TEX::setSmooth(true);
+ 
+@@ -220,6 +262,47 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
+ 		Quad &quad = shState->gpQuad();
+ 		quad.setTexPosRect(src, dst);
+ 		quad.draw();
++
++		/* iOS 修复嫌疑：默认帧缓冲上 VAO+DrawElements 可能不出画面(Metal-GL)，
++		 * 而手动 VBO+DrawArrays 可以(早期红块探针已证实能显示)。屏幕 blit 时
++		 * 在 VAO 绘制之外补一次不经过 VAO 的直绘，绕过可能的 VAO 问题。 */
++		if (boundFb == 0)
++		{
++			VBO::bind(quad.vbo);
++			glEnableVertexAttribArray(Shader::Position);
++			glEnableVertexAttribArray(Shader::TexCoord);
++			glVertexAttribPointer(Shader::Position, 2, GL_FLOAT, GL_FALSE,
++			                      (GLsizei)sizeof(Vertex),
++			                      (const GLvoid *)offsetof(Vertex, pos));
++			glVertexAttribPointer(Shader::TexCoord, 2, GL_FLOAT, GL_FALSE,
++			                      (GLsizei)sizeof(Vertex),
++			                      (const GLvoid *)offsetof(Vertex, texPos));
++			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++			glDisableVertexAttribArray(Shader::Position);
++			glDisableVertexAttribArray(Shader::TexCoord);
++			VBO::unbind();
++		}
++
++		/* iOS 诊断：blit 绘制后立刻看一眼目标帧缓冲(仅屏幕 blit, fbo=0) */
++		{
++			static int afterLogged = 0;
++			GLint fbAfter = 0;
++			glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbAfter);
++			if (fbAfter == 0 && afterLogged < 3)
++			{
++				++afterLogged;
++				GLubyte px[4] = {0,0,0,0};
++				GLint vp2[4] = {0,0,0,0};
++				glGetIntegerv(GL_VIEWPORT, vp2);
++				glReadPixels(vp2[2] / 2, vp2[3] / 2, 1, 1,
++				             GL_RGBA, GL_UNSIGNED_BYTE, px);
++				fprintf(stderr,
++					"[gl-meta] after screen blit: vpMid=%d,%d px={%d,%d,%d,%d} err=0x%x\n",
++					vp2[2] / 2, vp2[3] / 2, px[0], px[1], px[2], px[3],
++					(unsigned)glGetError());
++			}
++		}
++
+ 		glState.blend.pop();
+ 
+ 		if (smooth)
+@@ -230,7 +313,11 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
  void blitEnd()
  {
  	if (!HAVE_NATIVE_BLIT)
