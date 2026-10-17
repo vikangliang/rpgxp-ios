@@ -30,7 +30,6 @@ static uint64_t g_presentTotal = 0, g_presentOK = 0;
 // ---- 红屏探针（懒编译，首次 present 时 GL 上下文已就绪） ----
 static GLuint g_probeProg = 0, g_probeVBO = 0;
 static bool g_probeTried = false;
-static const int PROBE_FRAMES = 600;
 
 static GLuint mkxp_compile(GLenum type, const char *src) {
     GLuint s = glCreateShader(type);
@@ -60,8 +59,8 @@ static void mkxp_initProbe() {
     if (!ok) { char buf[256]; glGetProgramInfoLog(p, sizeof(buf), NULL, buf);
               fprintf(stderr, "[ios-embed] probe link fail: %s\n", buf); g_probeProg = 0; return; }
     g_probeProg = p;
-    // 满屏四边形（NDC 两个三角形）
-    static const GLfloat quad[8] = { -1,-1, 1,-1, -1,1, 1,1 };
+    // 右下角小红方块（NDC 小区域，不遮挡 mkxp 画面，常驻，用于确认 present 真显示）
+    static const GLfloat quad[8] = { 0.6f,-1.0f, 1.0f,-1.0f, 0.6f,-0.6f, 1.0f,-0.6f };
     glGenBuffers(1, &g_probeVBO);
     glBindBuffer(GL_ARRAY_BUFFER, g_probeVBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
@@ -93,8 +92,8 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
                 (unsigned long long)n, g_drawW, g_drawH);
     }
 
-    // ---- 红屏探针：前 PROBE_FRAMES 帧，在 mkxp 绘制之后、present 之前，画满屏红 ----
-    if (n <= PROBE_FRAMES) {
+    // ---- 右下角红方块探针（常驻，不遮挡 mkxp 内容；确认 present 在 Metal-GL 下真显示） ----
+    {
         if (!g_probeTried) mkxp_initProbe();
         if (g_probeProg) {
             GLint svProg=0, svAB=0, svEB=0, svTex=0, svVA[4]={0,0,0,0};
@@ -110,7 +109,6 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
             glBindBuffer(GL_ARRAY_BUFFER, g_probeVBO);
             glEnableVertexAttribArray(0);
             glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
-            if (g_drawW>0) glViewport(0,0,g_drawW,g_drawH);
             glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_SCISSOR_TEST);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
@@ -130,8 +128,6 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
 
     BOOL r = g_origPresent(self, _cmd, target);
     if (r) ++g_presentOK;
-    if (n == PROBE_FRAMES) fprintf(stderr, "[ios-embed] probe window end (present ok=%llu)\n",
-                                   (unsigned long long)g_presentOK);
     return r;
 }
 
