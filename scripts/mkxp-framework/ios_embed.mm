@@ -19,10 +19,23 @@
 #import <stdio.h>
 #import <objc/runtime.h>
 
-// ---- DEBUG：hook EAGLContext presentRenderbuffer:，统计引擎是否真正每帧上屏 ----
+// ---- DEBUG：hook EAGLContext，统计引擎是否真正每帧上屏、绑定的 drawable 是哪个 layer ----
 static BOOL (*g_origPresent)(id, SEL, NSUInteger);
+static void (*g_origRBS)(id, SEL, NSUInteger, id);
+static CALayer *g_visibleLayer = NULL;   // embed 后可见的 sdlView.layer
 static uint64_t g_presentOK = 0, g_presentFail = 0;
 static uint64_t g_presentTotal = 0;
+static bool g_storageMatched = false;    // drawable layer 是否等于可见 layer
+
+static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id drawable) {
+    if (!g_storageMatched && drawable != nil) {
+        bool same = ((CALayer *)drawable == g_visibleLayer);
+        fprintf(stderr, "[ios-embed] GL drawable bound: layer=%p visibleLayer=%p match=%d\n",
+                (void *)(__bridge CALayer *)drawable, (void *)g_visibleLayer, (int)same);
+        g_storageMatched = true;
+    }
+    g_origRBS(self, _cmd, target, drawable);
+}
 
 static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
     BOOL r = g_origPresent(self, _cmd, target);
@@ -44,6 +57,10 @@ static void mkxp_installPresentHook() {
     Method m = class_getInstanceMethod([EAGLContext class], @selector(presentRenderbuffer:));
     g_origPresent = (BOOL (*)(id, SEL, NSUInteger))method_getImplementation(m);
     method_setImplementation(m, (IMP)swz_presentRenderbuffer);
+    Method mr = class_getInstanceMethod([EAGLContext class],
+                                        @selector(renderbufferStorage:fromDrawable:));
+    g_origRBS = (void (*)(id, SEL, NSUInteger, id))method_getImplementation(mr);
+    method_setImplementation(mr, (IMP)swz_renderbufferStorage);
     fprintf(stderr, "[ios-embed] present hook installed\n");
 }
 
@@ -97,31 +114,45 @@ static void mkxp_doEmbed(SDL_Window *win, UIView *host) {
         host.hidden = NO;
         [host layoutIfNeeded];
 
-        // 解除 SDL 自带约束/变换，改由我们约束填满宿主
+        // 保持 sdlView 原始 bounds 不动（896×414@横屏）——CAEAGLLayer 的
+        // renderbufferStorage 是按 bounds×contentsScale 分配的，改 bounds 会让
+        // 已绑定的 drawable storage 失配（Metal-backed GLES 下表现为 present 全成功
+        // 但画面全黑）。缩放改用 transform（CA 层几何变换，不触发 storage 重建）。
+        CGRect sdlFrame = sdlView.frame.size.height > 0 ? sdlView.frame : CGRectMake(0, 0, 896, 414);
+        // aspect-fit 居中到 host
+        CGSize hostSize = host.bounds.size;
+        CGFloat scale = MIN(hostSize.width / CGRectGetWidth(sdlFrame),
+                            hostSize.height / CGRectGetHeight(sdlFrame));
+        CGAffineTransform t = CGAffineTransformMakeScale(scale, scale);
+        CGPoint fitCenter = CGPointMake(hostSize.width / 2, hostSize.height / 2);
         sdlView.translatesAutoresizingMaskIntoConstraints = NO;
         [host addSubview:sdlView];
-        [NSLayoutConstraint activateConstraints:@[
-            [sdlView.leadingAnchor  constraintEqualToAnchor:host.leadingAnchor],
-            [sdlView.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
-            [sdlView.topAnchor      constraintEqualToAnchor:host.topAnchor],
-            [sdlView.bottomAnchor   constraintEqualToAnchor:host.bottomAnchor],
-        ]];
-        sdlView.frame = host.bounds;
+        sdlView.center = fitCenter;
+        sdlView.transform = t;
         [host bringSubviewToFront:sdlView];
 
         // SDL 自建窗口不再需要显示（避免盖屏/空窗），但保留其存在供 SDL 内部引用
-        sdlWin.hidden = YES;
+        sdlWin.windowLevel = -1000.0;  // 压到 Flutter window 之下，让 Flutter 完全盖住
+        sdlWin.hidden = NO;            // 不 hidden：layer 保持附着完整，drawable 有效
+
+        g_visibleLayer = sdlView.layer;
 
         fprintf(stderr,
-            "[ios-embed] embed ok: sdlView=%p host=%p hostFrame=%s hostWin=%p "
-            "sdlFrame=%s screen=%s statusBar=%ld winScene=%ld sdlViewContentsScale=%f\n",
-            (void *)sdlView, (void *)host,
+            "[ios-embed] embed ok: sdlView=%p sdlLayer=%p host=%p hostFrame=%s hostWin=%p "
+            "sdlWinFrame=%s sdlWinHidden=%d sdlWinLevel=%.0f sdlViewFrame=%s sdlViewBounds=%s "
+            "sdlViewWinFrame=%s screen=%s statusBar=%ld winScene=%ld scale=%.2f\n",
+            (void *)sdlView, (void *)sdlView.layer, (void *)host,
             NSStringFromCGRect(host.bounds).UTF8String, (void *)host.window,
-            NSStringFromCGRect(sdlWin.frame).UTF8String,
+            NSStringFromCGRect(sdlWin.frame).UTF8String, sdlWin.hidden,
+            (double)sdlWin.windowLevel,
+            NSStringFromCGRect(sdlView.frame).UTF8String,
+            NSStringFromCGRect(sdlView.bounds).UTF8String,
+            NSStringFromCGRect(sdlView.window ? sdlView.window.frame : CGRectZero).UTF8String,
+            
             NSStringFromCGRect(UIScreen.mainScreen.bounds).UTF8String,
             (long)[UIApplication sharedApplication].statusBarOrientation,
             (long)host.window.windowScene.interfaceOrientation,
-            (double)sdlView.layer.contentsScale);
+            (double)scale);
 
         // DEBUG 判定实验：在宿主顶层叠一块洋红标记（5 秒后自动移除）。
         // 侧载后看到洋红块 → 宿主可见、布局正确，黑屏根因在引擎 GL 呈现；
