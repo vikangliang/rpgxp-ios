@@ -344,8 +344,13 @@ fi
 #      （带 mutex：RGSS 线程写、UI 线程读）
 # mkxp_framework.cpp 拷入 src/ 后由 CMake 的 SRC 清单编译（mkxp_run/mkxp_key/mkxp_quit）。
 if [ -f "$MKXP_SRC/.git/config" ]; then
-  git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/framework-entry.patch" \
-    || { echo "FATAL: framework-entry.patch 应用失败（v2.4.2 源码对不上？）"; exit 1; }
+  # 首选严格 git apply（能精确暴露真正的源码不匹配）；若因 hunk 行数写错而失败，
+  # 回退到 patch -p1（按上下文模糊匹配，对计数不敏感），避免手工维护 diff 时计数漂移
+  # 导致整块 "corrupt patch"。两者都失败才真正报错。
+  git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/framework-entry.patch" 2>/dev/null \
+   || patch -p1 -f --no-backup-if-mismatch -d "$MKXP_SRC" \
+        < "$ROOT/scripts/mkxp-framework/framework-entry.patch" \
+   || { echo "FATAL: framework-entry.patch 应用失败（v2.4.2 源码对不上？）"; exit 1; }
   echo "applied framework-entry.patch"
 else
   echo "FATAL: $MKXP_SRC 不是 git 仓库，无法 apply framework-entry.patch"

@@ -364,7 +364,7 @@ index 4779221..14ab52e 100644
      SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
      SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
  
-@@ -351,7 +357,15 @@ int main(int argc, char *argv[]) {
+@@ -351,7 +357,17 @@ int main(int argc, char *argv[]) {
  #endif
        return 0;
      }
@@ -383,7 +383,7 @@ index 4779221..14ab52e 100644
  #ifdef MKXPZ_BUILD_XCODE
      {
          std::string downloadsPath = "/Users/" + mkxp_sys::getUserName() + "/Downloads";
-@@ -414,7 +447,12 @@ int main(int argc, char *argv[]) {
+@@ -414,7 +430,12 @@ int main(int argc, char *argv[]) {
      if (!mode.refresh_rate)
        conf.syncToRefreshrate = false;
  
@@ -397,7 +397,7 @@ index 4779221..14ab52e 100644
  
  #ifndef MKXPZ_INIT_GL_LATER
      SDL_GLContext glCtx = initGL(win, conf, 0);
-@@ -422,84 +460,93 @@ int main(int argc, char *argv[]) {
+@@ -422,84 +443,93 @@ int main(int argc, char *argv[]) {
      SDL_GLContext glCtx = NULL;
  #endif
  
