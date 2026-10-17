@@ -54,6 +54,12 @@ extern std::mutex g_buttonToScancodeMtx;
 
 std::atomic<bool> g_engineRunning{false};
 
+/* zlib 扩展链接锚点：zlib_ext.o 由构建脚本手工编译并合进 libruby-static.a，
+ * 但没有任何编译期引用（运行时才 dlsym 调 Init_zlib），静态库打包按需拉取时
+ * 会被丢弃（真机实测 dlsym 返回 NULL）。used 指针引用强制链接器保留该成员。 */
+extern "C" void Init_zlib(void);
+__attribute__((used)) static const void *zlib_ext_anchor = (const void *)&Init_zlib;
+
 extern "C" {
 
 /* 启动引擎。gamePath 指向游戏目录（含 Game.ini / Data/）。

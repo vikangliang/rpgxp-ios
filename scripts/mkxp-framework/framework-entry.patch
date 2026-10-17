@@ -390,8 +390,8 @@ index f7f293a..1739827 100644
 +        if ((i % 100) == 0)
 +            Debug() << "rgss: inflate " << i << "/" << scriptCount << " (t=" << msSinceStart() << "ms)";
          rb_ary_store(script, 3, rb_utf8_str_new_cstr(decodeBuffer.c_str()));
-+    Debug() << "rgss: all scripts inflated (t=" << msSinceStart() << "ms)";
      }
++    Debug() << "rgss: all scripts inflated (t=" << msSinceStart() << "ms)";
      
      /* Execute preloaded scripts */
      for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
