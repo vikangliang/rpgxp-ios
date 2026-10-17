@@ -15,6 +15,7 @@
 #import <OpenGLES/ES2/gl.h>
 #import <OpenGLES/ES2/glext.h>
 #import <stdio.h>
+#import <dlfcn.h>
 #import <objc/runtime.h>
 
 static UIView *g_hostView = nil;
@@ -66,6 +67,50 @@ static void mkxp_initProbe() {
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     fprintf(stderr, "[ios-embed] probe program ready (prog=%u vbo=%u)\n", p, g_probeVBO);
+}
+
+// ---- 修复：mkxp 把游戏以 defScreen(512x384) 的小视口画到默认帧缓冲左下角，
+//      导致"黑屏"(其实游戏缩在一个小方块里)。拦截 glViewport/glScissor：当在默认
+//      帧缓冲且视口明显小于 drawable 时，按游戏自身宽高比 letterbox 居中铺满整屏。 ----
+static void (*real_glViewport)(GLint, GLint, GLsizei, GLsizei) = NULL;
+static void (*real_glScissor)(GLint, GLint, GLsizei, GLsizei) = NULL;
+
+static void mkxp_expandToScreen(GLint *x, GLint *y, GLsizei *w, GLsizei *h) {
+    if (g_drawW <= 0 || *w <= 0 || *h <= 0) return;
+    GLint fb = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+    if (fb != 0) return;                        // 仅默认帧缓冲(屏幕)
+    if (*w >= g_drawW && *h >= g_drawH) return; // 已是整屏，不动
+    float aspect = (float)(*w) / (float)(*h);   // 游戏自身宽高比(4:3)
+    float dw = (float)g_drawW, dh = (float)g_drawH;
+    float tw, th;
+    if (dw / dh > aspect) { th = dh; tw = dh * aspect; }
+    else { tw = dw; th = dw / aspect; }
+    *x = (GLint)((dw - tw) / 2.0f);
+    *y = (GLint)((dh - th) / 2.0f);
+    *w = (GLint)tw;
+    *h = (GLint)th;
+    static int logged = 0;
+    if (logged < 5) {
+        fprintf(stderr,
+            "[ios-embed] expand defScreen %dx%d -> letterbox {%d,%d,%d,%d} drawable=%dx%d\n",
+            (int)*w, (int)*h, *x, *y, *w, *h, g_drawW, g_drawH);
+        logged++;
+    }
+}
+
+void glViewport(GLint x, GLint y, GLsizei w, GLsizei h) {
+    if (!real_glViewport)
+        real_glViewport = (void (*)(GLint,GLint,GLsizei,GLsizei))dlsym(RTLD_NEXT, "glViewport");
+    mkxp_expandToScreen(&x, &y, &w, &h);
+    real_glViewport(x, y, w, h);
+}
+
+void glScissor(GLint x, GLint y, GLsizei w, GLsizei h) {
+    if (!real_glScissor)
+        real_glScissor = (void (*)(GLint,GLint,GLsizei,GLsizei))dlsym(RTLD_NEXT, "glScissor");
+    mkxp_expandToScreen(&x, &y, &w, &h);
+    real_glScissor(x, y, w, h);
 }
 
 static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id drawable) {
