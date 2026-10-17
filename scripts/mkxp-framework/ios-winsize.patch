@@ -1,5 +1,34 @@
+diff --git a/src/display/gl/gl-meta.cpp b/src/display/gl/gl-meta.cpp
+index ad491f4..7d3884a 100644
+--- a/src/display/gl/gl-meta.cpp
++++ b/src/display/gl/gl-meta.cpp
+@@ -145,6 +145,12 @@ static void _blitBegin(FBO::ID fbo, const Vec2i &size)
+ 		FBO::bind(fbo);
+ 		glState.viewport.pushSet(IntRect(0, 0, size.x, size.y));
+ 
++		/* iOS: scissor 框在 GLState 构造时被初始化成 defScreen(512x384) 且永不更新，
++		 * 而画面放大后落在 y=585..1206 —— 若场景合成遗留了 scissor 测试，整块画面会
++		 * 被 512x384 的框完全裁掉(表现为黑屏)。blit 期间禁用并放开到整个目标区域。 */
++		glState.scissorTest.pushSet(false);
++		glState.scissorBox.pushSet(IntRect(0, 0, size.x, size.y));
++
+ 		if (shState->config().lanczos3Scaling)
+ 		{
+ 			Lanczos3Shader &shader = shState->shaders().lanczos3;
+@@ -230,7 +236,11 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
+ void blitEnd()
+ {
+ 	if (!HAVE_NATIVE_BLIT)
++	{
++		glState.scissorBox.pop();
++		glState.scissorTest.pop();
+ 		glState.viewport.pop();
++	}
+ }
+ 
+ }
 diff --git a/src/display/graphics.cpp b/src/display/graphics.cpp
-index 64dc47f..a43f360 100644
+index 64dc47f..c8780a3 100644
 --- a/src/display/graphics.cpp
 +++ b/src/display/graphics.cpp
 @@ -57,6 +57,7 @@
@@ -83,7 +112,7 @@ index 64dc47f..a43f360 100644
              
              SDL_Rect screen = {scOffset.x, scOffset.y, scSize.x, scSize.y};
              threadData->ethread->notifyGameScreenChange(screen);
-@@ -1022,8 +1063,53 @@ struct GraphicsPrivate {
+@@ -1022,8 +1063,88 @@ struct GraphicsPrivate {
                                !forceNearestNeighbor && threadData->config.smoothScaling);
      }
      
@@ -131,9 +160,53 @@ index 64dc47f..a43f360 100644
 +                frameCount, fb.width, fb.height, nonBlack, samples, minv, maxv, (unsigned)err);
 +    }
 +
++    /* iOS 诊断：blit 之后、swap 之前读默认帧缓冲，判断 blit 是否真的把画面画上去了。
++     *   nonBlack>0 => 默认帧缓冲有内容，问题在 present/合成(窗口不可见/被遮挡)；
++     *   nonBlack=0 => blit 没画上去，问题在 blit 本身(着色器/quad/坐标)。 */
++    void probeScreenPixels()
++    {
++        if (frameCount != 60 && frameCount != 300 && frameCount != 900)
++            return;
++
++        FBO::bind(FBO::ID(0));
++        const int N = 6;
++        int nonBlack = 0, samples = 0;
++        unsigned maxv = 0;
++        for (int iy = 0; iy < N; ++iy)
++            for (int ix = 0; ix < N; ++ix)
++            {
++                GLubyte px[4] = {0,0,0,0};
++                /* 采样覆盖 letterbox 区域内部(垂直居中) */
++                int x = (int)(((ix + 0.5) * winSize.x) / N);
++                int y = (int)(scOffset.y + ((iy + 0.5) * scSize.y) / N);
++                glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
++                ++samples;
++                unsigned v = px[0];
++                if (px[1] > v) v = px[1];
++                if (px[2] > v) v = px[2];
++                if (v > 8) ++nonBlack;
++                if (v > maxv) maxv = v;
++            }
++        GLenum err = glGetError();
++        fprintf(stderr,
++                "[ios-screen] probe@frame%d: win=%dx%d letterbox=(%d,%d %dx%d) "
++                "nonBlack=%d/%d max=%u glErr=0x%x\n",
++                frameCount, winSize.x, winSize.y, scOffset.x, scOffset.y,
++                scSize.x, scSize.y, nonBlack, samples, maxv, (unsigned)err);
++    }
++
      void redrawScreen() {
          screen.composite();
 +        probeScenePixels();
          
          // maybe unspaghetti this later
          if (integerScaleStepApplicable() && !integerLastMileScaling)
+@@ -1073,6 +1194,8 @@ struct GraphicsPrivate {
+         
+         GLMeta::blitEnd();
+         
++        probeScreenPixels();
++        
+         swapGLBuffer();
+         
+         SDL_LockMutex(avgFPSLock);
