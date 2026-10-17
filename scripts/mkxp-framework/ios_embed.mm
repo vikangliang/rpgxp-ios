@@ -1,63 +1,70 @@
-// ios_embed.mm — iOS 嵌入（终版架构：SDL 官方路径）。
+// ios_embed.mm — iOS 嵌入（SDL 官方路径 + 窗口上屏修复）。
 //
-// 2026-10-17 一天实测结论：把 SDL 的 view 搬进 Flutter 宿主 / 隐藏 SDL 窗口等
-// “搬运视图”路线全部失败——引擎 present 每帧成功、canary 直接写默认帧缓冲也不上屏，
-// 证明被剥离的 view/layer 已脱离真实合成链。且搬走 view 同时折断 SDL 的触摸链。
-//
-// 终版：完全不动 SDL 的视图树。SDL 自建 UIWindow 保持官方行为——自己可见、自己
-// makeKeyAndVisible、自己 present、自己收事件（虚拟摇杆经 SDL_PushEvent 入队即通）。
-// iOS 13+ 下 SDL 自建 window 偶发Scene 未挂载导致不上屏，本文件只补这一件事：
-//   1) windowScene 为空则挂到前台活跃 scene；
-//   2) makeKeyAndVisible；
-//   3) windowLevel 抬到 1999（低于 MkxpTouchOverlay 的 alert+2=2002，高于 Flutter
-//      主 window 的 normal=0），保证游戏画面盖在 Flutter 界面之上、又不挡原生浮层。
-//
-// main.cpp（MKXPZ_IOS_EMBED 分支）建窗后调用 mkxp_ios_embedIntoView。
-// 另附 UIKit canary：往 SDL 窗口塞一个 4 秒纯绿块——侧载时看到绿屏即证明
-// “SDL 窗口真在屏上”（与 GL 无关），随后恢复。诊断走 stderr → mkxp.log。
+// 2026-10-17 结论链：搬视图路线全死（present 成功但不上屏、折断触摸链）→ 回到 SDL
+// 官方路径；但官方路径下连 UIKit canary 绿块都不显示 → SDL 自建 UIWindow 就没在屏上。
+// iOS 13+ UIWindow 必须挂在【前台活跃 UIWindowScene】上才显示；SDL 自建 window 的
+// scene 可能为空或挂错场景。本文件：
+//   1) 从可见窗口（Flutter 主窗口）取 scene，强制覆盖 SDL window 的 windowScene；
+//   2) hidden=NO + level 1999（盖 Flutter、低于原生浮层 2002）+ makeKeyAndVisible；
+//   3) 0.5s 后二次 makeKeyAndVisible（防 Flutter/浮层抢 key 后未再上屏），并打
+//      canary 绿块 4 秒（验证窗口真在屏上）；
+//   4) 全部状态（scene 对比、bounds、level）打日志 → mkxp.log。
 #import <SDL.h>
 #import <SDL_syswm.h>
 #import <UIKit/UIKit.h>
 #import <stdio.h>
 
-static void mkxp_doShow(UIWindow *sdlWin) {
+/// 找当前可见的前台窗口（优先 Flutter 的），用于取其 scene 与做对比日志。
+static UIWindow *mkxp_findVisibleWindow() {
+    NSArray<UIWindow *> *wins = UIApplication.sharedApplication.windows;
+    for (UIWindow *w in wins) {
+        if (!w.isHidden && w.windowScene != nil &&
+            w.windowScene.activationState == UISceneActivationStateForegroundActive)
+            return w;
+    }
+    return wins.firstObject;
+}
+
+static void mkxp_show(UIWindow *sdlWin, int pass) {
     @try {
-        if (!sdlWin.windowScene) {
-            for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-                if ([s isKindOfClass:[UIWindowScene class]] &&
-                    s.activationState == UISceneActivationStateForegroundActive) {
-                    sdlWin.windowScene = (UIWindowScene *)s;
-                    fprintf(stderr, "[ios-embed] attached missing windowScene=%p\n", (void *)s);
-                    break;
-                }
-            }
+        UIWindow *ref = mkxp_findVisibleWindow();
+        UIWindowScene *refScene = (UIWindowScene *)ref.windowScene;
+
+        // 若 SDL window 没挂 scene、或挂的不是前台 scene → 强制覆盖为参考窗口的 scene
+        if (refScene && sdlWin.windowScene != refScene) {
+            sdlWin.windowScene = refScene;
+            fprintf(stderr, "[ios-embed] scene override -> %p (was)\n", (void *)refScene);
         }
-        // 层级：盖过 Flutter（normal=0），低于原生触摸浮层（alert+2=2002）
+
         sdlWin.windowLevel = 1999.0;
         sdlWin.hidden = NO;
+        [sdlWin layoutIfNeeded];
         [sdlWin makeKeyAndVisible];
 
         fprintf(stderr,
-            "[ios-embed] show ok: win=%p hidden=%d level=%.0f frame=%s scene=%p "
-            "rootVC=%p rootViewLayer=%s\n",
-            (void *)sdlWin, sdlWin.hidden, (double)sdlWin.windowLevel,
-            NSStringFromCGRect(sdlWin.frame).UTF8String, (void *)sdlWin.windowScene,
-            (void *)sdlWin.rootViewController,
-            NSStringFromClass(sdlWin.rootViewController.view.layer.class).UTF8String);
+            "[ios-embed] show(pass=%d): win=%p hidden=%d level=%.0f frame=%s "
+            "scene=%p (refScene=%p same=%d) rootViewBounds=%s key=%d\n",
+            pass, (void *)sdlWin, sdlWin.hidden, (double)sdlWin.windowLevel,
+            NSStringFromCGRect(sdlWin.frame).UTF8String,
+            (void *)sdlWin.windowScene, (void *)refScene,
+            (int)(sdlWin.windowScene == refScene),
+            NSStringFromCGRect(sdlWin.rootViewController.view.bounds).UTF8String,
+            (int)sdlWin.isKeyWindow);
 
-        // UIKit canary：4 秒纯绿块，验证 SDL 窗口真在屏上（与引擎 GL 无关）
-        UIView *marker = [[UIView alloc] initWithFrame:sdlWin.rootViewController.view.bounds];
-        marker.backgroundColor = [UIColor colorWithRed:0.0 green:0.9 blue:0.2 alpha:1.0];
-        marker.translatesAutoresizingMaskIntoConstraints = NO;
-        [sdlWin.rootViewController.view addSubview:marker];
-        [NSLayoutConstraint activateConstraints:@[
-            [marker.leadingAnchor  constraintEqualToAnchor:sdlWin.rootViewController.view.leadingAnchor],
-            [marker.trailingAnchor constraintEqualToAnchor:sdlWin.rootViewController.view.trailingAnchor],
-            [marker.topAnchor      constraintEqualToAnchor:sdlWin.rootViewController.view.topAnchor],
-            [marker.bottomAnchor   constraintEqualToAnchor:sdlWin.rootViewController.view.bottomAnchor],
-        ]];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ [marker removeFromSuperview]; });
+        // canary 绿块（与引擎 GL 无关）：验证 SDL window 真在屏上。延后到 rootVC.view
+        // 完成 layout 后添加，frame 直接用 window bounds，避免 0 尺寸不可见。
+        if (pass == 0) {
+            UIView *rv = sdlWin.rootViewController.view;
+            rv.frame = sdlWin.bounds;
+            [rv layoutIfNeeded];
+            UIView *marker = [[UIView alloc] initWithFrame:sdlWin.bounds];
+            marker.backgroundColor = [UIColor colorWithRed:0.0 green:0.9 blue:0.2 alpha:1.0];
+            marker.translatesAutoresizingMaskIntoConstraints = YES;
+            marker.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [rv addSubview:marker];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [marker removeFromSuperview]; });
+        }
     } @catch (NSException *e) {
         fprintf(stderr, "[ios-embed] show exception: %s\n", e.reason.UTF8String);
     }
@@ -77,9 +84,16 @@ extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
     }
     UIWindow *sdlWin = (UIWindow *)wm.info.uikit.window;
     if (!sdlWin) { fprintf(stderr, "[ios-embed] sdlWin nil\n"); return; }
-    fprintf(stderr, "[ios-embed] embedIntoView(show path): win=%p\n", (void *)sdlWin);
-    if ([NSThread isMainThread]) mkxp_doShow(sdlWin);
-    else dispatch_async(dispatch_get_main_queue(), ^{ mkxp_doShow(sdlWin); });
+    fprintf(stderr, "[ios-embed] embedIntoView(show path): win=%p scene=%p\n",
+            (void *)sdlWin, (void *)sdlWin.windowScene);
+    if ([NSThread isMainThread]) {
+        mkxp_show(sdlWin, 0);
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{ mkxp_show(sdlWin, 0); });
+    }
+    // 0.5s 后二次上屏（等 SDL 内部对 window 的后续处理与 key 竞争稳定下来）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ mkxp_show(sdlWin, 1); });
 }
 
 // 宿主注入已废弃（官方路径不需要搬视图），保留空实现防止旧 IPA 链接报 undefined。
