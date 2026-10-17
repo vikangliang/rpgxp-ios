@@ -17,6 +17,45 @@
 #import <SDL_syswm.h>
 #import <UIKit/UIKit.h>
 #import <stdio.h>
+#import <objc/runtime.h>
+
+// ---- DEBUG：hook EAGLContext presentRenderbuffer:，统计引擎是否真正每帧上屏 ----
+static BOOL (*g_origPresent)(id, SEL, NSUInteger);
+static uint64_t g_presentOK = 0, g_presentFail = 0;
+static uint64_t g_presentTotal = 0;
+
+static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
+    BOOL r = g_origPresent(self, _cmd, target);
+    ++g_presentTotal;
+    if (r) ++g_presentOK; else ++g_presentFail;
+    // 每 120 帧或每次失败打一次，避免日志爆炸
+    if (g_presentTotal % 120 == 1 || !r) {
+        fprintf(stderr, "[ios-embed] present #%llu r=%d ok=%llu fail=%llu\n",
+                (unsigned long long)g_presentTotal, (int)r,
+                (unsigned long long)g_presentOK, (unsigned long long)g_presentFail);
+    }
+    return r;
+}
+
+static void mkxp_installPresentHook() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    Method m = class_getInstanceMethod([EAGLContext class], @selector(presentRenderbuffer:));
+    g_origPresent = (BOOL (*)(id, SEL, NSUInteger))method_getImplementation(m);
+    method_setImplementation(m, (IMP)swz_presentRenderbuffer);
+    fprintf(stderr, "[ios-embed] present hook installed\n");
+}
+
+// 4 秒后打一次汇总，无引擎时也能从日志判断"有没有在 present"
+static void mkxp_schedulePresentSummary() {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        fprintf(stderr, "[ios-embed] present summary: total=%llu ok=%llu fail=%llu\n",
+                (unsigned long long)g_presentTotal,
+                (unsigned long long)g_presentOK, (unsigned long long)g_presentFail);
+    });
+}
 
 // 注意：本文件被 mkxp-z 以 -fno-objc-arc（手动引用计数）编译，不能用 __weak/__strong
 // 等 ARC 限定符。宿主 UIView 由 Flutter 的 MkxpPlatformView 强持有，引擎运行期有效，
@@ -106,6 +145,8 @@ static void mkxp_doEmbed(SDL_Window *win, UIView *host) {
 
 extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
     g_win = win;
+    mkxp_installPresentHook();
+    mkxp_schedulePresentSummary();
     UIView *host = g_hostView;
     if (!host) {
         // 宿主尚未注入（UiKitView 首帧晚于 launchGame）：window 已存，等 setHostView 再补 embed
