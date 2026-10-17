@@ -25,6 +25,7 @@ static UIView *g_hostView = nil;
 // 引擎建窗时存下 SDL_Window*：Flutter 的 UiKitView 首帧才注入宿主（晚于 launchGame），
 // 届时用已存的 window 补做 embed，解决“启动先于 PlatformView”的时序竞态。
 static SDL_Window *g_win = NULL;
+static void mkxp_doEmbed(SDL_Window *win, UIView *host);
 
 extern "C" void mkxp_ios_setHostView(void *view) {
     g_hostView = (__bridge UIView *)(view);
