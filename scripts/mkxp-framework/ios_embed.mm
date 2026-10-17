@@ -19,7 +19,7 @@ static SDL_Window *g_win = NULL;
 
 // ---- 诊断：模块加载即抢装 EAGLContext hook（早于 SDL initGL 的 renderbufferStorage） ----
 static void (*g_origRBS)(id, SEL, NSUInteger, id);
-static void (*g_origPresent)(id, SEL, NSUInteger);
+static BOOL (*g_origPresent)(id, SEL, NSUInteger);
 static bool g_rbsLogged = false;
 static uint64_t g_presentTotal = 0, g_presentOK = 0;
 
