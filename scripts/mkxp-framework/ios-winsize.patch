@@ -1,5 +1,5 @@
 diff --git a/src/display/graphics.cpp b/src/display/graphics.cpp
-index 64dc47f..1787bac 100644
+index 64dc47f..a43f360 100644
 --- a/src/display/graphics.cpp
 +++ b/src/display/graphics.cpp
 @@ -57,6 +57,7 @@
@@ -83,3 +83,57 @@ index 64dc47f..1787bac 100644
              
              SDL_Rect screen = {scOffset.x, scOffset.y, scSize.x, scSize.y};
              threadData->ethread->notifyGameScreenChange(screen);
+@@ -1022,8 +1063,53 @@ struct GraphicsPrivate {
+                               !forceNearestNeighbor && threadData->config.smoothScaling);
+     }
+     
++    /* iOS 诊断：探测场景 FBO（合成结果）里有没有非黑像素。
++     * FBO 的 glReadPixels 与默认帧缓冲不同，在 Metal-GL 下应可用：
++     *   nonBlack>0 => 场景有内容，问题在 blit/present；
++     *   nonBlack=0 => 场景本身没画出来（着色器/FBO/精灵层问题）。 */
++    void probeScenePixels()
++    {
++        /* 1s/5s/15s 各探一次：太早探测游戏还没画东西，探到黑不代表有问题 */
++        if (frameCount != 60 && frameCount != 300 && frameCount != 900)
++            return;
++
++        TEXFBO &fb = screen.getPP().frontBuffer();
++        if (fb.fbo.gl == 0 || fb.width <= 0 || fb.height <= 0)
++        {
++            fprintf(stderr, "[ios-scene] probe: invalid frontBuffer (%dx%d fbo=%u)\n",
++                    fb.width, fb.height, (unsigned)fb.fbo.gl);
++            return;
++        }
++
++        FBO::bind(fb.fbo);
++        const int N = 8;
++        int nonBlack = 0, samples = 0;
++        unsigned minv = 255, maxv = 0;
++        for (int iy = 0; iy < N; ++iy)
++            for (int ix = 0; ix < N; ++ix)
++            {
++                GLubyte px[4] = {0,0,0,0};
++                int x = (int)(((ix + 0.5) * fb.width) / N);
++                int y = (int)(((iy + 0.5) * fb.height) / N);
++                glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
++                ++samples;
++                unsigned v = px[0];
++                if (px[1] > v) v = px[1];
++                if (px[2] > v) v = px[2];
++                if (v > 8) ++nonBlack;
++                if (v < minv) minv = v;
++                if (v > maxv) maxv = v;
++            }
++        GLenum err = glGetError();
++        FBO::unbind();
++        fprintf(stderr,
++                "[ios-scene] probe@frame%d: fbo=%ux%u nonBlack=%d/%d min=%u max=%u glErr=0x%x\n",
++                frameCount, fb.width, fb.height, nonBlack, samples, minv, maxv, (unsigned)err);
++    }
++
+     void redrawScreen() {
+         screen.composite();
++        probeScenePixels();
+         
+         // maybe unspaghetti this later
+         if (integerScaleStepApplicable() && !integerLastMileScaling)
