@@ -22,3 +22,8 @@ games/
 
 # 出包产物
 *.ipa
+
+# mkxp-z 上游源码的本地只读副本（供阅读/生成补丁用；CI 自行 clone v2.4.2）
+# 它是嵌套 git 仓库，不入库，否则 git add -A 会报 "does not have a commit checked out"
+deps/mkxp-z-src/
+deps/mkxp-z/

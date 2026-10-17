@@ -48,60 +48,6 @@ static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id dra
     g_origRBS(self, _cmd, target, drawable);
 }
 
-// 把 mkxp 实际渲染区域（GL 视口，原点在左下）映射到屏幕居中的 letterbox：
-// 对 SDL 窗口的根视图施加 缩放 s + 平移，使该区域按自身宽高比居中铺满。
-// 坐标换算：GL 像素 -> UIKit 点（除以 contentsScale），GL 左下原点 -> UIKit 左上原点。
-static void mkxp_applyLetterbox(UIWindow *win, GLint vp[4]) {
-    if (!win || g_drawW <= 0 || g_drawH <= 0 || vp[2] <= 0 || vp[3] <= 0) return;
-    if (vp[2] >= g_drawW && vp[3] >= g_drawH) return;   // 已是整屏，无需放大
-
-    CGFloat cs = win.screen.scale ?: [UIScreen mainScreen].scale;
-    if (cs <= 0) cs = 2.0;
-    CGFloat dw = (CGFloat)g_drawW / cs;                          // 窗口宽（点）
-    CGFloat dh = (CGFloat)g_drawH / cs;                          // 窗口高（点）
-    CGFloat cw = (CGFloat)vp[2] / cs;                            // 游戏内容宽（点）
-    CGFloat ch = (CGFloat)vp[3] / cs;                            // 游戏内容高（点）
-    CGFloat cx = (CGFloat)vp[0] / cs;                            // 内容左上角 x（点）
-    CGFloat cy = dh - ((CGFloat)vp[1] + (CGFloat)vp[3]) / cs;    // 内容左上角 y（点）
-
-    CGFloat aspect = cw / ch;                                    // 游戏自身宽高比(4:3)
-    CGFloat tw, th;
-    if (dw / dh > aspect) { th = dh; tw = dh * aspect; }         // 左右留边
-    else                  { tw = dw; th = dw / aspect; }         // 上下留边
-    CGFloat tx = (dw - tw) / 2.0, ty = (dh - th) / 2.0;
-    CGFloat s  = tw / cw;
-    CGFloat dx = tx - s * cx;
-    CGFloat dy = ty - s * cy;
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *v = win.rootViewController.view;
-        if (!v) v = win.subviews.firstObject;
-        if (!v) v = win;
-        fprintf(stderr,
-            "[ios-embed] letterbox view: class=%s frame=%s layer=%s bounds=%s\n",
-            NSStringFromClass([v class]).UTF8String,
-            NSStringFromCGRect(v.frame).UTF8String,
-            NSStringFromClass([v.layer class]).UTF8String,
-            NSStringFromCGRect(v.layer.bounds).UTF8String);
-        @try {
-            // 以左上角为锚点，令变换等价于 p -> s*p + (dx,dy)
-            v.layer.anchorPoint = CGPointZero;
-            v.layer.position = CGPointZero;
-            CGAffineTransform t = CGAffineTransformMakeScale(s, s);
-            t = CGAffineTransformTranslate(t, dx, dy);
-            v.transform = t;
-            fprintf(stderr,
-                "[ios-embed] letterbox: content={%.1f,%.1f,%.1f,%.1f} -> "
-                "target={%.1f,%.1f,%.1f,%.1f} scale=%.3f offset={%.1f,%.1f}\n",
-                (double)cx, (double)cy, (double)cw, (double)ch,
-                (double)tx, (double)ty, (double)tw, (double)th,
-                (double)s, (double)dx, (double)dy);
-        } @catch (NSException *e) {
-            fprintf(stderr, "[ios-embed] letterbox exception: %s\n", e.reason.UTF8String);
-        }
-    });
-}
-
 static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
     uint64_t n = ++g_presentTotal;
     if (n <= 5 || n % 600 == 1) {
@@ -109,8 +55,8 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
                 (unsigned long long)n, g_drawW, g_drawH);
     }
 
-    // 读 mkxp 在 present 前实际留下的视口；若它小于整屏（即游戏被画在左下角小方块），
-    // 施加 letterbox 变换把那块内容放大居中。仅在视口变化时应用一次。
+    // 读 mkxp 在 present 前实际留下的视口。修复后应等于整屏 drawable（或 mkxp 自己
+    // 算出的 letterbox 区域）；若仍停留在 defScreen(512x384) 说明 winSize 未同步。
     {
         GLint vp[4] = {0,0,0,0};
         glGetIntegerv(GL_VIEWPORT, vp);
@@ -146,10 +92,7 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
             }
         }
 
-        if (changed) {
-            for (int i=0;i<4;i++) lastVP[i] = vp[i];
-            mkxp_applyLetterbox(g_sdlWin, vp);
-        }
+        for (int i=0;i<4;i++) lastVP[i] = vp[i];
     }
 
     BOOL r = g_origPresent(self, _cmd, target);

@@ -1,0 +1,54 @@
+diff --git a/src/display/graphics.cpp b/src/display/graphics.cpp
+index 64dc47f..59a45d8 100644
+--- a/src/display/graphics.cpp
++++ b/src/display/graphics.cpp
+@@ -810,6 +810,11 @@ struct GraphicsPrivate {
+     Quad screenQuad;
+     
+     float backingScaleFactor;
++
++    /* iOS: SDL 自建全屏窗口且从不派发 resize 事件，winSize 会永远停在构造时的
++     * defScreen(512x384)，画面被 blit 到窗口左下角小方块(表现为黑屏)。
++     * 首帧用真实窗口/drawable 尺寸同步一次。 */
++    bool winSizeInitialized = false;
+     
+     Vec2i integerScaleFactor;
+     TEXFBO integerScaleBuffer;
+@@ -952,12 +957,32 @@ struct GraphicsPrivate {
+     }
+     
+     void checkResize(bool skipIntScaleBuffer = false) {
+-        if (threadData->windowSizeMsg.poll(winSize)) {
+-            /* Query the actual size in pixels, not units */
+-            Vec2i drawableSize(winSize);
++        bool doResize = threadData->windowSizeMsg.poll(winSize);
++        /* Query the actual size in pixels, not units */
++        Vec2i drawableSize(winSize);
++
++        if (doResize) {
+             threadData->drawableSizeMsg.poll(drawableSize);
+-            
+-            backingScaleFactor = drawableSize.x / winSize.x;
++        } else if (!winSizeInitialized) {
++            /* iOS: SDL 直接建全屏窗口，且从不派发 resize 事件，
++             * 于是 winSize 一直停在构造时写入的 defScreen(512x384)
++             * ——画面被 blit 到窗口左下角的小方块里（表现为黑屏）。
++             * 首帧主动用真实窗口/drawable 尺寸同步一次，之后 mkxp
++             * 自身的 scOffset/scSize 会算出正确的 letterbox。 */
++            winSizeInitialized = true;
++            int ww = 0, wh = 0, dw = 0, dh = 0;
++            SDL_GetWindowSize(threadData->window, &ww, &wh);
++            SDL_GL_GetDrawableSize(threadData->window, &dw, &dh);
++            if (ww > 0 && wh > 0 && dw > 0 && dh > 0) {
++                winSize = Vec2i(ww, wh);
++                drawableSize = Vec2i(dw, dh);
++                doResize = true;
++            }
++        }
++
++        if (doResize) {
++            backingScaleFactor = (winSize.x > 0)
++                ? (float)drawableSize.x / (float)winSize.x : 1.0f;
+             winSize = drawableSize;
+             
+             /* Make sure integer buffers are rebuilt before screen offsets are

@@ -356,6 +356,20 @@ else
   echo "FATAL: $MKXP_SRC 不是 git 仓库，无法 apply framework-entry.patch"
   exit 1
 fi
+
+# ios-winsize.patch：修 iOS 黑屏（画面缩在窗口左下角）。
+# 根因：GraphicsPrivate::winSize 在构造时被初始化成 config 的 defScreenW/H(512x384)，
+# 且只在收到 SDL resize 事件时才更新；iOS 上 SDL 直接建全屏窗口(828x1792)且从不派发
+# resize 事件 -> winSize 永远停在 512x384 -> GLMeta::blitBeginScreen(winSize) 把画面
+# blit 到窗口左下角的小方块里，其余为黑（表现为黑屏）。补丁让首帧用真实的
+# SDL_GetWindowSize / SDL_GL_GetDrawableSize 同步一次，之后 mkxp 自身的
+# scOffset/scSize 会算出正确的 letterbox。
+git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/ios-winsize.patch" 2>/dev/null \
+ || patch -p1 -f --no-backup-if-mismatch -d "$MKXP_SRC" \
+      < "$ROOT/scripts/mkxp-framework/ios-winsize.patch" \
+ || { echo "FATAL: ios-winsize.patch 应用失败（v2.4.2 源码对不上？）"; exit 1; }
+echo "applied ios-winsize.patch (iOS 黑屏修复：winSize 同步真实窗口尺寸)"
+
 cp -f "$ROOT/scripts/mkxp-framework/mkxp_framework.cpp" "$MKXP_SRC/src/mkxp_framework.cpp"
 echo "installed mkxp_framework.cpp"
 cp -f "$ROOT/scripts/mkxp-framework/ios_embed.mm" "$MKXP_SRC/src/ios_embed.mm"
