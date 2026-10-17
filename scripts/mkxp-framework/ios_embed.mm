@@ -5,13 +5,14 @@
 // objc 头里的 extern "C" 会炸 "expected unqualified-id"）。SDL 自建的 UIWindow 的
 // addSubview / setWindowLevel / makeKeyAndVisible 都是 ObjC 方法，只能在 ObjC++ 下调。
 //
-// mkxp_ios_raiseWindow 由 main.cpp（MKXPZ_IOS_EMBED 分支）以 extern "C" 调用，把 SDL
-// 的渲染视图挂进其自建窗口并抬高层级，盖过 Flutter 的占位视图，解决整屏黑。
+// mkxp_ios_raiseWindow 由 main.cpp（MKXPZ_IOS_EMBED 分支）调用，把 SDL 的渲染视图挂进
+// 其自建窗口并抬高层级，盖过 Flutter 的占位视图，解决整屏黑。本文件与 main.cpp 均为
+// 普通 C++ 符号（不带 extern "C"），Apple clang 的 Itanium ABI 名字修饰一致，链接自动匹配。
 #import <SDL.h>
 #import <SDL_syswm.h>
 #import <UIKit/UIKit.h>
 
-extern "C" void mkxp_ios_raiseWindow(SDL_Window *win) {
+void mkxp_ios_raiseWindow(SDL_Window *win) {
     if (!win) return;
     SDL_SysWMinfo wm;
     SDL_VERSION(&wm.version);

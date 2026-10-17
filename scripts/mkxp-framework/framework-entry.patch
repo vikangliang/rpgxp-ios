@@ -373,8 +373,10 @@ index 4779221..14ab52e 100644
 +#ifdef MKXPZ_IOS_EMBED
 +    /* iOS 嵌入：把 SDL 渲染视图挂进其自建 UIWindow 并抬高层级，盖过 Flutter 的占位
 +     * 视图（解决整屏黑）。UIKit 窗口操作只能在 Objective-C++ 编译，故抽到
-+     * ios_embed.mm（mkxp_ios_raiseWindow），本文件保持纯 C++。 */
-+    extern "C" void mkxp_ios_raiseWindow(SDL_Window *win);
++     * ios_embed.mm；本文件仅作块内前向声明并调用，保持纯 C++（不写 extern "C"，
++     * 避免块作用域 linkage-spec 在本编译器下报 "expected unqualified-id"）。两侧均为
++     * 普通 C++ 符号，Apple clang 的 Itanium ABI 名字修饰一致，链接自动匹配。 */
++    void mkxp_ios_raiseWindow(SDL_Window *win);
 +    mkxp_ios_raiseWindow(win);
 +#endif
 +
