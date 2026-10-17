@@ -262,6 +262,11 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
    `b2d22c9` 撤掉 `rb_provide_feature` 的"链接失败"其实是 C++ TU 没写 `extern "C"` 导致名字修饰
    （`_Z18rb_provide_feature...`）的误诊，符号一直都在。`mkxp_framework.cpp` 的 `used` 锚点仍保留
    （强制保留 `Init_zlib`，无害）。
+   **坑中坑（2026-10-17 实踩）**：`extern "C"` 链接声明**不能写在函数体内部**——C++ 不允许块内
+   linkage-spec，会报 `error: expected unqualified-id`。必须把 `extern "C" void Init_zlib(void);` /
+   `extern "C" void rb_provide_feature(VALUE);` 放在文件作用域（mkxp-z 源码顶部本就在 `extern "C" {`
+   块里，紧跟 include 即可）。此条导致 `e7fb24c` 首次提交 CI 红，修正为 `extern "C"` 声明提到文件
+   作用域后即绿。
 22. **sdl2-image 需显式开 JPEG**：vcpkg 默认不编 JPEG 解码 → 真机 `'JPEG images are not supported'`，
    启用 sdl2-image 的 JPEG feature（`build-mkxp.yml` 的 vcpkg install 加 `--recurse`）。
 23. **Ruby GC 在 iOS 无 JIT 下是启动慢主因**：默认阈值对 Essentials 量级触发海量 GC；`mkxp_run` 在

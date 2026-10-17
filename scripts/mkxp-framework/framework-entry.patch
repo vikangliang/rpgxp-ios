@@ -316,18 +316,20 @@ index 355b698..91ddec7 100644
                          gameScreen.x = event.user.windowID;
                          gameScreen.y = event.user.code;
 diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
-index f7f293a..0d6f849 100644
+index f7f293a..4dbb475 100644
 --- a/binding/binding-mri.cpp
 +++ b/binding/binding-mri.cpp
-@@ -57,6 +57,7 @@ extern "C" {
+@@ -57,6 +57,9 @@ extern "C" {
  #include <assert.h>
  #include <string>
  #include <zlib.h>
 +#include <chrono>
++extern "C" void Init_zlib(void);
++extern "C" void rb_provide_feature(VALUE);
  
  #include <SDL_cpuinfo.h>
  #include <SDL_filesystem.h>
-@@ -270,6 +271,24 @@ static void mriBindingInit() {
+@@ -270,6 +273,22 @@ static void mriBindingInit() {
      rb_str_freeze(vers);
      rb_define_const(mod, "VERSION", vers);
      
@@ -337,8 +339,6 @@ index f7f293a..0d6f849 100644
 +    // libruby-static.a (-force_load); extern "C" so this C++ TU links them by
 +    // their unmangled names (the earlier "static lib doesn't export it" link
 +    // error was just a missing extern "C" -- name mangling -- not a missing symbol).
-+    extern "C" void Init_zlib(void);
-+    extern "C" void rb_provide_feature(VALUE);
 +    if (!rb_const_defined(rb_cObject, rb_intern("Zlib"))) {
 +        static bool s_zlibInit = false;
 +        if (!s_zlibInit) {
