@@ -77,6 +77,12 @@ static void mkxp_applyLetterbox(UIWindow *win, GLint vp[4]) {
         UIView *v = win.rootViewController.view;
         if (!v) v = win.subviews.firstObject;
         if (!v) v = win;
+        fprintf(stderr,
+            "[ios-embed] letterbox view: class=%s frame=%s layer=%s bounds=%s\n",
+            NSStringFromClass([v class]).UTF8String,
+            NSStringFromCGRect(v.frame).UTF8String,
+            NSStringFromClass([v.layer class]).UTF8String,
+            NSStringFromCGRect(v.layer.bounds).UTF8String);
         @try {
             // 以左上角为锚点，令变换等价于 p -> s*p + (dx,dy)
             v.layer.anchorPoint = CGPointZero;
@@ -117,6 +123,29 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
                 (int)vp[0],(int)vp[1],(int)vp[2],(int)vp[3], g_drawW, g_drawH);
             vpLogged++;
         }
+        // 直读"游戏框内部"的像素：若框内也是黑 => 游戏根本没被画出来（FBO/场景问题），
+        // 单靠 letterbox 放大是没用的；若框内有颜色 => 内容存在，只是被挤在角落。
+        {
+            static int insideLogged = 0;
+            if (insideLogged < 5 && vp[2] > 0 && vp[3] > 0) {
+                GLubyte px[4] = {0,0,0,0};
+                // 框中心（GL 左下原点）
+                glReadPixels(vp[0] + vp[2] / 2, vp[1] + vp[3] / 2, 1, 1,
+                             GL_RGBA, GL_UNSIGNED_BYTE, px);
+                GLubyte corner[4] = {0,0,0,0};
+                glReadPixels(vp[0] + 4, vp[1] + 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, corner);
+                GLubyte outside[4] = {0,0,0,0};
+                glReadPixels(g_drawW / 2, g_drawH / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, outside);
+                fprintf(stderr,
+                    "[ios-embed] inside-box center={%d,%d,%d,%d} corner={%d,%d,%d,%d} "
+                    "outside={%d,%d,%d,%d} (vp={%d,%d,%d,%d})\n",
+                    px[0],px[1],px[2],px[3], corner[0],corner[1],corner[2],corner[3],
+                    outside[0],outside[1],outside[2],outside[3],
+                    (int)vp[0],(int)vp[1],(int)vp[2],(int)vp[3]);
+                insideLogged++;
+            }
+        }
+
         if (changed) {
             for (int i=0;i<4;i++) lastVP[i] = vp[i];
             mkxp_applyLetterbox(g_sdlWin, vp);
