@@ -1,5 +1,5 @@
 diff --git a/src/display/gl/gl-meta.cpp b/src/display/gl/gl-meta.cpp
-index ad491f4..313692f 100644
+index ad491f4..11049f4 100644
 --- a/src/display/gl/gl-meta.cpp
 +++ b/src/display/gl/gl-meta.cpp
 @@ -26,6 +26,9 @@
@@ -65,7 +65,7 @@ index ad491f4..313692f 100644
  		if (smooth)
  			TEX::setSmooth(true);
  
-@@ -220,6 +262,47 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
+@@ -220,6 +262,151 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
  		Quad &quad = shState->gpQuad();
  		quad.setTexPosRect(src, dst);
  		quad.draw();
@@ -90,30 +90,134 @@ index ad491f4..313692f 100644
 +			VBO::unbind();
 +		}
 +
-+		/* iOS 诊断：blit 绘制后立刻看一眼目标帧缓冲(仅屏幕 blit, fbo=0) */
++		/* iOS 诊断 A/B（前 600 帧）：在 letterbox 矩形上
++		 *   左半 = 纯红：自有着色器 + NDC 坐标（早期验证过能显示）
++		 *   右半 = 纯绿：mkxp 自己的 SimpleShader + 自建 2x2 纯绿纹理 + 像素坐标
++		 * 判读：左红右绿 => 两条链路都通，问题在场景纹理采样；
++		 *       只有红   => mkxp 的 SimpleShader/采样链路挂了；
++		 *       都没有   => 坐标/视口/present 链路有问题。
++		 * 10 秒后探针撤掉，露出真实画面。 */
++		if (boundFb == 0)
 +		{
-+			static int afterLogged = 0;
-+			GLint fbAfter = 0;
-+			glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbAfter);
-+			if (fbAfter == 0 && afterLogged < 3)
++			static int abCount = 0;
++			if (abCount < 600)
 +			{
-+				++afterLogged;
-+				GLubyte px[4] = {0,0,0,0};
-+				GLint vp2[4] = {0,0,0,0};
-+				glGetIntegerv(GL_VIEWPORT, vp2);
-+				glReadPixels(vp2[2] / 2, vp2[3] / 2, 1, 1,
-+				             GL_RGBA, GL_UNSIGNED_BYTE, px);
-+				fprintf(stderr,
-+					"[gl-meta] after screen blit: vpMid=%d,%d px={%d,%d,%d,%d} err=0x%x\n",
-+					vp2[2] / 2, vp2[3] / 2, px[0], px[1], px[2], px[3],
-+					(unsigned)glGetError());
++				++abCount;
++
++				static GLuint aProg = 0, aVbo = 0, gTex = 0;
++				static bool aInit = false;
++				if (!aInit)
++				{
++					aInit = true;
++					const char *vsSrc = "attribute vec2 a_pos; void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }";
++					const char *fsSrc = "precision mediump float; void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }";
++					GLuint v = glCreateShader(GL_VERTEX_SHADER);
++					glShaderSource(v, 1, &vsSrc, NULL);
++					glCompileShader(v);
++					GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
++					glShaderSource(f, 1, &fsSrc, NULL);
++					glCompileShader(f);
++					GLuint p = glCreateProgram();
++					glAttachShader(p, v);
++					glAttachShader(p, f);
++					glBindAttribLocation(p, 0, "a_pos");
++					glLinkProgram(p);
++					aProg = p;
++					glGenBuffers(1, &aVbo);
++
++					glGenTextures(1, &gTex);
++					TEX::bind(TEX::ID(gTex));
++					TEX::setRepeat(false);
++					TEX::setSmooth(false);
++					{
++						unsigned char g[16];
++						for (int i = 0; i < 4; ++i)
++						{
++							g[i*4+0] = 0;   g[i*4+1] = 255;
++							g[i*4+2] = 0;   g[i*4+3] = 255;
++						}
++						glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0,
++						             GL_RGBA, GL_UNSIGNED_BYTE, g);
++					}
++					fprintf(stderr, "[gl-meta] AB probe init: prog=%u vbo=%u tex=%u\n",
++					        (unsigned)aProg, (unsigned)aVbo, (unsigned)gTex);
++				}
++
++				GLint avp[4] = {0,0,0,0};
++				glGetIntegerv(GL_VIEWPORT, avp);
++				if (aProg && avp[2] > 0 && avp[3] > 0)
++				{
++					float x0 = (float)dst.x;
++					float y0 = (float)dst.y;
++					float x1 = (float)dst.x + (float)dst.w;
++					float y1 = (float)dst.y + (float)dst.h;
++					float xm = (x0 + x1) * 0.5f;
++
++					GLint svProg = 0, svAb = 0, svTex = 0, svA0 = 0, svA1 = 0;
++					glGetIntegerv(GL_CURRENT_PROGRAM, &svProg);
++					glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &svAb);
++					glGetIntegerv(GL_TEXTURE_BINDING_2D, &svTex);
++					glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &svA0);
++					glGetVertexAttribiv(1, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &svA1);
++
++					/* A: 左半纯红（自有着色器，NDC 空间） */
++					float ndc[8] =
++					{
++						(x0 / avp[2]) * 2.f - 1.f, (y0 / avp[3]) * 2.f - 1.f,
++						(xm / avp[2]) * 2.f - 1.f, (y0 / avp[3]) * 2.f - 1.f,
++						(xm / avp[2]) * 2.f - 1.f, (y1 / avp[3]) * 2.f - 1.f,
++						(x0 / avp[2]) * 2.f - 1.f, (y1 / avp[3]) * 2.f - 1.f
++					};
++					glUseProgram(aProg);
++					glBindBuffer(GL_ARRAY_BUFFER, aVbo);
++					glBufferData(GL_ARRAY_BUFFER, sizeof(ndc), ndc, GL_DYNAMIC_DRAW);
++					glEnableVertexAttribArray(0);
++					glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
++					glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++					if (abCount == 1)
++						fprintf(stderr, "[gl-meta] AB-A red drawn err=0x%x\n",
++						        (unsigned)glGetError());
++
++					/* B: 右半纯绿（mkxp SimpleShader + 自建纹理，像素空间） */
++					float vb[16] =
++					{
++						xm, y0, 0.f, 0.f,
++						x1, y0, 2.f, 0.f,
++						x1, y1, 2.f, 2.f,
++						xm, y1, 0.f, 2.f
++					};
++					SimpleShader &sh = shState->shaders().simple;
++					sh.bind();
++					sh.applyViewportProj();
++					sh.setTranslation(Vec2i());
++					sh.setTexSize(Vec2i(2, 2));
++					TEX::bind(TEX::ID(gTex));
++					glBindBuffer(GL_ARRAY_BUFFER, aVbo);
++					glBufferData(GL_ARRAY_BUFFER, sizeof(vb), vb, GL_DYNAMIC_DRAW);
++					glEnableVertexAttribArray(Shader::Position);
++					glEnableVertexAttribArray(Shader::TexCoord);
++					glVertexAttribPointer(Shader::Position, 2, GL_FLOAT, GL_FALSE, 16,
++					                      (const GLvoid *)0);
++					glVertexAttribPointer(Shader::TexCoord, 2, GL_FLOAT, GL_FALSE, 16,
++					                      (const GLvoid *)8);
++					glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++					if (abCount == 1)
++						fprintf(stderr, "[gl-meta] AB-B green drawn err=0x%x\n",
++						        (unsigned)glGetError());
++
++					if (!svA0) glDisableVertexAttribArray(0);
++					if (!svA1) glDisableVertexAttribArray(1);
++					glBindBuffer(GL_ARRAY_BUFFER, svAb);
++					glBindTexture(GL_TEXTURE_2D, svTex);
++					glUseProgram(svProg);
++				}
 +			}
 +		}
 +
  		glState.blend.pop();
  
  		if (smooth)
-@@ -230,7 +313,11 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
+@@ -230,7 +417,11 @@ void blitRectangle(const IntRect &src, const IntRect &dst, bool smooth)
  void blitEnd()
  {
  	if (!HAVE_NATIVE_BLIT)
