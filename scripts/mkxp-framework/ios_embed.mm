@@ -51,19 +51,35 @@ static void mkxp_show(UIWindow *sdlWin, int pass) {
             NSStringFromCGRect(sdlWin.rootViewController.view.bounds).UTF8String,
             (int)sdlWin.isKeyWindow);
 
-        // canary 绿块（与引擎 GL 无关）：验证 SDL window 真在屏上。延后到 rootVC.view
-        // 完成 layout 后添加，frame 直接用 window bounds，避免 0 尺寸不可见。
+        // canary 绿块（与引擎 GL 无关）：验证 SDL window 真在屏上。
+        // 注意：直接加到 UIWindow 本身——SDL 的 UIKit 后端可能把 GL view 直接挂到
+        // window 上，rootVC.view 根本不在视图树里（此时加到 rootVC.view 会不可见）。
         if (pass == 0) {
-            UIView *rv = sdlWin.rootViewController.view;
-            rv.frame = sdlWin.bounds;
-            [rv layoutIfNeeded];
             UIView *marker = [[UIView alloc] initWithFrame:sdlWin.bounds];
             marker.backgroundColor = [UIColor colorWithRed:0.0 green:0.9 blue:0.2 alpha:1.0];
-            marker.translatesAutoresizingMaskIntoConstraints = YES;
             marker.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            [rv addSubview:marker];
+            [sdlWin addSubview:marker];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{ [marker removeFromSuperview]; });
+        }
+
+        // 诊断：rootVC.view 是否真在树上；sdlWin 的子视图层级；所有 window 的 level
+        UIView *rv = sdlWin.rootViewController.view;
+        fprintf(stderr, "[ios-embed] diag: rv.superview=%p rv.window=%p rvIsHidden=%d\n",
+                (void *)rv.superview, (void *)rv.window, rv.isHidden);
+        int depth = 0;
+        UIView *cur = rv;
+        while (cur && depth < 12) {
+            fprintf(stderr, "[ios-embed]   tree[%d]: %s frame=%s hidden=%d\n",
+                    depth, NSStringFromClass(cur.class).UTF8String,
+                    NSStringFromCGRect(cur.frame).UTF8String, cur.isHidden);
+            cur = cur.superview; depth++;
+        }
+        int idx = 0;
+        for (UIWindow *w in UIApplication.sharedApplication.windows) {
+            fprintf(stderr, "[ios-embed]   win[%d]: %p level=%.0f hidden=%d frame=%s\n",
+                    idx++, (void *)w, (double)w.windowLevel, w.isHidden,
+                    NSStringFromCGRect(w.frame).UTF8String);
         }
     } @catch (NSException *e) {
         fprintf(stderr, "[ios-embed] show exception: %s\n", e.reason.UTF8String);
