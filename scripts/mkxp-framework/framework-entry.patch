@@ -421,3 +421,126 @@ index f7f293a..2e09e80 100644
              VALUE script = rb_ary_entry(scriptArray, i);
              VALUE scriptDecoded = rb_ary_entry(script, 3);
              VALUE string =
+
+diff --git a/binding/audio-binding.cpp b/binding/audio-binding.cpp
+index cee5c86..4b00374 100644
+--- a/binding/audio-binding.cpp
++++ b/binding/audio-binding.cpp
+@@ -24,6 +24,18 @@
+ #include "binding-util.h"
+ #include "exception.h"
+ 
++/* Essentials (RGSS1) 的 Audio 模块包装会把 track 参数以 nil 传入
++ * （如 Audio.bgm_play(name, vol, pitch, pos, nil)），而上游绑定把这些
++ * 可选参数声明为 'i'（要求 Fixnum）。nil 会触发 rb_int_arg 抛
++ * "Argument N: Expected fixnum"，且 Essentials 只 rescue ArgumentError
++ * 而非 TypeError，导致直接崩溃。这里统一把 track 改为 'o'（任意类型）
++ * 捕获，仅当其为 Numeric 时才取用，否则沿用默认值，兼容 RGSS1。 */
++#define COERCE_TRACK(trackVar, trackVal) \
++    do { \
++        if (!NIL_P(trackVal) && rb_obj_is_kind_of(trackVal, rb_cNumeric)) \
++            (trackVar) = NUM2INT(trackVal); \
++    } while (0)
++
+ #define DEF_PLAY_STOP_POS(entity) \
+ 	RB_METHOD(audio_##entity##Play) \
+ 	{ \
+@@ -32,7 +44,9 @@
+ 		int volume = 100; \
+ 		int pitch = 100; \
+ 		double pos = 0.0; \
+-        rb_get_args(argc, argv, "z|iif", &filename, &volume, &pitch, &pos RB_ARG_END); \
++		VALUE dummy = Qnil; \
++        rb_get_args(argc, argv, "z|iifo", &filename, &volume, &pitch, &pos, &dummy RB_ARG_END); \
++		(void)dummy; \
+ 		GUARD_EXC( shState->audio().entity##Play(filename, volume, pitch, pos); ) \
+ 		return Qnil; \
+ 	} \
+@@ -55,7 +69,9 @@
+ 		const char *filename; \
+ 		int volume = 100; \
+ 		int pitch = 100; \
+-		rb_get_args(argc, argv, "z|ii", &filename, &volume, &pitch RB_ARG_END); \
++		VALUE dummy = Qnil; \
++		rb_get_args(argc, argv, "z|iio", &filename, &volume, &pitch, &dummy RB_ARG_END); \
++		(void)dummy; \
+ 		GUARD_EXC( shState->audio().entity##Play(filename, volume, pitch); ) \
+ 		return Qnil; \
+ 	} \
+@@ -71,7 +87,9 @@ RB_METHOD(audio_##entity##Fade) \
+ { \
+ 	RB_UNUSED_PARAM; \
+ 	int time; \
+-	rb_get_args(argc, argv, "i", &time RB_ARG_END); \
++	VALUE dummy = Qnil; \
++	rb_get_args(argc, argv, "i|o", &time, &dummy RB_ARG_END); \
++	(void)dummy; \
+ 	shState->audio().entity##Fade(time); \
+ 	return Qnil; \
+ }
+@@ -93,7 +111,9 @@ RB_METHOD(audio_bgmPlay)
+     int pitch = 100;
+     double pos = 0.0;
+     int track = -127;
+-    rb_get_args(argc, argv, "z|iifi", &filename, &volume, &pitch, &pos, &track RB_ARG_END);
++    VALUE trackVal = Qnil;
++    rb_get_args(argc, argv, "z|iifo", &filename, &volume, &pitch, &pos, &trackVal RB_ARG_END);
++    COERCE_TRACK(track, trackVal);
+     GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )
+     return Qnil;
+ }
+@@ -102,7 +122,9 @@ RB_METHOD(audio_bgmStop)
+ {
+     RB_UNUSED_PARAM;
+     int track = -127;
+-    rb_get_args(argc, argv, "|i", &track RB_ARG_END);
++    VALUE trackVal = Qnil;
++    rb_get_args(argc, argv, "|o", &trackVal RB_ARG_END);
++    COERCE_TRACK(track, trackVal);
+     shState->audio().bgmStop(track);
+     return Qnil;
+ }
+@@ -111,7 +133,9 @@ RB_METHOD(audio_bgmPos)
+ {
+     RB_UNUSED_PARAM;
+     int track = 0;
+-    rb_get_args(argc, argv, "|i", &track RB_ARG_END);
++    VALUE trackVal = Qnil;
++    rb_get_args(argc, argv, "|o", &trackVal RB_ARG_END);
++    COERCE_TRACK(track, trackVal);
+     return rb_float_new(shState->audio().bgmPos(track));
+ }
+ 
+@@ -119,7 +143,9 @@ RB_METHOD(audio_bgmGetVolume)
+ {
+     RB_UNUSED_PARAM;
+     int track = -127;
+-    rb_get_args(argc, argv, "|i", &track RB_ARG_END);
++    VALUE trackVal = Qnil;
++    rb_get_args(argc, argv, "|o", &trackVal RB_ARG_END);
++    COERCE_TRACK(track, trackVal);
+     int ret = 0;
+     GUARD_EXC( ret = shState->audio().bgmGetVolume(track); )
+     return rb_fix_new(ret);
+@@ -130,7 +156,9 @@ RB_METHOD(audio_bgmSetVolume)
+     RB_UNUSED_PARAM;
+     int volume;
+     int track = -127;
+-    rb_get_args(argc, argv, "i|i", &volume, &track RB_ARG_END);
++    VALUE trackVal = Qnil;
++    rb_get_args(argc, argv, "i|o", &volume, &trackVal RB_ARG_END);
++    COERCE_TRACK(track, trackVal);
+     GUARD_EXC( shState->audio().bgmSetVolume(volume, track); )
+     return Qnil;
+ }
+@@ -145,7 +173,9 @@ RB_METHOD(audio_bgmFade)
+     RB_UNUSED_PARAM;
+     int time;
+     int track = -127;
+-    rb_get_args(argc, argv, "i|i", &time, &track RB_ARG_END);
++    VALUE trackVal = Qnil;
++    rb_get_args(argc, argv, "i|o", &time, &trackVal RB_ARG_END);
++    COERCE_TRACK(track, trackVal);
+     shState->audio().bgmFade(time, track);
+     return Qnil;
+ }
