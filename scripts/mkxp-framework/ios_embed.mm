@@ -54,18 +54,18 @@ static UIView *mkxp_layerOwner(CALayer *layer) {
 static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id drawable) {
     CALayer *layer = (CALayer *)drawable;
     if (layer != nil) {
+        bool rebound = (layer != g_drawableLayer);
         if (!g_reportedDrawable) {
             fprintf(stderr, "[ios-embed] GL drawable bound: layer=%p ownerView=%p\n",
                     (void *)layer, (void *)mkxp_layerOwner(layer));
             g_reportedDrawable = true;
-        } else if (layer != g_drawableLayer) {
-            // 引擎重新绑定了新 layer（重建视图/尺寸变化）：更新并重新搬运
+        } else if (rebound) {
             fprintf(stderr, "[ios-embed] GL drawable REBOUND: layer=%p ownerView=%p (was %p)\n",
                     (void *)layer, (void *)mkxp_layerOwner(layer), (void *)g_drawableLayer);
         }
         g_drawableLayer = layer;
-        if (g_hostView && mkxp_layerOwner(layer)) {
-            g_repinDone = false;   // 绑定变了，允许重新搬运
+        if (g_hostView && mkxp_layerOwner(layer) && rebound) {
+            g_repinDone = false;   // 绑定真变了才允许重新搬运（否则 frame 会被重复 transform 畸变）
             mkxp_requestRepin();
         }
     }
@@ -91,6 +91,19 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
     // present 前读（双缓冲下 present 后 back buffer 内容即失效）
     ++g_presentTotal;
     if (g_presentTotal % 120 == 1) mkxp_probePixels();
+    // 金丝雀：第 2~13 帧直接给默认帧缓冲写会变色的内容（红→绿→蓝→白），
+    // 与引擎无关。屏幕出现循环变色 → GL/合成链是通的（引擎不画才是问题）；
+    // 屏幕全黑不变 → GL/合成链本身断。
+    if (g_presentTotal >= 2 && g_presentTotal <= 13) {
+        int phase = (int)((g_presentTotal - 2) / 3);
+        float r = (phase % 2 == 0) ? 1.0f : 0.0f;
+        float gg = (phase == 1) ? 1.0f : 0.0f;
+        float b = (phase == 2) ? 1.0f : 0.0f;
+        if (phase >= 3) { r = 1.0f; gg = 1.0f; b = 1.0f; }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glClearColor(r, gg, b, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
     BOOL r = g_origPresent(self, _cmd, target);
     if (r) ++g_presentOK; else ++g_presentFail;
     if (g_presentTotal % 300 == 1 || !r) {
