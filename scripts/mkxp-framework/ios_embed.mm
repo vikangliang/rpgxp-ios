@@ -18,7 +18,10 @@
 #import <UIKit/UIKit.h>
 #import <stdio.h>
 
-static __weak UIView *g_hostView = nil;
+// 注意：本文件被 mkxp-z 以 -fno-objc-arc（手动引用计数）编译，不能用 __weak/__strong
+// 等 ARC 限定符。宿主 UIView 由 Flutter 的 MkxpPlatformView 强持有，引擎运行期有效，
+// 这里只存裸指针即可。
+static UIView *g_hostView = nil;
 
 extern "C" void mkxp_ios_setHostView(void *view) {
     g_hostView = (__bridge UIView *)(view);
