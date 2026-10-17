@@ -1,27 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
-/// MKXP 游戏画面层（M1 起）。
+/// MKXP 游戏画面层（M1 终版：SDL 官方路径）。
 ///
-/// 嵌入方案（最终定版）：mkxp-z 依旧自己 `SDL_CreateWindow` 全屏渲染，但引擎在
-/// 建窗后会把 SDL 的渲染视图【搬进】这里 `UiKitView` 提供的宿主 UIView
-/// （见 scripts/mkxp-framework/ios_embed.mm 的 mkxp_ios_setHostView + mkxp_ios_embedIntoView）。
-/// 这样画面就在 Flutter 真正可见的 PlatformView 里出像素，虚拟摇杆/动作键等 Flutter
-/// 控件再叠在上面。
-///
-/// 注意：MkxpPlatformView.init 创建宿主 UIView 时会调用 mkxp_ios_setHostView 注入指针，
-/// 所以本 Widget 必须真实挂载到游戏页（不能是无 UiKitView 的透明占位），否则引擎
-/// 拿不到宿主、画面进不到可见层级（日志会打 “host view not set”）。
+/// 引擎自己创建全屏 UIWindow 并 makeKeyAndVisible（见 scripts/mkxp-framework/
+/// ios_embed.mm），窗口层级 1999：盖在 Flutter 界面之上、低于原生触摸浮层
+/// （MkxpTouchOverlay，alert+2）。因此这里不需要 UiKitView 承载任何视图——
+/// 游戏画面直接从引擎窗口出，虚拟控件为原生浮层（不经过 Flutter）。
 class GameView extends StatelessWidget {
   const GameView({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    const viewType = 'mkxp-game-view';
-    return const UiKitView(
-      viewType: viewType,
-      creationParams: <String, dynamic>{},
-      creationParamsCodec: StandardMessageCodec(),
-    );
-  }
+  Widget build(BuildContext context) => const SizedBox.expand();
 }

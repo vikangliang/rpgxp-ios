@@ -71,8 +71,7 @@ class _GameRunPageState extends State<GameRunPage> {
       body: SafeArea(
         child: Stack(
           children: [
-            // 底层：MKXP 渲染宿主（UiKitView）。引擎建窗后会把 SDL 视图搬进来填满本层；
-            // 引擎启动前它是黑底占位，启动后画面直接显示在这里，Flutter 控件叠在上面。
+            // 引擎自己建窗口出画面（level 1999，盖在本页之上），底层无需承载视图
             const GameView(),
             // 引擎启动中的占位浮层；启动成功后隐藏，露出底层 GameView（SDL 画面）。
             if (_status == '正在启动…')
