@@ -92,7 +92,13 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
                 (unsigned long long)n, g_drawW, g_drawH);
     }
 
-    // ---- 右下角红方块探针（常驻，不遮挡 mkxp 内容；确认 present 在 Metal-GL 下真显示） ----
+    // ---- 关键修复：mkxp 只在 init 设一次默认帧缓冲 viewport，且尺寸错误（非真实
+    //      drawable 828x1792），导致最终 blit 被裁到不可见 => 全黑。每帧在 present 前
+    //      强制正确 viewport（用 renderbufferStorage 抓到的真实 drawable 像素尺寸），
+    //      修正 mkxp 的最终 blit，并持久到下一帧（mkxp 不每帧重设）。 ----
+    if (g_drawW > 0) glViewport(0, 0, g_drawW, g_drawH);
+
+    // ---- 右下角红方块探针（常驻，不遮挡 mkxp 内容；确认 present + 修复后 viewport 真显示） ----
     {
         if (!g_probeTried) mkxp_initProbe();
         if (g_probeProg) {
