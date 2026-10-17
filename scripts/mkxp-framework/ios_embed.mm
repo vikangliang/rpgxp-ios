@@ -1,224 +1,139 @@
-// ios_embed.mm — iOS 嵌入（SDL 官方路径 + 窗口上屏修复）。
+// ios_embed.mm — iOS 嵌入（SDL 官方路径 + 诊断）。
 //
-// 2026-10-17 结论链：搬视图路线全死（present 成功但不上屏、折断触摸链）→ 回到 SDL
-// 官方路径；但官方路径下连 UIKit canary 绿块都不显示 → SDL 自建 UIWindow 就没在屏上。
-// iOS 13+ UIWindow 必须挂在【前台活跃 UIWindowScene】上才显示；SDL 自建 window 的
-// scene 可能为空或挂错场景。本文件：
-//   1) 从可见窗口（Flutter 主窗口）取 scene，强制覆盖 SDL window 的 windowScene；
-//   2) hidden=NO + level 1999（盖 Flutter、低于原生浮层 2002）+ makeKeyAndVisible；
-//   3) 0.5s 后二次 makeKeyAndVisible（防 Flutter/浮层抢 key 后未再上屏），并打
-//      canary 绿块 4 秒（验证窗口真在屏上）；
-//   4) 全部状态（scene 对比、bounds、level）打日志 → mkxp.log。
+// 2026-10-17 结论链：
+//   - SDL 自建 UIWindow 在 Flutter 场景里能合成（recheck 显示 key=1/hidden=0/alpha=1，
+//     且"全黑但有摇杆"说明 SDL 窗口位于浮层之下、Flutter 之上，正在被合成，只是 GL 内容黑）。
+//   - 引擎每帧 present 成功，但 GL 探针（glClear/glReadPixels）在 "OpenGL ES 2.0 Metal - 101"
+//     （Apple 的 OpenGL-on-Metal 转译层）下不可靠（readback 恒为 0），故不再依赖 GL 探针。
+//   - 本文件改为：① 模块加载时抢装 EAGLContext hook，抓 initGL 阶段的
+//     renderbufferStorage:fromDrawable:，打 drawable 的 bounds/contentsScale（若 bounds 为 0
+//     → renderbuffer storage 0×0 → 全黑根因）；② 一个延迟置顶的绿块判定窗口是否真在合成链。
 #import <SDL.h>
 #import <SDL_syswm.h>
 #import <UIKit/UIKit.h>
 #import <stdio.h>
 #import <objc/runtime.h>
-#import <OpenGLES/ES2/gl.h>
 
-static void mkxp_glCanary(void);
+static UIView *g_hostView = nil;
+static SDL_Window *g_win = NULL;
+
+// ---- 诊断：模块加载即抢装 EAGLContext hook（早于 SDL initGL 的 renderbufferStorage） ----
+static void (*g_origRBS)(id, SEL, NSUInteger, id);
 static void (*g_origPresent)(id, SEL, NSUInteger);
-static bool g_canaryArmed = false;
+static bool g_rbsLogged = false;
+static uint64_t g_presentTotal = 0, g_presentOK = 0;
 
-static void swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
-    if (g_canaryArmed) mkxp_glCanary();
-    g_origPresent(self, _cmd, target);
-}
-
-static void mkxp_installPresentHook() {
-    Method m = class_getInstanceMethod([EAGLContext class], @selector(presentRenderbuffer:));
-    g_origPresent = (void (*)(id, SEL, NSUInteger))method_getImplementation(m);
-    method_setImplementation(m, (IMP)swz_presentRenderbuffer);
-    fprintf(stderr, "[ios-embed] present hook installed\n");
-}
-
-/// 找当前可见的前台窗口（优先 Flutter 的），用于取其 scene 与做对比日志。
-static UIWindow *mkxp_findVisibleWindow() {
-    NSArray<UIWindow *> *wins = UIApplication.sharedApplication.windows;
-    for (UIWindow *w in wins) {
-        if (!w.isHidden && w.windowScene != nil &&
-            w.windowScene.activationState == UISceneActivationStateForegroundActive)
-            return w;
+static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id drawable) {
+    if (!g_rbsLogged && drawable != nil) {
+        CALayer *layer = (CALayer *)drawable;
+        CGRect b = layer.bounds;
+        fprintf(stderr,
+            "[ios-embed] renderbufferStorage: drawable=%s bounds={%.0f,%.0f,%.0f,%.0f} "
+            "contentsScale=%.2f opaque=%d\n",
+            NSStringFromClass([drawable class]).UTF8String,
+            b.origin.x, b.origin.y, b.size.width, b.size.height,
+            (double)layer.contentsScale, (int)layer.opaque);
+        g_rbsLogged = true;
     }
-    return wins.firstObject;
+    g_origRBS(self, _cmd, target, drawable);
 }
 
-static void mkxp_show(UIWindow *sdlWin, int pass) {
+static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
+    BOOL r = g_origPresent(self, _cmd, target);
+    ++g_presentTotal;
+    if (r) ++g_presentOK;
+    if (g_presentTotal <= 5 || g_presentTotal % 600 == 1) {
+        fprintf(stderr, "[ios-embed] present #%llu r=%d ok=%llu\n",
+                (unsigned long long)g_presentTotal, (int)r,
+                (unsigned long long)g_presentOK);
+    }
+    return r;
+}
+
+__attribute__((constructor))
+static void mkxp_installHooksEarly() {
+    Class cls = [EAGLContext class];
+    Method m = class_getInstanceMethod(cls, @selector(renderbufferStorage:fromDrawable:));
+    if (m) {
+        g_origRBS = (void (*)(id, SEL, NSUInteger, id))method_getImplementation(m);
+        method_setImplementation(m, (IMP)swz_renderbufferStorage);
+    }
+    Method mp = class_getInstanceMethod(cls, @selector(presentRenderbuffer:));
+    if (mp) {
+        g_origPresent = (BOOL (*)(id, SEL, NSUInteger))method_getImplementation(mp);
+        method_setImplementation(mp, (IMP)swz_presentRenderbuffer);
+    }
+    fprintf(stderr, "[ios-embed] EAGLContext hooks installed (constructor)\n");
+}
+
+static void mkxp_show(UIWindow *sdlWin) {
     @try {
-        UIWindow *ref = mkxp_findVisibleWindow();
-        UIWindowScene *refScene = (UIWindowScene *)ref.windowScene;
-
-        // 若 SDL window 没挂 scene、或挂的不是前台 scene → 强制覆盖为参考窗口的 scene
-        if (refScene && sdlWin.windowScene != refScene) {
-            sdlWin.windowScene = refScene;
-            fprintf(stderr, "[ios-embed] scene override -> %p (was)\n", (void *)refScene);
+        UIWindow *ref = nil;
+        for (UIWindow *w in UIApplication.sharedApplication.windows) {
+            if (!w.isHidden && w.windowScene &&
+                w.windowScene.activationState == UISceneActivationStateForegroundActive) {
+                ref = w; break;
+            }
         }
-
+        UIWindowScene *refScene = (UIWindowScene *)ref.windowScene;
+        if (refScene && sdlWin.windowScene != refScene)
+            sdlWin.windowScene = refScene;
         sdlWin.windowLevel = 1999.0;
         sdlWin.hidden = NO;
         [sdlWin layoutIfNeeded];
         [sdlWin makeKeyAndVisible];
-
         fprintf(stderr,
-            "[ios-embed] show(pass=%d): win=%p hidden=%d level=%.0f frame=%s "
-            "scene=%p (refScene=%p same=%d) rootViewBounds=%s key=%d\n",
-            pass, (void *)sdlWin, sdlWin.hidden, (double)sdlWin.windowLevel,
-            NSStringFromCGRect(sdlWin.frame).UTF8String,
-            (void *)sdlWin.windowScene, (void *)refScene,
-            (int)(sdlWin.windowScene == refScene),
-            NSStringFromCGRect(sdlWin.rootViewController.view.bounds).UTF8String,
+            "[ios-embed] show: win=%p hidden=%d level=%.0f frame=%s scene=%p key=%d\n",
+            (void *)sdlWin, sdlWin.hidden, (double)sdlWin.windowLevel,
+            NSStringFromCGRect(sdlWin.frame).UTF8String, (void *)sdlWin.windowScene,
             (int)sdlWin.isKeyWindow);
-
-        // canary 绿块（与引擎 GL 无关）：验证 SDL window 真在屏上。
-        // 注意：直接加到 UIWindow 本身——SDL 的 UIKit 后端可能把 GL view 直接挂到
-        // window 上，rootVC.view 根本不在视图树里（此时加到 rootVC.view 会不可见）。
-        if (pass == 0) {
-            UIView *marker = [[UIView alloc] initWithFrame:sdlWin.bounds];
-            marker.backgroundColor = [UIColor colorWithRed:0.0 green:0.9 blue:0.2 alpha:1.0];
-            marker.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            [sdlWin addSubview:marker];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ [marker removeFromSuperview]; });
-        }
-
-        // 诊断：rootVC.view 是否真在树上；sdlWin 的子视图层级；所有 window 的 level
-        UIView *rv = sdlWin.rootViewController.view;
-        fprintf(stderr, "[ios-embed] diag: rv.superview=%p rv.window=%p rvIsHidden=%d\n",
-                (void *)rv.superview, (void *)rv.window, rv.isHidden);
-        int depth = 0;
-        UIView *cur = rv;
-        while (cur && depth < 12) {
-            fprintf(stderr, "[ios-embed]   tree[%d]: %s frame=%s hidden=%d\n",
-                    depth, NSStringFromClass(cur.class).UTF8String,
-                    NSStringFromCGRect(cur.frame).UTF8String, cur.isHidden);
-            cur = cur.superview; depth++;
-        }
-        int idx = 0;
-        for (UIWindow *w in UIApplication.sharedApplication.windows) {
-            fprintf(stderr, "[ios-embed]   win[%d]: %p level=%.0f hidden=%d frame=%s\n",
-                    idx++, (void *)w, (double)w.windowLevel, w.isHidden,
-                    NSStringFromCGRect(w.frame).UTF8String);
-        }
     } @catch (NSException *e) {
         fprintf(stderr, "[ios-embed] show exception: %s\n", e.reason.UTF8String);
     }
-}
-
-// =============================================================================
-// DEBUG：present 前用引擎当前上下文向默认帧缓冲写红/蓝相间色（前 40 帧每 4 帧切换）。
-// 本次是【SDL 官方路径、零视图搬运】，若此色仍不上屏 → 引擎/GL 侧问题；
-// 若上屏 → 之前所有黑屏都源于搬运视图损坏了合成链。同时打 viewport/FBO/error。
-// =============================================================================
-static uint64_t g_canaryFrame = 0;
-
-static void mkxp_glCanary() {
-    // 只在前 40 个 present 内生效（避免长期干扰引擎渲染）
-    if (g_canaryFrame >= 40) return;
-    ++g_canaryFrame;
-    int phase = (int)(g_canaryFrame / 4) % 2;
-
-    // 1) 读出引擎当前绑定的 FBO 与 viewport（不改变状态）
-    GLint curFb = 0, vp[4] = {0,0,0,0};
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &curFb);
-    glGetIntegerv(GL_VIEWPORT, vp);
-
-    // 2) 在【当前 FBO】中心读一点像素，看引擎到底画了什么
-    GLubyte pxFbo[4] = {0,0,0,0}, pxDef[4] = {0,0,0,0};
-    if (vp[2] > 4 && vp[3] > 4)
-        glReadPixels(vp[2]/2, vp[3]/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pxFbo);
-
-    // 3) 给【当前 FBO】与 default FB(0) 都写 canary 色（覆盖引擎可能呈现任一个的情况）
-    glViewport(0, 0, vp[2], vp[3]);
-    glClearColor(phase ? 0.0f : 1.0f, 0.0f, phase ? 1.0f : 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, 896, 414);
-    glClearColor(phase ? 0.0f : 1.0f, 0.0f, phase ? 1.0f : 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    GLint vp0[4] = {0,0,0,0};
-    glGetIntegerv(GL_VIEWPORT, vp0);
-    glReadPixels(vp0[2]/2, vp0[3]/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pxDef);
-    glBindFramebuffer(GL_FRAMEBUFFER, curFb);   // 还原
-
-    fprintf(stderr,
-        "[ios-embed] glcanary: frame=%llu phase=%s curFb=%d curVp=%dx%d defVp=%dx%d "
-        "enginePx=%d,%d,%d,%d defPx=%d,%d,%d,%d err=%d\n",
-        (unsigned long long)g_canaryFrame, phase ? "BLUE" : "RED",
-        curFb, vp[2], vp[3], vp0[2], vp0[3],
-        pxFbo[0], pxFbo[1], pxFbo[2], pxFbo[3],
-        pxDef[0], pxDef[1], pxDef[2], pxDef[3],
-        (int)glGetError());
 }
 
 extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
     if (!win) return;
     SDL_SysWMinfo wm;
     SDL_VERSION(&wm.version);
-    if (!SDL_GetWindowWMInfo(win, &wm)) {
-        fprintf(stderr, "[ios-embed] SDL_GetWindowWMInfo failed: %s\n", SDL_GetError());
-        return;
-    }
-    if (wm.subsystem != SDL_SYSWM_UIKIT) {
-        fprintf(stderr, "[ios-embed] subsystem=%d not UIKit\n", (int)wm.subsystem);
+    if (!SDL_GetWindowWMInfo(win, &wm) || wm.subsystem != SDL_SYSWM_UIKIT) {
+        fprintf(stderr, "[ios-embed] embedIntoView: not UIKit subsystem\n");
         return;
     }
     UIWindow *sdlWin = (UIWindow *)wm.info.uikit.window;
     if (!sdlWin) { fprintf(stderr, "[ios-embed] sdlWin nil\n"); return; }
-    fprintf(stderr, "[ios-embed] embedIntoView(show path): win=%p scene=%p\n",
+    g_win = win;
+    fprintf(stderr, "[ios-embed] embedIntoView: win=%p scene=%p\n",
             (void *)sdlWin, (void *)sdlWin.windowScene);
-    mkxp_installPresentHook();
-    // canary 在 initGL 之后才有效（GL 上下文已建）——推迟 1s 武装，避开建窗前的 present
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ g_canaryArmed = true; });
-    if ([NSThread isMainThread]) {
-        mkxp_show(sdlWin, 0);
-    } else {
-        dispatch_async(dispatch_get_main_queue(), ^{ mkxp_show(sdlWin, 0); });
-    }
-    // 遮挡关系可视化：给每个可见 window 贴不同色块（6s），截图即可看出谁挡住了谁。
-    //   SDL 窗口=绿(0.9) / level≈10 的 Flutter 辅助窗口=红 / level>2000 浮层=黄
-    dispatch_async(dispatch_get_main_queue(), ^{
-        for (UIWindow *w in UIApplication.sharedApplication.windows) {
-            if (w.isHidden) continue;
-            BOOL isSDL = (w == sdlWin);
-            BOOL isOver = (w.windowLevel > 2000);
-            UIColor *col = isSDL ? [UIColor colorWithRed:0 green:0.9 blue:0.2 alpha:0.9]
-                         : isOver ? [UIColor colorWithRed:1 green:0.85 blue:0 alpha:0.9]
-                         : [UIColor colorWithRed:1 green:0 blue:0 alpha:0.9];
-            UIView *m = [[UIView alloc] initWithFrame:w.bounds];
-            m.backgroundColor = col;
-            m.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            m.tag = 0x5ADE;
-            [w addSubview:m];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                for (UIView *s in [w.subviews copy]) {
-                    if (s.tag == 0x5ADE) [s removeFromSuperview];
-                }
-            });
-        }
+
+    if ([NSThread isMainThread]) mkxp_show(sdlWin);
+    else dispatch_async(dispatch_get_main_queue(), ^{ mkxp_show(sdlWin); });
+
+    // 延迟置顶绿块：0.8s 后 SDL 的 GL view 已挂上，把绿块置顶——若窗口在合成链上必可见，
+    // 否则说明 SDL 窗口根本没被合成（被 Flutter 黑底盖住）。4s 后移除。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *m = [[UIView alloc] initWithFrame:sdlWin.bounds];
+        m.backgroundColor = [UIColor colorWithRed:0.0 green:0.9 blue:0.2 alpha:1.0];
+        m.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [sdlWin addSubview:m];
+        [sdlWin bringSubviewToFront:m];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [m removeFromSuperview]; });
     });
-    // 0.5s 后二次上屏（等 SDL 内部对 window 的后续处理与 key 竞争稳定下来）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ mkxp_show(sdlWin, 1); });
-    // 复查：SDL 事件循环启动后可能把窗口重新隐藏。2s/5s 各打一次状态，并强制拉回。
+
+    // 2s/5s 复查：SDL 事件循环是否事后隐藏窗口
     for (NSNumber *d in @[ @2.0, @5.0 ]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d.doubleValue * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             fprintf(stderr, "[ios-embed] recheck@%.0fs: hidden=%d key=%d frame=%s alpha=%.2f\n",
                     d.doubleValue, sdlWin.isHidden, sdlWin.isKeyWindow,
                     NSStringFromCGRect(sdlWin.frame).UTF8String, (double)sdlWin.alpha);
-            if (sdlWin.isHidden) {
-                sdlWin.hidden = NO;
-                [sdlWin makeKeyAndVisible];
-                fprintf(stderr, "[ios-embed] recheck: window was hidden by SDL, re-shown\n");
-            }
         });
     }
 }
 
-// 宿主注入已废弃（官方路径不需要搬视图），保留空实现防止旧 IPA 链接报 undefined。
 extern "C" void mkxp_ios_setHostView(void *view) {
-    (void)view;
-    fprintf(stderr, "[ios-embed] setHostView ignored (官方路径)\n");
+    g_hostView = (__bridge UIView *)(view);
+    fprintf(stderr, "[ios-embed] setHostView=%p\n", view);
 }
