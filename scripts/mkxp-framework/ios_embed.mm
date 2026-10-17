@@ -41,11 +41,20 @@ static void (*g_origRBS)(id, SEL, NSUInteger, id);
 static uint64_t g_presentOK = 0, g_presentFail = 0, g_presentTotal = 0;
 static bool g_reportedDrawable = false;
 
+// CALayer 没有 .view；UIView 根 layer 的 delegate 就是该 UIView。
+// delegate 是 unsafe_unretained，取用时需判类型（drawable 刚绑定，view 必存活）。
+static UIView *mkxp_layerOwner(CALayer *layer) {
+    if (!layer) return nil;
+    id d = layer.delegate;
+    if ([d isKindOfClass:[UIView class]]) return (UIView *)d;
+    return nil;
+}
+
 static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id drawable) {
     CALayer *layer = (CALayer *)drawable;
     if (!g_reportedDrawable && layer != nil) {
         fprintf(stderr, "[ios-embed] GL drawable bound: layer=%p ownerView=%p\n",
-                (void *)layer, (void *)layer.view);
+                (void *)layer, (void *)mkxp_layerOwner(layer));
         g_reportedDrawable = true;
         g_drawableLayer = layer;
         // GL view 已绑定；若宿主已注入，立即搬运；否则等 setHostView 时补搬
@@ -70,7 +79,7 @@ static void mkxp_installHooks() {
     static bool done = false;
     if (done) return;
     done = true;
-    Method m = class_getInstanceMethod([EAGLContext class], @selector(presentRenderbuffer:)];
+    Method m = class_getInstanceMethod([EAGLContext class], @selector(presentRenderbuffer:));
     g_origPresent = (BOOL (*)(id, SEL, NSUInteger))method_getImplementation(m);
     method_setImplementation(m, (IMP)swz_presentRenderbuffer);
     Method mr = class_getInstanceMethod([EAGLContext class],
@@ -101,7 +110,7 @@ static void mkxp_doRepin() {
         if (!g_hostView) { fprintf(stderr, "[ios-embed] repin: host nil\n"); return; }
         if (!g_drawableLayer) { fprintf(stderr, "[ios-embed] repin: no drawable yet\n"); return; }
 
-        UIView *glView = g_drawableLayer.view;
+        UIView *glView = mkxp_layerOwner(g_drawableLayer);
         if (!glView) {
             // layer.view 拿不到时，从 SDL 窗口树里递归找
             SDL_SysWMinfo wm;
