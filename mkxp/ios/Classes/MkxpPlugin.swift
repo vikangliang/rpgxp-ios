@@ -75,7 +75,8 @@ class MkxpMethodHandler: NSObject {
       MkxpLog.append("[launch] 调 mkxp_run(\(path))")
       let rc = MkxpBridge.run(gamePath: path)
       if rc == 0 {
-        MkxpTouchOverlay.shared.show()   // M2 阶段二：引擎起后展示原生触摸浮层
+        MkxpTouchOverlay.shared.show()       // 原生触摸浮层（SDL 窗口之上）
+        MkxpTouchOverlay.shared.showLoading() // “启动中”HUD（引擎出首帧自动收起）
         result(nil)
       } else {
         result(FlutterError(code: "runFailed",

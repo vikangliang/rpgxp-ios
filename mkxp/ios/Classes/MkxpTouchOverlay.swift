@@ -22,6 +22,67 @@ final class MkxpTouchOverlay: NSObject {
   private var menuButton: UIButton?
   private var controlsHidden = false
 
+  /// 启动加载 HUD：必须画在 SDL 引擎窗口（level 1999）【之上】——引擎窗口
+  /// 创建后立刻以纯黑盖住 Flutter，Flutter 侧的加载提示根本看不见。
+  private var loadingWindow: UIWindow?
+  private var loadingTimer: Timer?
+
+  // MARK: - 加载 HUD
+
+  /// 引擎启动时展示“加载中”HUD（幂等）；引擎出首帧后自动收起。
+  func showLoading() {
+    guard loadingWindow == nil else { return }
+    let scene = (UIApplication.shared.connectedScenes
+      .first { $0.activationState == .foregroundActive } as? UIWindowScene)
+      ?? (UIApplication.shared.connectedScenes.first as? UIWindowScene)
+    guard let scene else { return }
+    let screen = scene.screen.bounds
+    let size = CGSize(width: 156, height: 116)
+    let win = UIWindow(windowScene: scene)
+    win.windowLevel = 2005   // 高于 SDL 引擎窗口(1999)与触摸浮层
+    win.backgroundColor = .clear
+    let vc = UIViewController()
+    vc.view.backgroundColor = .clear
+    let box = UIView(frame: CGRect(
+        x: (screen.width - size.width) / 2,
+        y: (screen.height - size.height) / 2,
+        width: size.width, height: size.height))
+    box.backgroundColor = UIColor(white: 0.07, alpha: 0.86)
+    box.layer.cornerRadius = 18
+    let spinner = UIActivityIndicatorView(style: .large)
+    spinner.color = .white
+    spinner.frame = CGRect(x: (size.width - 37) / 2, y: 22, width: 37, height: 37)
+    spinner.startAnimating()
+    let label = UILabel(frame: CGRect(x: 0, y: 66, width: size.width, height: 22))
+    label.text = "正在启动游戏…"
+    label.textColor = UIColor(white: 1, alpha: 0.85)
+    label.font = .systemFont(ofSize: 14, weight: .medium)
+    label.textAlignment = .center
+    box.addSubview(spinner)
+    box.addSubview(label)
+    vc.view.addSubview(box)
+    win.rootViewController = vc
+    win.isHidden = false
+    loadingWindow = win
+
+    // 轮询引擎首帧；60 秒兜底超时自动收起
+    var waited: TimeInterval = 0
+    loadingTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] t in
+      waited += 0.3
+      if MkxpBridge.firstFrameShown() || waited >= 60 {
+        t.invalidate()
+        self?.hideLoading()
+      }
+    }
+  }
+
+  func hideLoading() {
+    loadingTimer?.invalidate()
+    loadingTimer = nil
+    loadingWindow?.isHidden = true
+    loadingWindow = nil
+  }
+
   // MARK: - 生命周期
 
   /// 引擎启动后调用：创建并展示浮层（幂等）。
@@ -60,7 +121,10 @@ final class MkxpTouchOverlay: NSObject {
     win.makeKeyAndVisible()
   }
 
-  func hide() { window?.isHidden = true }
+  func hide() {
+    window?.isHidden = true
+    hideLoading()
+  }
 
   /// 切换整体可见性（同时恢复 key window 到 Flutter，避免遮挡返回手势）。
   func toggle() {

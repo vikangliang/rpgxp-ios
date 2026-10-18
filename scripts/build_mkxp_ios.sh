@@ -337,9 +337,11 @@ if [ -f "$MKXP_SRC/binding/binding-mri.cpp" ]; then
 fi
 
 # iOS 兼容 shim（引擎适配，不动游戏工程）：
-#  1) 游戏脚本在 Kernel 上定义的方法自动提升为 module_function——RGSS 允许
-#     Kernel.pbXxx 显式接收者调用，MRI 严格私有语义报
-#     "private method `pbShowCommands' called for module Kernel"（宝可梦sp 实测）；
+#  1) 顶层 def（实际落在 Object 上）自动以“委托 main 对象”的方式提升为 Kernel
+#     单例方法——RGSS 允许 Kernel.pbXxx 显式接收者调用（宝可梦sp 的 Modular
+#     Title Screen 等多处），MRI 严格私有语义报
+#     "private method `pbShowCommands' called for module Kernel"（实测）；
+#     同时保留 module Kernel 内 def -> module_function 的钩子；
 #  2) getPlayTime 对 Audio/BGM 返回 -1——Modular Title Screen 依它计算“曲末重启”
 #     （pbBGMStop + 视口压暗 51 帧 = “BGM 重启 + 画面闪一下”），mkxp 下时长算不准。
 # 钩子在游戏脚本执行【前】装好，经 method_added 在方法定义完成时即时生效。
@@ -349,33 +351,43 @@ p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
 anchor = "    while (true) {\n        for (long i = 0; i < scriptCount; ++i) {"
 shim = '''    /* iOS compat hook (engine adaptation; game project untouched):
-     * Kernel methods defined by game scripts become module functions (RGSS
-     * semantics; MRI raises NoMethodError on `Kernel.pbXxx` otherwise), and
-     * getPlayTime returns -1 for BGM so Modular Title Screen's restart-on-track-
-     * end logic stays dormant (it restarts BGM + fades viewport under mkxp). */
+     * - top-level `def` (lands on Object as private) becomes reachable as
+     *   Kernel.pbXxx by delegating to the toplevel `main` object;
+     * - `def` inside `module Kernel` becomes a module function;
+     * - getPlayTime returns -1 for BGM so Modular Title Screen's
+     *   restart-on-track-end stays dormant under mkxp. */
     static const char mkxpIosHook[] =
+        "$__mkxp_main = self\\n"
+        "class << Object\\n"
+        "  def method_added(m)\\n"
+        "    return if $__mkxp_busy\\n"
+        "    $__mkxp_busy = true\\n"
+        "    begin\\n"
+        "      if m == :getPlayTime\\n"
+        "        orig = instance_method(:getPlayTime)\\n"
+        "        define_method(:getPlayTime) do |file|\\n"
+        "          return -1 if file.to_s.start_with?('Audio/BGM')\\n"
+        "          orig.bind(self).call(file)\\n"
+        "        end\\n"
+        "      elsif m != :method_added\\n"
+        "        k = ::Kernel\\n"
+        "        unless k.respond_to?(m)\\n"
+        "          main = $__mkxp_main\\n"
+        "          k.define_singleton_method(m) { |*args, &blk| main.send(m, *args, &blk) }\\n"
+        "        end\\n"
+        "      end\\n"
+        "    rescue StandardError\\n"
+        "    ensure\\n"
+        "      $__mkxp_busy = false\\n"
+        "    end\\n"
+        "  end\\n"
+        "end\\n"
         "class << Kernel\\n"
         "  def method_added(m)\\n"
         "    begin; Kernel.send(:module_function, m); rescue StandardError; end\\n"
         "  end\\n"
         "end\\n"
-        "class << Object\\n"
-        "  def method_added(m)\\n"
-        "    return unless m == :getPlayTime\\n"
-        "    return if @__mkxp_wrapping\\n"
-        "    @__mkxp_wrapping = true\\n"
-        "    begin\\n"
-        "      orig = instance_method(:getPlayTime)\\n"
-        "      define_method(:getPlayTime) do |file|\\n"
-        "        return -1 if file.to_s.start_with?('Audio/BGM')\\n"
-        "        orig.bind(self).call(file)\\n"
-        "      end\\n"
-        "    rescue StandardError\\n"
-        "    ensure\\n"
-        "      @__mkxp_wrapping = false\\n"
-        "    end\\n"
-        "  end\\n"
-        "end\\n";
+        "$stderr.puts '[mkxp-ios] compat hooks installed (toplevel def -> Kernel, getPlayTime BGM=-1)'\\n";
     evalString(newStringUTF8(mkxpIosHook, sizeof(mkxpIosHook) - 1),
                newStringUTF8("mkxp_ios_hook.rb", 16), NULL);
 
@@ -383,9 +395,60 @@ shim = '''    /* iOS compat hook (engine adaptation; game project untouched):
 if anchor in s and "mkxpIosHook" not in s:
     s = s.replace(anchor, shim + anchor, 1)
     open(p, 'w', encoding='utf-8').write(s)
-    print("patched binding-mri.cpp: iOS compat hook (Kernel module_function + getPlayTime BGM=-1)")
+    print("patched binding-mri.cpp: iOS compat hook v2 (toplevel def -> Kernel delegate + getPlayTime BGM=-1)")
 else:
     print("binding-mri.cpp: anchor missing or already patched (ok)")
+PYEOF
+
+# iOS 兼容：Windows 游戏把“大小写不敏感”当理所当然（如 Modular Title Screen 会把
+# 叠层文件名 upcase 成 OVERLAYS/SCROLLING001），iOS 文件系统区分大小写：
+#   - FileSystem::exists 走 PHYSFS_exists（敏感）→ pbResolveBitmap 判否 →
+#     插件 fallback 到错误的 overlay.png（红色图案被拉伸全屏 = “满屏红线”）；
+#   - openReadRaw（音频等）同样敏感。
+# 修法：两者先经 desensitize()（pathCache 小写->实际名映射，mkxp-z 自带）再查。
+python3 - "$MKXP_SRC/src/filesystem/filesystem.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old_exists = "bool FileSystem::exists(const char *filename) {\n  return PHYSFS_exists(normalize(filename, false, false).c_str());\n}"
+new_exists = ("bool FileSystem::exists(const char *filename) {\n"
+              "  std::string nm = normalize(filename, false, false);\n"
+              "  if (PHYSFS_exists(nm.c_str()))\n"
+              "    return true;\n"
+              "  /* iOS engine adaptation: games written on Windows take case-\"\n"
+              "   * insensitivity for granted (plugin code may upcase filenames);\n"
+              "   * resolve via the pathCache lower->actual mapping when possible. */\n"
+              "  if (p->havePathCache) {\n"
+              "    std::string lower = nm;\n"
+              "    for (size_t i = 0; i < lower.size(); ++i)\n"
+              "      lower[i] = tolower(lower[i]);\n"
+              "    if (p->pathCache.contains(lower))\n"
+              "      return PHYSFS_exists(p->pathCache[lower].c_str());\n"
+              "  }\n"
+              "  return false;\n"
+              "}")
+old_raw = "PHYSFS_File *handle = PHYSFS_openRead(normalize(filename, 0, 0).c_str());"
+new_raw = ("std::string nm_raw = normalize(filename, 0, 0);\n"
+           "  if (p->havePathCache && !PHYSFS_exists(nm_raw.c_str())) {\n"
+           "    std::string lower = nm_raw;\n"
+           "    for (size_t i = 0; i < lower.size(); ++i)\n"
+           "      lower[i] = tolower(lower[i]);\n"
+           "    if (p->pathCache.contains(lower))\n"
+           "      nm_raw = p->pathCache[lower];\n"
+           "  }\n"
+           "  PHYSFS_File *handle = PHYSFS_openRead(nm_raw.c_str());")
+changed = False
+if old_exists in s:
+    s = s.replace(old_exists, new_exists, 1)
+    changed = True
+if old_raw in s:
+    s = s.replace(old_raw, new_raw, 1)
+    changed = True
+if changed:
+    open(p, 'w', encoding='utf-8').write(s)
+    print("patched filesystem.cpp: case-insensitive exists/openReadRaw via pathCache")
+else:
+    print("filesystem.cpp: anchors missing or already patched (ok)")
 PYEOF
 
 # ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
