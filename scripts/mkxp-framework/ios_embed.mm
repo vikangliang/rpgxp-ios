@@ -170,6 +170,18 @@ static void mkxp_softPresent()
         }
     }
     if (dumpImg) {
+        /* 红线诊断：统计“偏红”像素（R>180 且 R-G>80 且 R-B>80），量化红线的体量，
+         * 判断是否随帧变化（稳定=游戏画的；变化=残留/抖动）。 */
+        uint32_t reddish = 0;
+        for (int y = 0; y < sh; ++y) {
+            const uint8_t *row = g_softBuf + (size_t)y * stride;
+            for (int x = 0; x < sw; ++x) {
+                uint8_t R = row[x * 4], G = row[x * 4 + 1], B = row[x * 4 + 2];
+                if (R > 180 && (int)R - G > 80 && (int)R - B > 80) ++reddish;
+            }
+        }
+        fprintf(stderr, "[ios-embed] red-ish px=%u / %d  (frame #%llu)\n",
+                reddish, sw * sh, (unsigned long long)g_softFrames);
         mkxp_dumpSceneToDoc(dumpImg, g_softFrames);
         CFRelease(dumpImg);
     }

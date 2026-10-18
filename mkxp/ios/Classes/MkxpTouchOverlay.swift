@@ -42,10 +42,12 @@ final class MkxpTouchOverlay: NSObject {
     win.rootViewController = vc
 
     let root = vc.view!
-    root.isUserInteractionEnabled = false   // 游戏区触摸穿透到下层 SDL 窗口
-    let ctl = UIView(frame: root.bounds)
+    // 注意：父视图 isUserInteractionEnabled=false 会连子视图一起禁掉（UIKit 陷阱），
+    // 导致所有按钮收不到触摸——之前“按键全无反应”就是它。故 root 必须开启交互，
+    // 空白区域穿透交给 ctl 的 hitTest 覆写（命中自身时返回 nil，让触摸落到下层 SDL 窗口）。
+    root.isUserInteractionEnabled = true
+    let ctl = MkxpPassthroughView(frame: root.bounds)
     ctl.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-    ctl.isUserInteractionEnabled = true
     root.addSubview(ctl)
     controlsView = ctl
 
@@ -188,5 +190,14 @@ final class MkxpTouchOverlay: NSObject {
     b.layer.borderColor = UIColor(white: 1, alpha: 0.25).cgColor
     b.clipsToBounds = true
     return b
+  }
+}
+
+/// 穿透视图：命中自身（即空白区域）时返回 nil，让触摸落到下层 SDL 窗口；
+/// 命中子按钮（方向键/动作键）时正常返回按钮。解决“按钮收不到触摸”。
+final class MkxpPassthroughView: UIView {
+  override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+    let v = super.hitTest(point, with: event)
+    return v === self ? nil : v
   }
 }
