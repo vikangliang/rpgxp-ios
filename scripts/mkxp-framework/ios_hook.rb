@@ -8,16 +8,34 @@ $__mkxp_resolve = lambda do |s|
   cached = $__mkxp_rcache[str]
   next cached if cached
   # 精灵 charset 解析探针："？"精灵 = check_graphic_file 全候选失败回退
-  # Graphics/Characters/Followers/000.png。这里记录真实设备上每条 charset
-  # 路径的 File.exist? 真值——直接区分"文件缺失(导入丢文件)"与"判定链路故障"。
-  if $__mkxp_probe < 16 && str.index("Characters/")
+  # Graphics/Characters/Followers/000.png。逐步复现 orig pbGetFileChar 的每一步，
+  # 失败在哪一环当场打出（rgssad 分支 / FileTest / File.open+异常类）。
+  if $__mkxp_probe < 40 &&
+     (str.index("Characters/Followers") || str.index("Characters/Swimming") ||
+      str.index("Characters/Levitates"))
     $__mkxp_probe += 1
-    ex = begin
-      File.exist?(str)
-    rescue StandardError
-      :err
+    detail = begin
+      if FileTest.exist?("./Game.rgssad")
+        "rgssad=YES(load_data branch)"
+      elsif !FileTest.exist?(str)
+        "FileTest=false"
+      else
+        begin
+          f = File.open(str, "rb")
+          c = begin
+            f.read(1)
+          ensure
+            f.close
+          end
+          "open_ok char=#{c.inspect}"
+        rescue StandardError => e
+          "open_fail #{e.class}: #{e.message}"
+        end
+      end
+    rescue StandardError => e
+      "probe_err #{e.class}: #{e.message}"
     end
-    $stderr.puts "[mkxp-fs] probe##{$__mkxp_probe} exist=#{ex} '#{str}'"
+    $stderr.puts "[mkxp-fs] probe##{$__mkxp_probe} fds=#{(Dir.children('/dev/fd').size rescue -1)} #{detail} '#{str}'"
   end
   resolved = begin
     if File.exist?(str)
