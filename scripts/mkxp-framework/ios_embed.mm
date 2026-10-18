@@ -57,8 +57,9 @@ static atomic_int g_firstFrameShown = 0;
 /* 生命周期：App 进后台时为 1，软呈现据此跳过 GL 工作 */
 static volatile sig_atomic_t g_appBackgrounded = 0;
 
-/* 供桥接层查询（MkxpPlugin "engineReady"） */
-int mkxp_ios_firstFrameShown(void) { return atomic_load(&g_firstFrameShown); }
+/* 供桥接层查询（MkxpPlugin "engineReady"）。extern "C"：本文件是 ObjC++，
+ * 不加会被 C++ 改名，Swift 按纯 C 符号链接会报 Undefined symbol。 */
+extern "C" int mkxp_ios_firstFrameShown(void) { return atomic_load(&g_firstFrameShown); }
 
 /* 场景快照落盘：无 Mac 环境下定位“画面内容对不对”的铁证。
  * 在 Documents/scene_dump_N.png 生成 PNG，Flutter 日志页可直接查看/分享。 */
