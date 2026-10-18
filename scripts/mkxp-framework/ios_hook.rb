@@ -97,22 +97,43 @@ class << Object
     return if $__mkxp_busy
     $__mkxp_busy = true
     begin
+      # 包装一律替换 Object 的【实例】方法（顶层 def 的真实落点），
+      # 使 main 上下文与类上下文的所有调用都被拦截；此前定义在
+      # Object 单例类上的包装只拦截类上下文调用，是覆盖不全的根子。
       if m == :getPlayTime
-        orig = instance_method(:getPlayTime)
-        define_method(:getPlayTime) do |file|
+        orig = ::Object.instance_method(:getPlayTime)
+        ::Object.send(:define_method, :getPlayTime) do |file|
           return -1 if file.to_s.start_with?("Audio/BGM")
           orig.bind(self).call(file)
         end
       elsif m == :pbGetFileChar
-        orig = instance_method(:pbGetFileChar)
+        # 根治"？"精灵：真机日志证明设备上 File.exist? 判定完全正确，但 orig
+        # pbGetFileChar 对存在的文件仍返回 nil（根因由逐步探针继续定位）。
+        # 兜底：orig 失败但文件确实存在（File.file? 排除目录）→ 返回 truthy
+        # 占位字节。pbGetFileChar 只被用于存在性判定（pbTryString/pbRgssExists?），
+        # "1" 与真实首字节等价。
+        orig = ::Object.instance_method(:pbGetFileChar)
         res = $__mkxp_resolve
-        define_method(:pbGetFileChar) do |file|
-          orig.bind(self).call(res.call(file))
+        ::Object.send(:define_method, :pbGetFileChar) do |file|
+          r = res.call(file)
+          ret = orig.bind(self).call(r)
+          if nil_or_empty?(ret)
+            exists = begin
+              File.file?(r)
+            rescue StandardError
+              false
+            end
+            if exists
+              $stderr.puts "[mkxp-fs] pbGetFileChar bypass: orig=nil but file exists '#{r}'"
+              return "1"
+            end
+          end
+          ret
         end
       elsif m == :pbTryString
-        orig2 = instance_method(:pbTryString)
+        orig2 = ::Object.instance_method(:pbTryString)
         res2 = $__mkxp_resolve
-        define_method(:pbTryString) do |x|
+        ::Object.send(:define_method, :pbTryString) do |x|
           r = res2.call(x)
           ret = orig2.bind(self).call(r)
           next nil_or_empty?(ret) ? nil : r
@@ -120,8 +141,8 @@ class << Object
       elsif m == :ow_sprite_filename
         # VOWE/跟随精灵的图名解析（顶层 def）。"？"精灵=它回退到 000.png。
         # 包一层：凡命中 000 回退就打出物种/形态/性别/闪光度——失败现场直出。
-        orig3 = instance_method(:ow_sprite_filename)
-        define_method(:ow_sprite_filename) do |*args, &blk|
+        orig3 = ::Object.instance_method(:ow_sprite_filename)
+        ::Object.send(:define_method, :ow_sprite_filename) do |*args, &blk|
           r = orig3.bind(self).call(*args, &blk)
           if r.to_s.include?("000.png")
             $stderr.puts "[mkxp-ow] '?' fallback! species=#{args[2].inspect} " \
@@ -130,6 +151,38 @@ class << Object
           end
           r
         end
+      elsif m == :pbResolveBitmap
+        # 第二层兜底：orig 全候选失败时，用自研逐段解析器直接判
+        # （设备探针已证明 File.exist?+Dir.children 可靠）。charset 名常被
+        # 以"裸名"（不含 Graphics/Characters/ 前缀）传入，一并补前缀重试。
+        origR = ::Object.instance_method(:pbResolveBitmap)
+        resR = $__mkxp_resolve
+        ::Object.send(:define_method, :pbResolveBitmap) do |x|
+          ret = origR.bind(self).call(x)
+          next ret unless nil_or_empty?(ret)
+          s = x.to_s
+          roots = [s]
+          roots << ("Graphics/Characters/" + s) unless s.start_with?("Graphics/")
+          found = nil
+          roots.each do |cand|
+            [".png", ".gif"].each do |ext|
+              rr = resR.call(cand + ext)
+              next if nil_or_empty?(rr)
+              exists = begin
+                File.file?(rr)
+              rescue StandardError
+                false
+              end
+              if exists
+                $stderr.puts "[mkxp-fs] pbResolveBitmap bypass hit: '#{cand + ext}'"
+                found = rr
+                break
+              end
+            end
+            break if found
+          end
+          found
+        end
       elsif m != :method_added
         k = ::Kernel
         unless k.respond_to?(m)
@@ -137,7 +190,8 @@ class << Object
           k.define_singleton_method(m) { |*args, &blk| main.send(m, *args, &blk) }
         end
       end
-    rescue StandardError
+    rescue StandardError => e
+      $stderr.puts "[mkxp-ios] hook wrap error for #{m.inspect}: #{e.class}"
     ensure
       $__mkxp_busy = false
     end
@@ -148,4 +202,10 @@ class << Kernel
     begin; Kernel.send(:module_function, m); rescue StandardError; end
   end
 end
-$stderr.puts "[mkxp-ios] compat hooks v6 installed (charset probe + ow_sprite_filename fallback log)"
+begin
+  rgssad = FileTest.exist?("./Game.rgssad") ? "YES" : "no"
+  pwd = (Dir.pwd rescue "??")
+  $stderr.puts "[mkxp-ios] compat hooks v7 installed (pbGetFileChar/pbResolveBitmap bypass, charset probe, ow fallback log) cwd=#{pwd} rgssad=#{rgssad}"
+rescue StandardError => e
+  $stderr.puts "[mkxp-ios] compat hooks v7 installed (banner detail failed: #{e.class})"
+end
