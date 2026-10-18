@@ -39,7 +39,7 @@ final class MkxpTouchOverlay: NSObject {
     let screen = scene.screen.bounds
     let size = CGSize(width: 156, height: 116)
     let win = UIWindow(windowScene: scene)
-    win.windowLevel = 2005   // 高于 SDL 引擎窗口(1999)与触摸浮层
+    win.windowLevel = UIWindow.Level(rawValue: 2005)   // 高于 SDL 引擎窗口(1999)与触摸浮层
     win.backgroundColor = .clear
     let vc = UIViewController()
     vc.view.backgroundColor = .clear
