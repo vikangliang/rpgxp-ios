@@ -357,7 +357,7 @@ if old2 in s:
     changed = True
 if changed:
     if '#include <cstdio>' not in s:
-        s = s.replace('#include <ruby/thread.h>', '#include <ruby/thread.h>\n#include <cstdio>', 1)
+        s = s.replace('#include "audio.h"', '#include <cstdio>\n#include "audio.h"', 1)
     open(p, 'w', encoding='utf-8').write(s)
     print("patched audio-binding.cpp: bgm_play/bgm_stop diagnostics")
 else:
