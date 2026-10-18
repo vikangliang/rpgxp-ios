@@ -96,11 +96,10 @@ int mkxp_run(const char *gamePath)
      * 接管 UIApplication。必须在 SDL_Init 之前调用（任意线程均可）。 */
     SDL_SetMainReady();
 
-    /* SDL uikit 窗口允许的朝向：游戏运行期锁定横屏（引擎自建窗口即画面载体）。
-     * 横屏由 Dart 游戏页 SystemChrome.setPreferredOrientations(横屏) 把整个
-     * Flutter scene 转横屏，本 SDL 窗口随 scene 同为横屏，不再有“竖屏框里挤 4:3”。
-     * 菜单/库/设置页仍竖屏（引擎未运行，不受此 hint 影响）。 */
-    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+    /* SDL uikit 窗口允许的朝向：全朝向放开，实际横竖由 Flutter scene 决定
+     * （游戏页按设置 SystemChrome 锁横屏或跟随设备旋转，SDL 窗口随 scene 走）。
+     * 写死单一朝向会导致"设置选竖屏/系统解锁旋转也不生效"。 */
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait LandscapeLeft LandscapeRight");
 
     /* Ruby GC 调优（iOS 无 JIT，Ruby 只能纯解释执行）：Essentials 启动期要
      * 解释 1MB 脚本并定义上万对象（宝可梦/技能/道具…），默认 GC 阈值会触发

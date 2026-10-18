@@ -31,11 +31,17 @@ class _GameRunPageState extends State<GameRunPage> {
   Future<void> _start() async {
     final settings = await AppSettings.load();
     await Mkxp.setKeepAwake(settings.keepAwake);
-    // 进游戏：先让 Flutter scene 转横屏（否则原生 requestGeometryUpdate 会被
-    // main.dart 的全局竖屏锁拒绝，SDL 窗口仍是竖屏→4:3 被挤成竖着）。
+    // 进游戏：先让 Flutter scene 转到目标方向（否则原生 requestGeometryUpdate 会被
+    // main.dart 的全局竖屏锁拒绝）。开"固定横屏"锁横屏；关则跟随设备旋转。
     if (settings.lockLandscape) {
       await SystemChrome.setPreferredOrientations(
           [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+    } else {
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
     }
     await Mkxp.setOrientation(settings.lockLandscape);
     await AppSettings.touchLastPlayed(widget.game.name);

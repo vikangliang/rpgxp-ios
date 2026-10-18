@@ -79,6 +79,18 @@ jobs:
           done
           $PB -c "Print :UISupportedInterfaceOrientations" "$PLIST" | tee -a /tmp/ios-build.log
 
+      # 后台音频：熄屏/切后台时 BGM 不被 iOS 挂起中断（否则进程被杀，
+      # 回前台后引擎整个重启、BGM 从头播——即“bgm 永远播不完”）。
+      - name: Enable background audio
+        run: |
+          set -eo pipefail
+          PB=/usr/libexec/PlistBuddy
+          PLIST=ios/Runner/Info.plist
+          $PB -c "Add :UIBackgroundModes array" "$PLIST" 2>/dev/null || true
+          $PB -c "Add :UIBackgroundModes:0 string audio" "$PLIST" 2>/dev/null \
+            || $PB -c "Set :UIBackgroundModes:0 audio" "$PLIST"
+          $PB -c "Print :UIBackgroundModes" "$PLIST" | tee -a /tmp/ios-build.log
+
       # 取本次提交的 build-mkxp 产物 MKXP.framework，放到插件目录供 pod 链接。
       # workflow_run 触发时用触发运行的 id（同一次提交的框架）；
       # 手动触发（workflow_dispatch）时退而求其次取最近一次成功。
