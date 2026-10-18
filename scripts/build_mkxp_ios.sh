@@ -264,6 +264,7 @@ EOF
           echo "== 改用 ar 追加重合并 =="
           cp -f "$RUBY_A" /tmp/ruby_backup.a
           ar -qc "$RUBY_A" zlib_ext.o 2>/dev/null || true
+          ranlib "$RUBY_A" 2>/dev/null || true
           if nm "$RUBY_A" 2>/dev/null | grep -q "Init_zlib"; then
             echo "ar 追加后 Init_zlib: OK"
           else
