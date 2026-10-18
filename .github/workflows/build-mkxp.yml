@@ -38,7 +38,9 @@ jobs:
           brew --version
 
       - name: Build MKXP.framework
-        run: bash scripts/build_mkxp_ios.sh
+        run: |
+          set -o pipefail
+          bash scripts/build_mkxp_ios.sh 2>&1 | tee build-mkxp.log
 
       - name: Upload MKXP.framework
         if: always()
