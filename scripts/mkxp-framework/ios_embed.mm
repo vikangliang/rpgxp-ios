@@ -346,24 +346,30 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
      * 旋转时触发 'commit command buffer with uncommitted encoder' SIGABRT
      * （= 来回旋转闪退 / BGM+画面突然重启，2026-10-18 日志两次同址崩溃实锤）。 */
     BOOL ok = g_origPresent(self, _cmd, target);
+    double presentMs = CFAbsoluteTimeGetCurrent() - hookT0;
 
-    if (!rotateFrame)
+    double softMs = 0;
+    if (!rotateFrame) {
+        double t1 = CFAbsoluteTimeGetCurrent();
         mkxp_softPresent();
+        softMs = CFAbsoluteTimeGetCurrent() - t1;
+    }
 
-    /* 帧耗时统计：present(EAGL 提交+vsync 等待) + 读回 + 拷贝的总开销。
-     * 卡顿定性数据——avg 看 CPU 占用，max 看尖峰（尖峰>16.6ms 才是真掉帧）。 */
+    /* 帧耗时统计：avg 看占用，max 看尖峰；present 与软呈现分开归因
+     * （尖峰 >16.6ms = 真掉帧；present 尖峰= EAGL/CA 争用，soft 尖峰= 读回停顿）。 */
     {
-        static double s_acc = 0;
-        static double s_max = 0;
+        static double s_acc = 0, s_max = 0, s_pmax = 0, s_smax = 0;
         static int s_n = 0;
         double dt = CFAbsoluteTimeGetCurrent() - hookT0;
         s_acc += dt;
         if (dt > s_max) s_max = dt;
+        if (presentMs > s_pmax) s_pmax = presentMs;
+        if (softMs > s_smax) s_smax = softMs;
         if (++s_n >= 600) {
-            fprintf(stderr, "[ios-embed] present-hook avg %.2f ms, max %.2f ms (n=600)\n",
-                    s_acc / s_n * 1000.0, s_max * 1000.0);
-            s_acc = 0;
-            s_max = 0;
+            fprintf(stderr,
+                    "[ios-embed] hook avg %.2f max %.2f | present max %.2f | soft max %.2f ms (n=600)\n",
+                    s_acc / s_n * 1000.0, s_max * 1000.0, s_pmax * 1000.0, s_smax * 1000.0);
+            s_acc = 0; s_max = 0; s_pmax = 0; s_smax = 0;
             s_n = 0;
         }
     }

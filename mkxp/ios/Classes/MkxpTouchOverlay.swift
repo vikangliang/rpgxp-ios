@@ -278,6 +278,7 @@ final class MkxpDpadView: UIView {
   private let step: CGFloat = 66     // 键中心距
   private let radius: CGFloat = 31
   private var held: Set<Int32> = []
+  private var heldOrder: [Int32] = []   // 按下顺序（最近按下优先保留）
   /// 本视图上仍活动的触摸（自维护）。不能用 event.allTouches：
   /// 已 ended 的触摸 location 依然有效，计入会把键永远卡在按下
   /// （表现为“最后点的方向一直自动走下去”、选项菜单上下失效）。
@@ -328,13 +329,23 @@ final class MkxpDpadView: UIView {
     refresh()
   }
 
-  /// 按当前活动触摸重算方向键状态（只增删差异键，避免重复发 down/up）。
+  /// 按当前活动触摸重算方向键状态。RGSS 只有 4 向移动（Input.dir4），双方向键
+  /// 同按会让 Game_Player 判定混乱（表现为“顶着障碍物时按新方向无法转向”），
+  /// 因此同一时刻【只保留一个方向】，且优先保留最近按下的那个。
   private func refresh() {
-    var want = Set<Int32>()
+    var candidates = Set<Int32>()
     for t in activeTouches {
-      want.formUnion(keysFor(point: t.location(in: self)))
+      candidates.formUnion(keysFor(point: t.location(in: self)))
     }
-    for k in held.subtracting(want) { MkxpBridge.key(Int(k), down: false) }
+    heldOrder = heldOrder.filter { candidates.contains($0) }
+    for k in candidates.sorted() where !heldOrder.contains(k) {
+      heldOrder.append(k)
+    }
+    var want: Set<Int32> = []
+    if let k = heldOrder.last {
+      want.insert(k)
+    }
+    for old in held.subtracting(want) { MkxpBridge.key(Int(old), down: false) }
     for k in want.subtracting(held) { MkxpBridge.key(Int(k), down: true) }
     held = want
   }

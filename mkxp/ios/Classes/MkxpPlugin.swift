@@ -7,6 +7,22 @@ import AVFAudio
 public class MkxpPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
     installCrashLogger()
+    installAudioResume()
+  }
+
+  /// 后台返回后 SDL/CoreAudio 的会话常被系统重置（实测：切出再回来 BGM+音效全无），
+  /// 前台恢复时重新激活 AVAudioSession 兜底。
+  private static func installAudioResume() {
+    NotificationCenter.default.addObserver(
+        forName: UIApplication.willEnterForegroundNotification,
+        object: nil, queue: .main) { _ in
+      do {
+        try AVAudioSession.sharedInstance().setActive(true)
+        MkxpLog.append("[audio] foreground: AVAudioSession reactivated")
+      } catch {
+        MkxpLog.append("[audio] foreground reactivate failed: \(error)")
+      }
+    }
 
     let channel = FlutterMethodChannel(name: "com.yourapp.mkxp",
                                         binaryMessenger: registrar.messenger())
