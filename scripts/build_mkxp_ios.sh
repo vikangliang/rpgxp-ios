@@ -384,6 +384,7 @@ if anchor in s and "mkxpIosHook" not in s:
     print("patched binding-mri.cpp: raw-string hook v5 (from ios_hook.rb)")
 else:
     print("binding-mri.cpp: anchor missing or already patched (ok)")
+PYEOF
 
 # iOS 兼容：Windows 游戏把“大小写不敏感”当理所当然（如 Modular Title Screen 会把
 # 叠层文件名 upcase 成 OVERLAYS/SCROLLING001），iOS 文件系统区分大小写：
