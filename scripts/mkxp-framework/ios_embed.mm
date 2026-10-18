@@ -38,11 +38,12 @@ extern "C" void mkxp_ios_getScene(GLuint *tex, GLuint *fbo, int *sw, int *sh,
 
 /* ===================== 软呈现 =====================
  *   1) 从场景 FBO 用 glReadPixels 读回像素（FBO 回读实测可用）；
- *   2) 行翻转后包成 CGImage（CFData 拷贝一份，避免缓冲复用导致撕裂）；
- *   3) 主线程交给满屏 UIImageView(ScaleAspectFit) 显示，自动 4:3 居中留黑边。 */
+ *   2) 直接管原始行序包成 CGImage（CFData 拷贝一份，避免缓冲复用导致撕裂）。
+ *      注意【不做行翻转】：mkxp 渲染进 FBO 时已用翻转投影补偿 RGSS 左上角
+ *      坐标系（它自己上屏时由 metaBlitBufferFlippedScaled 再翻一次），
+ *      所以 readback 的行序恰好就是显示行序；真机实测再翻一次会上下颠倒。 */
 static UIImageView *g_softView = nil;
-static uint8_t *g_softBuf = NULL;    // 读回缓冲（GL 行序：下->上）
-static uint8_t *g_softFlip = NULL;   // 翻转后（上->下，CGImage 需要）
+static uint8_t *g_softBuf = NULL;    // 读回缓冲（行序 = 显示行序，见上）
 static int g_softW = 0, g_softH = 0;
 static uint64_t g_softFrames = 0;
 
@@ -102,13 +103,11 @@ static void mkxp_softPresent()
 
     if (sw != g_softW || sh != g_softH) {
         free(g_softBuf);
-        free(g_softFlip);
         g_softW = sw;
         g_softH = sh;
         g_softBuf = (uint8_t *)malloc((size_t)sw * sh * 4);
-        g_softFlip = (uint8_t *)malloc((size_t)sw * sh * 4);
     }
-    if (!g_softBuf || !g_softFlip) return;
+    if (!g_softBuf) return;
 
     GLint prevFbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
@@ -126,16 +125,13 @@ static void mkxp_softPresent()
         return;
     }
 
-    /* 行翻转：GL 原点左下，CGImage 原点左上 */
+    /* 不翻转：readback 行序即显示行序（见文件头说明） */
     size_t stride = (size_t)sw * 4;
-    for (int y = 0; y < sh; ++y)
-        memcpy(g_softFlip + (size_t)y * stride,
-               g_softBuf + (size_t)(sh - 1 - y) * stride, stride);
 
     /* 场景快照（不受跳过逻辑影响，保证准时落盘） */
     CGImageRef dumpImg = NULL;
     {
-        CFDataRef dd = CFDataCreate(NULL, g_softFlip, (CFIndex)(stride * (size_t)sh));
+        CFDataRef dd = CFDataCreate(NULL, g_softBuf, (CFIndex)(stride * (size_t)sh));
         if (dd) {
             CGDataProviderRef dp = CGDataProviderCreateWithCFData(dd);
             CFRelease(dd);
@@ -156,12 +152,12 @@ static void mkxp_softPresent()
 
     /* 内容没变就不重建 CGImage / 不上屏（画面几乎全是静态时显著降负载） */
     static uint32_t s_lastHash = 0;
-    uint32_t hsh = mkxp_hashScene(g_softFlip, sw, sh);
+    uint32_t hsh = mkxp_hashScene(g_softBuf, sw, sh);
     if (hsh == s_lastHash) return;
     s_lastHash = hsh;
 
-    /* 用 CFData 拷贝一份，避免后续复用 g_softFlip 影响正在显示的图像 */
-    CFDataRef data = CFDataCreate(NULL, g_softFlip, (CFIndex)(stride * (size_t)sh));
+    /* 用 CFData 拷贝一份，避免后续复用 g_softBuf 影响正在显示的图像 */
+    CFDataRef data = CFDataCreate(NULL, g_softBuf, (CFIndex)(stride * (size_t)sh));
     if (!data) return;
     CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
     CFRelease(data);
