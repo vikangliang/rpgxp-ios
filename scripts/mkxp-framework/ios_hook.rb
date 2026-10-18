@@ -1,11 +1,24 @@
 $__mkxp_main = self
 $__mkxp_rcache = {}
 $__mkxp_miss = {}
+$__mkxp_probe = 0
 $__mkxp_resolve = lambda do |s|
   str = s.to_s
   next str if str.empty?
   cached = $__mkxp_rcache[str]
   next cached if cached
+  # 精灵 charset 解析探针："？"精灵 = check_graphic_file 全候选失败回退
+  # Graphics/Characters/Followers/000.png。这里记录真实设备上每条 charset
+  # 路径的 File.exist? 真值——直接区分"文件缺失(导入丢文件)"与"判定链路故障"。
+  if $__mkxp_probe < 16 && str.index("Characters/")
+    $__mkxp_probe += 1
+    ex = begin
+      File.exist?(str)
+    rescue StandardError
+      :err
+    end
+    $stderr.puts "[mkxp-fs] probe##{$__mkxp_probe} exist=#{ex} '#{str}'"
+  end
   resolved = begin
     if File.exist?(str)
       str
@@ -86,6 +99,19 @@ class << Object
           ret = orig2.bind(self).call(r)
           next nil_or_empty?(ret) ? nil : r
         end
+      elsif m == :ow_sprite_filename
+        # VOWE/跟随精灵的图名解析（顶层 def）。"？"精灵=它回退到 000.png。
+        # 包一层：凡命中 000 回退就打出物种/形态/性别/闪光度——失败现场直出。
+        orig3 = instance_method(:ow_sprite_filename)
+        define_method(:ow_sprite_filename) do |*args, &blk|
+          r = orig3.bind(self).call(*args, &blk)
+          if r.to_s.include?("000.png")
+            $stderr.puts "[mkxp-ow] '?' fallback! species=#{args[2].inspect} " \
+                         "form=#{args[3].inspect} gender=#{args[4].inspect} " \
+                         "shiny=#{args[5].inspect} -> '#{r}'"
+          end
+          r
+        end
       elsif m != :method_added
         k = ::Kernel
         unless k.respond_to?(m)
@@ -104,4 +130,4 @@ class << Kernel
     begin; Kernel.send(:module_function, m); rescue StandardError; end
   end
 end
-$stderr.puts "[mkxp-ios] compat hooks v5 installed"
+$stderr.puts "[mkxp-ios] compat hooks v6 installed (charset probe + ow_sprite_filename fallback log)"
