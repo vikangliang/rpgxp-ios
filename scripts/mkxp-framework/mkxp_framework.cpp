@@ -137,8 +137,25 @@ void mkxp_key(int rgssKey, int down)
         std::lock_guard<std::mutex> _(g_buttonToScancodeMtx);
         auto it = g_buttonToScancode.find(rgssKey);
         if (it == g_buttonToScancode.end())
+        {
+            /* 诊断：映射表空/未命中时打日志（“虚拟按键全无反应”的定性证据） */
+            static int missLogged = 0;
+            if (missLogged < 4)
+            {
+                ++missLogged;
+                fprintf(stderr, "[mkxp-key] MISS rgssKey=%d (mapSize=%zu)\n",
+                        rgssKey, g_buttonToScancode.size());
+            }
             return;
+        }
         scan = it->second;
+    }
+
+    static int hitLogged = 0;
+    if (hitLogged < 4)
+    {
+        ++hitLogged;
+        fprintf(stderr, "[mkxp-key] HIT rgssKey=%d scan=0x%x\n", rgssKey, (unsigned)scan);
     }
 
     SDL_Event e;

@@ -291,10 +291,23 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
     if (n % 600 == 1)
         mkxp_logMemoryFootprint(n);
 
-    /* 软呈现：把场景 FBO 的内容交给 UIImageView 显示（唯一有效的出图路径） */
-    mkxp_softPresent();
+    /* 旋转当帧（drawable 尺寸与上帧不同）跳过读回，让 EAGL 重建 drawable 后先稳定 */
+    static int s_lastW = 0, s_lastH = 0;
+    int dw = g_drawW, dh = g_drawH;
+    BOOL rotateFrame = (dw != s_lastW || dh != s_lastH);
+    s_lastW = dw;
+    s_lastH = dh;
 
-    return g_origPresent(self, _cmd, target);
+    /* 先让 EAGL 完成它自己的提交（present），【之后】再做软呈现读回。
+     * 之前读回插在 present 之前，会把 EAGL( Metal 后端)的 encoder 周期搅乱，
+     * 旋转时触发 'commit command buffer with uncommitted encoder' SIGABRT
+     * （= 来回旋转闪退 / BGM+画面突然重启，2026-10-18 日志两次同址崩溃实锤）。 */
+    BOOL ok = g_origPresent(self, _cmd, target);
+
+    if (!rotateFrame)
+        mkxp_softPresent();
+
+    return ok;
 }
 
 /* 生命周期：App 进后台时跳过我们的 GL 读回/显示（mkxp 自身也会 haltThreads，

@@ -18,7 +18,6 @@ final class MkxpTouchOverlay: NSObject {
 
   private var window: UIWindow?
   private var controlsView: UIView?
-  private var joystick: MkxpJoystickView?
   private var actionButtons: [UIButton] = []
   private var menuButton: UIButton?
   private var controlsHidden = false
@@ -50,7 +49,7 @@ final class MkxpTouchOverlay: NSObject {
     root.addSubview(ctl)
     controlsView = ctl
 
-    buildJoystick(in: ctl, root: root)
+    buildDpad(in: ctl)
     buildActionButtons(in: ctl, root: root)
     buildMenuButton(in: ctl, root: root)
 
@@ -78,17 +77,30 @@ final class MkxpTouchOverlay: NSObject {
 
   // MARK: - 控件构建
 
-  private func buildJoystick(in ctl: UIView, root: UIView) {
-    let size: CGFloat = 168
-    let h = max(root.bounds.height, UIScreen.main.bounds.height)
-    let joy = MkxpJoystickView(frame: CGRect(
-      x: 22, y: h - size - 28, width: size, height: size))
-    joy.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
-    joy.onDirectionChange = { [weak self] dir in
-      self?.applyDirection(dir)
+  /// 十字四向方向键（替代圆环摇杆）：上下左右 4 个圆形玻璃键，按下/抬起发 RGSS 键码。
+  private func buildDpad(in ctl: UIView) {
+    let d: CGFloat = 62          // 单键直径
+    let step = d + 4             // 键中心距
+    let cx: CGFloat = 118        // 十字中心 x（左侧偏下，少挡画面）
+    let h = max(ctl.bounds.height, UIScreen.main.bounds.height)
+    let cy = h - 170             // 十字中心 y
+    let items: [(String, Int32, CGRect)] = [
+      ("▲", KEY_UP,    CGRect(x: cx - d/2,          y: cy - step - d/2, width: d, height: d)),
+      ("▼", KEY_DOWN,  CGRect(x: cx - d/2,          y: cy + step - d/2, width: d, height: d)),
+      ("◀", KEY_LEFT,  CGRect(x: cx - step - d/2,   y: cy - d/2,        width: d, height: d)),
+      ("▶", KEY_RIGHT, CGRect(x: cx + step - d/2,   y: cy - d/2,        width: d, height: d)),
+    ]
+    for (label, key, frame) in items {
+      let b = makeGlassButton(title: label)
+      b.frame = frame
+      b.titleLabel?.font = .systemFont(ofSize: 20, weight: .bold)
+      b.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
+      b.addTarget(self, action: #selector(actionDown(_:)), for: .touchDown)
+      b.addTarget(self, action: #selector(actionUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+      b.tag = Int(key)
+      ctl.addSubview(b)
+      actionButtons.append(b)
     }
-    ctl.addSubview(joy)
-    joystick = joy
   }
 
   private func buildActionButtons(in ctl: UIView, root: UIView) {
@@ -133,22 +145,6 @@ final class MkxpTouchOverlay: NSObject {
 
   // MARK: - 交互
 
-  private var currentDir: String = ""
-  private func applyDirection(_ dir: String) {
-    if dir == currentDir { return }
-    if !currentDir.isEmpty { MkxpBridge.key(Int(keyFor(currentDir)), down: false) }
-    currentDir = dir
-    if !currentDir.isEmpty { MkxpBridge.key(Int(keyFor(currentDir)), down: true) }
-  }
-  private func keyFor(_ dir: String) -> Int32 {
-    switch dir {
-    case "up": return KEY_UP
-    case "down": return KEY_DOWN
-    case "left": return KEY_LEFT
-    default: return KEY_RIGHT
-    }
-  }
-
   @objc private func actionDown(_ s: UIButton) { MkxpBridge.key(s.tag, down: true) }
   @objc private func actionUp(_ s: UIButton)   { MkxpBridge.key(s.tag, down: false) }
 
@@ -192,71 +188,5 @@ final class MkxpTouchOverlay: NSObject {
     b.layer.borderColor = UIColor(white: 1, alpha: 0.25).cgColor
     b.clipsToBounds = true
     return b
-  }
-}
-
-/// 圆环方向摇杆：半透明深色圆环 + 中心圆点，拖动算 8 向、取主方向（4 向主导）。
-final class MkxpJoystickView: UIView {
-  var onDirectionChange: ((String) -> Void)?
-
-  private let ring = CAShapeLayer()
-  private let knob = UIView()
-  private var centerPoint: CGPoint { CGPoint(x: bounds.midX, y: bounds.midY) }
-  private let deadZone: CGFloat = 18
-
-  override init(frame: CGRect) {
-    super.init(frame: frame)
-    backgroundColor = .clear
-    isUserInteractionEnabled = true
-
-    ring.fillColor = UIColor(white: 1, alpha: 0.06).cgColor
-    ring.strokeColor = UIColor(white: 1, alpha: 0.18).cgColor
-    ring.lineWidth = 2
-    layer.addSublayer(ring)
-
-    knob.backgroundColor = UIColor(white: 1, alpha: 0.22)
-    knob.layer.cornerRadius = 26
-    knob.frame = CGRect(x: 0, y: 0, width: 52, height: 52)
-    knob.center = centerPoint
-    addSubview(knob)
-
-    let pan = UIPanGestureRecognizer(target: self, action: #selector(pan(_:)))
-    addGestureRecognizer(pan)
-  }
-  required init?(coder: NSCoder) { fatalError() }
-
-  override func layoutSubviews() {
-    super.layoutSubviews()
-    let r = min(bounds.width, bounds.height) / 2 - 6
-    ring.path = UIBezierPath(ovalIn: CGRect(x: bounds.midX - r, y: bounds.midY - r,
-                                            width: r * 2, height: r * 2)).cgPath
-    knob.center = centerPoint
-  }
-
-  @objc private func pan(_ g: UIPanGestureRecognizer) {
-    let p = g.location(in: self)
-    var off = CGPoint(x: p.x - centerPoint.x, y: p.y - centerPoint.y)
-    let dist = hypot(off.x, off.y)
-    let maxR = min(bounds.width, bounds.height) / 2 - knob.frame.width / 2
-    if dist > maxR { off = CGPoint(x: off.x / dist * maxR, y: off.y / dist * maxR) }
-    knob.center = CGPoint(x: centerPoint.x + off.x, y: centerPoint.y + off.y)
-
-    if g.state == .ended || g.state == .cancelled {
-      knob.center = centerPoint
-      onDirectionChange?("")
-      return
-    }
-    if dist < deadZone {
-      onDirectionChange?("")
-      return
-    }
-    // 取主方向（轴投影更大的方向）
-    let dir: String
-    if abs(off.x) > abs(off.y) {
-      dir = off.x > 0 ? "right" : "left"
-    } else {
-      dir = off.y > 0 ? "down" : "up"   // 屏幕 y 向下 = Down
-    }
-    onDirectionChange?(dir)
   }
 }
