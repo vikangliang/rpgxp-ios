@@ -366,127 +366,24 @@ fi
 #  2) getPlayTime 对 Audio/BGM 返回 -1——Modular Title Screen 依它计算“曲末重启”
 #     （pbBGMStop + 视口压暗 51 帧 = “BGM 重启 + 画面闪一下”），mkxp 下时长算不准。
 # 钩子在游戏脚本执行【前】装好，经 method_added 在方法定义完成时即时生效。
-python3 - "$MKXP_SRC/binding/binding-mri.cpp" <<'PYEOF'
+python3 - "$MKXP_SRC/binding/binding-mri.cpp" "$ROOT/scripts/mkxp-framework/ios_hook.rb" <<'PYEOF'
 import sys
 p = sys.argv[1]
+ruby = open(sys.argv[2], encoding="utf-8").read()
 s = open(p, encoding='utf-8').read()
 anchor = "    while (true) {\n        for (long i = 0; i < scriptCount; ++i) {"
-shim = '''    /* iOS compat hook (engine adaptation; game project untouched):
-     * - top-level `def` (lands on Object as private) becomes reachable as
-     *   Kernel.pbXxx by delegating to the toplevel `main` object;
-     * - `def` inside `module Kernel` becomes a module function;
-     * - getPlayTime returns -1 for BGM so Modular Title Screen's
-     *   restart-on-track-end stays dormant under mkxp. */
-    static const char mkxpIosHook[] =
-        "$__mkxp_main = self\\n"
-        "$__mkxp_rcache = {}\\n"
-        "$__mkxp_miss = {}; $__mkxp_resolve = lambda do |s|\\n"
-        "  str = s.to_s\\n"
-        "  next str if str.empty?\\n"
-        "  cached = $__mkxp_rcache[str]\\n"
-        "  next cached if cached\\n"
-        "  resolved = begin\\n"
-        "    if File.exist?(str)\\n"
-        "      str\\n"
-        "    else\\n"
-        "      leading = str.start_with?('/') ? '/' : ''\\n"
-        "      acc = leading\\n"
-        "      ok = true\\n"
-        "      parts = str.split('/').reject { |p| p.empty? }\\n"
-        "      parts.each_with_index do |p, idx|\\n"
-        "        last = (idx >= parts.length - 1)\\n"
-        "        cand = acc + p\\n"
-        "        if File.exist?(cand)\\n"
-        "          acc = cand + (last ? '' : '/')\\n"
-        "        else\\n"
-        "          parent = (acc.empty? || acc == '/') ? '/' : acc.chomp('/')\\n"
-        "          parent = '.' if parent == ''\\n"
-        "          m = nil\\n"
-        "          begin\\n"
-        "            m = Dir.children(parent).find { |n| n.casecmp(p) == 0 || n.delete(' ').casecmp(p.delete(' ')) == 0 }\\n"
-        "          rescue StandardError\\n"
-        "            ok = false\\n"
-        "            break\\n"
-        "          end\\n"
-        "          if m.nil? && last && ['.gif', '.png', '.jpg', '.jpeg'].any? { |e| p.downcase.end_with?(e) }; base = p[0, p.rindex('.')]; ['png', 'gif', 'jpg', 'jpeg'].each { |ext| alt = base + '.' + ext; mm = Dir.children(parent).find { |n| n.casecmp(alt) == 0 || n.delete(' ').casecmp(alt.delete(' ')) == 0 }; if mm; m = mm; break; end }; end; if m.nil?\\n"
-        "            ok = false\\n"
-        "            break\\n"
-        "          end\\n"
-        "          acc += m + (last ? '' : '/')\\n"
-        "        end\\n"
-        "      end\\n"
-        "      if ok && !acc.empty?\\n"
-        "        acc\\n"
-        "      else\\n"
-        "        $__mkxp_miss[str] = ($__mkxp_miss[str] || 0) + 1\\n"
-        "        $stderr.puts '[mkxp-fs] miss: ' + str if $__mkxp_miss[str] == 1\\n"
-        "        str\\n"
-        "      end\\n"
-        "    end\\n"
-        "  rescue StandardError\\n"
-        "    str\\n"
-        "  end\\n"
-        "  $__mkxp_rcache[str] = resolved\\n"
-        "  resolved\\n"
-        "end\\n"
-        "class << Object\\n"
-        "  def method_added(m)\\n"
-        "    return if $__mkxp_busy\\n"
-        "    $__mkxp_busy = true\\n"
-        "    begin\\n"
-        "      if m == :getPlayTime\\n"
-        "        orig = instance_method(:getPlayTime)\\n"
-        "        define_method(:getPlayTime) do |file|\\n"
-        "          return -1 if file.to_s.start_with?('Audio/BGM')\\n"
-        "          orig.bind(self).call(file)\\n"
-        "        end\\n"
-        "      elsif m == :pbGetFileChar\\n"
-        "        orig = instance_method(:pbGetFileChar)\\n"
-        "        res = $__mkxp_resolve\\n"
-        "        define_method(:pbGetFileChar) do |file|\\n"
-        "          orig.bind(self).call(res.call(file))\\n"
-        "        end\\n"
-        "      elsif m == :pbTryString\\n"
-        "        # 关键：pbResolveBitmap 必须返回【磁盘上真实存在的路径】——扩展名互换\n"
-        "        # （.gif 请求命中 .png）后若仍返回请求路径，后续 AnimatedBitmap 加载\n"
-        "        # 会再次失败（表现为“连占位图都画不出来”）。\n"
-        "        orig2 = instance_method(:pbTryString)\\n"
-        "        res2 = $__mkxp_resolve\\n"
-        "        define_method(:pbTryString) do |x|\\n"
-        "          r = res2.call(x)\\n"
-        "          ret = orig2.bind(self).call(r)\\n"
-        "          next nil_or_empty?(ret) ? nil : r\\n"
-        "        end\\n"
-        "      elsif m != :method_added\\n"
-        "        k = ::Kernel\\n"
-        "        unless k.respond_to?(m)\\n"
-        "          main = $__mkxp_main\\n"
-        "          k.define_singleton_method(m) { |*args, &blk| main.send(m, *args, &blk) }\\n"
-        "        end\\n"
-        "      end\\n"
-        "    rescue StandardError\\n"
-        "    ensure\\n"
-        "      $__mkxp_busy = false\\n"
-        "    end\\n"
-        "  end\\n"
-        "end\\n"
-        "class << Kernel\\n"
-        "  def method_added(m)\\n"
-        "    begin; Kernel.send(:module_function, m); rescue StandardError; end\\n"
-        "  end\\n"
-        "end\\n"
-        "$stderr.puts '[mkxp-ios] compat hooks v3 installed (def->Kernel, getPlayTime, case-insensitive pbGetFileChar)'\\n";
-    evalString(newStringUTF8(mkxpIosHook, sizeof(mkxpIosHook) - 1),
-               newStringUTF8("mkxp_ios_hook.rb", 16), NULL);
-
-'''
+shim = (
+    "    /* iOS compat hook (engine adaptation; game project untouched) */\n"
+    '    static const char mkxpIosHook[] = R"HOOK(\n' + ruby + ')HOOK";\n'
+    "    evalString(newStringUTF8(mkxpIosHook, sizeof(mkxpIosHook) - 1),\n"
+    '               newStringUTF8("mkxp_ios_hook.rb", 16), NULL);\n'
+)
 if anchor in s and "mkxpIosHook" not in s:
     s = s.replace(anchor, shim + anchor, 1)
-    open(p, 'w', encoding='utf-8').write(s)
-    print("patched binding-mri.cpp: iOS compat hook v2 (toplevel def -> Kernel delegate + getPlayTime BGM=-1)")
+    open(p, "w", encoding="utf-8", newline="\n").write(s)
+    print("patched binding-mri.cpp: raw-string hook v5 (from ios_hook.rb)")
 else:
     print("binding-mri.cpp: anchor missing or already patched (ok)")
-PYEOF
 
 # iOS 兼容：Windows 游戏把“大小写不敏感”当理所当然（如 Modular Title Screen 会把
 # 叠层文件名 upcase 成 OVERLAYS/SCROLLING001），iOS 文件系统区分大小写：
