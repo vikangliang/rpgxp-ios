@@ -8,6 +8,14 @@ public class MkxpPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
     installCrashLogger()
     installAudioResume()
+
+    let channel = FlutterMethodChannel(name: "com.yourapp.mkxp",
+                                        binaryMessenger: registrar.messenger())
+    let handler = MkxpMethodHandler()
+    channel.setMethodCallHandler(handler.handle)
+
+    let factory = MkxpPlatformViewFactory(messenger: registrar.messenger())
+    registrar.register(factory, withId: "mkxp-game-view")
   }
 
   /// 后台返回后 SDL/CoreAudio 的会话常被系统重置（实测：切出再回来 BGM+音效全无），
@@ -23,14 +31,6 @@ public class MkxpPlugin: NSObject, FlutterPlugin {
         MkxpLog.append("[audio] foreground reactivate failed: \(error)")
       }
     }
-
-    let channel = FlutterMethodChannel(name: "com.yourapp.mkxp",
-                                        binaryMessenger: registrar.messenger())
-    let handler = MkxpMethodHandler()
-    channel.setMethodCallHandler(handler.handle)
-
-    let factory = MkxpPlatformViewFactory(messenger: registrar.messenger())
-    registrar.register(factory, withId: "mkxp-game-view")
   }
 }
 
