@@ -177,6 +177,7 @@ enum MkxpFileFix {
           CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
 
   static func normalize(_ dir: URL) {
+    ensureConfig(dir)
     let fm = FileManager.default
     guard let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
     var dirs: [URL] = []
@@ -194,6 +195,24 @@ enum MkxpFileFix {
                                 > $1.path.components(separatedBy: "/").count }) {
       fixName(url)
     }
+  }
+
+  /// 写入引擎配置（mkxp.json 从游戏目录读取）。仅在不存在时写，避免覆盖用户改动。
+  /// SESourceCount：真实 RGSS1 运行时的 SE 并发远多于 mkxp 默认的 6，
+  /// 密集战斗/事件时超出会被静默丢弃（表现为“音效偶尔缺失”）。
+  private static func ensureConfig(_ dir: URL) {
+    let path = dir.appendingPathComponent("mkxp.json")
+    let fm = FileManager.default
+    guard !fm.fileExists(atPath: path.path) else { return }
+    let json = """
+    {
+      "SESourceCount": 24,
+      "pathCache": true,
+      "winResizable": false
+    }
+    """
+    fm.createFile(atPath: path.path, contents: json.data(using: .utf8))
+    MkxpLog.append("[file-fix] mkxp.json written (SESourceCount=24)")
   }
 
   private static func fixName(_ url: URL) {
