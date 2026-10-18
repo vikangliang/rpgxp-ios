@@ -14,10 +14,16 @@ rescue StandardError
   # 日志永不影响主流程
 end
 $__mkxp_resolve = lambda do |s|
-  str = s.to_s
+  # 【根治】字符串对象所有权：本解析器返回的字符串绝不能与调用方共享。
+  # 此前 `str = s.to_s`（String 时返回自身）+ `next cached`（直接返回缓存对象），
+  # 而游戏代码会用 gsub! 原地改写返回值（VOWE/FollowingPkmn 的
+  # `fname.gsub!("Graphics/Characters/","")`）——缓存里存的值对象被原地改成
+  # 裸名，之后同一全路径的查询全部拿到被污染的裸名 → 判定失败 → "？"精灵。
+  # 现在统一：输入复制、缓存命中复制、返回复制。
+  str = s.to_s.dup
   next str if str.empty?
   cached = $__mkxp_rcache[str]
-  next cached if cached
+  next cached.dup if cached
   # 精灵 charset 解析探针："？"精灵 = check_graphic_file 全候选失败回退
   # Graphics/Characters/Followers/000.png。逐步复现 orig pbGetFileChar 的每一步，
   # 失败在哪一环当场打出（rgssad 分支 / FileTest / File.open+异常类）。
@@ -101,7 +107,7 @@ $__mkxp_resolve = lambda do |s|
     str
   end
   $__mkxp_rcache[str] = resolved
-  resolved
+  resolved.dup   # 返回副本：调用方的 gsub! 原地改写绝不波及缓存
 end
 class << Object
   def method_added(m)
@@ -246,7 +252,7 @@ end
 begin
   rgssad = FileTest.exist?("./Game.rgssad") ? "YES" : "no"
   pwd = (Dir.pwd rescue "??")
-  $stderr.puts "[mkxp-ios] compat hooks v7 installed (pbGetFileChar/pbResolveBitmap bypass, charset probe, ow fallback log) cwd=#{pwd} rgssad=#{rgssad}"
+  $stderr.puts "[mkxp-ios] compat hooks v8 installed (ROOT FIX: resolver string-ownership dup - game's gsub! on returned fname was mutating the shared cache object in place; + bypass, probes, cgf trace) cwd=#{pwd} rgssad=#{rgssad}"
 rescue StandardError => e
   $stderr.puts "[mkxp-ios] compat hooks v7 installed (banner detail failed: #{e.class})"
 end
