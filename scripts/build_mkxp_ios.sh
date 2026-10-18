@@ -336,6 +336,58 @@ if [ -f "$MKXP_SRC/binding/binding-mri.cpp" ]; then
   echo "patched binding-mri.cpp std::system -> 0 (unavailable on iOS)"
 fi
 
+# iOS 兼容 shim（引擎适配，不动游戏工程）：
+#  1) 游戏脚本在 Kernel 上定义的方法自动提升为 module_function——RGSS 允许
+#     Kernel.pbXxx 显式接收者调用，MRI 严格私有语义报
+#     "private method `pbShowCommands' called for module Kernel"（宝可梦sp 实测）；
+#  2) getPlayTime 对 Audio/BGM 返回 -1——Modular Title Screen 依它计算“曲末重启”
+#     （pbBGMStop + 视口压暗 51 帧 = “BGM 重启 + 画面闪一下”），mkxp 下时长算不准。
+# 钩子在游戏脚本执行【前】装好，经 method_added 在方法定义完成时即时生效。
+python3 - "$MKXP_SRC/binding/binding-mri.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+anchor = "    while (true) {\n        for (long i = 0; i < scriptCount; ++i) {"
+shim = '''    /* iOS compat hook (engine adaptation; game project untouched):
+     * Kernel methods defined by game scripts become module functions (RGSS
+     * semantics; MRI raises NoMethodError on `Kernel.pbXxx` otherwise), and
+     * getPlayTime returns -1 for BGM so Modular Title Screen's restart-on-track-
+     * end logic stays dormant (it restarts BGM + fades viewport under mkxp). */
+    static const char mkxpIosHook[] =
+        "class << Kernel\\n"
+        "  def method_added(m)\\n"
+        "    begin; Kernel.send(:module_function, m); rescue StandardError; end\\n"
+        "  end\\n"
+        "end\\n"
+        "class << Object\\n"
+        "  def method_added(m)\\n"
+        "    return unless m == :getPlayTime\\n"
+        "    return if @__mkxp_wrapping\\n"
+        "    @__mkxp_wrapping = true\\n"
+        "    begin\\n"
+        "      orig = instance_method(:getPlayTime)\\n"
+        "      define_method(:getPlayTime) do |file|\\n"
+        "        return -1 if file.to_s.start_with?('Audio/BGM')\\n"
+        "        orig.bind(self).call(file)\\n"
+        "      end\\n"
+        "    rescue StandardError\\n"
+        "    ensure\\n"
+        "      @__mkxp_wrapping = false\\n"
+        "    end\\n"
+        "  end\\n"
+        "end\\n";
+    evalString(newStringUTF8(mkxpIosHook, sizeof(mkxpIosHook) - 1),
+               newStringUTF8("mkxp_ios_hook.rb", 16), NULL);
+
+'''
+if anchor in s and "mkxpIosHook" not in s:
+    s = s.replace(anchor, shim + anchor, 1)
+    open(p, 'w', encoding='utf-8').write(s)
+    print("patched binding-mri.cpp: iOS compat hook (Kernel module_function + getPlayTime BGM=-1)")
+else:
+    print("binding-mri.cpp: anchor missing or already patched (ok)")
+PYEOF
+
 # ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
 # framework-entry.patch（git diff，LF 行尾）：
 #   1. src/main.cpp: int main() -> extern "C" int mkxp_z_main()
@@ -464,6 +516,8 @@ extern "C" {
 int mkxp_run(const char* gamePath);
 void mkxp_key(int rgssKey, int down);
 void mkxp_quit(void);
+// >0 = 引擎已把第一帧画面送上屏（Flutter 加载提示据此收起）
+int mkxp_ios_firstFrameShown(void);
 #ifdef __cplusplus
 }
 #endif

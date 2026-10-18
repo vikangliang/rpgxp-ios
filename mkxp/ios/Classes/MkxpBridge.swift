@@ -29,6 +29,11 @@ enum MkxpBridge {
     mkxp_quit()
   }
 
+  /// 引擎是否已把第一帧画面送上屏（Flutter 加载提示据此收起）。
+  static func firstFrameShown() -> Bool {
+    mkxp_ios_firstFrameShown() != 0
+  }
+
   /// 相对路径统一解析到 App 沙盒 Documents 下。
   static func resolve(_ path: String) -> String {
     if path.hasPrefix("/") { return path }

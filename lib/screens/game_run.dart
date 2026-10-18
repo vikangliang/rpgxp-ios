@@ -49,8 +49,12 @@ class _GameRunPageState extends State<GameRunPage> {
     try {
       await Mkxp.launchGame('games/${widget.game.name}');
       if (!mounted) return;
-      setState(() => _status = '运行中');
       _enteredAt = DateTime.now();
+      // 等引擎真正出首帧再收起“加载中”（Ruby 脚本引导需数秒，
+      // launch 一返回就隐藏会让用户面对长时间黑屏以为卡死）。
+      await Mkxp.waitForEngineReady();
+      if (!mounted) return;
+      setState(() => _status = '运行中');
     } catch (e) {
       if (!mounted) return;
       setState(() {

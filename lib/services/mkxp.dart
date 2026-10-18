@@ -58,6 +58,27 @@ class Mkxp {
     } catch (_) {}
   }
 
+  /// 引擎是否已上屏第一帧（原生侧软呈现首次成功出图后为 true）。
+  static Future<bool> engineReady() async {
+    try {
+      return await _ch.invokeMethod('engineReady') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 轮询等待引擎出首帧（加载提示用）。timeout 后放弃返回 false。
+  static Future<bool> waitForEngineReady(
+      {Duration interval = const Duration(milliseconds: 300),
+      Duration timeout = const Duration(seconds: 60)}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      if (await engineReady()) return true;
+      await Future.delayed(interval);
+    }
+    return false;
+  }
+
   /// rgssKey: RGSS 键码；down: true=按下 false=抬起
   static Future<void> sendKey(int rgssKey, bool down) async {
     try {

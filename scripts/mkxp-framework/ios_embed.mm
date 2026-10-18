@@ -52,8 +52,13 @@ static uint64_t g_softFrames = 0;
  * UIImage 更新 block 堆积（每个持 ~786KB → 几秒内存爆掉被系统 jetsam 杀）。
  * 主线程没处理完上一帧就不发新帧（丢弃），把上屏节奏交给主线程自身。 */
 static atomic_int g_softPending = 0;
+/* 首帧已上屏标志（供 Flutter 加载提示轮询：>0 = 引擎已出画面） */
+static atomic_int g_firstFrameShown = 0;
 /* 生命周期：App 进后台时为 1，软呈现据此跳过 GL 工作 */
 static volatile sig_atomic_t g_appBackgrounded = 0;
+
+/* 供桥接层查询（MkxpPlugin "engineReady"） */
+int mkxp_ios_firstFrameShown(void) { return atomic_load(&g_firstFrameShown); }
 
 /* 场景快照落盘：无 Mac 环境下定位“画面内容对不对”的铁证。
  * 在 Documents/scene_dump_N.png 生成 PNG，Flutter 日志页可直接查看/分享。 */
@@ -169,9 +174,12 @@ static void mkxp_softPresent()
             CGDataProviderRelease(dp);
         }
     }
-    if (dumpImg) {
-        /* 红线诊断：统计“偏红”像素（R>180 且 R-G>80 且 R-B>80），量化红线的体量，
-         * 判断是否随帧变化（稳定=游戏画的；变化=残留/抖动）。 */
+    /* 红线诊断只在快照时刻统计（与 dump 同帧号门控），避免每帧全图扫描 */
+    static const int dumpMarks[] = {42, 600, 3600, 10800};
+    static int dumpNext = 0;
+    bool dumpNow = (dumpNext < 4) && (int)g_softFrames >= dumpMarks[dumpNext];
+    if (dumpImg && dumpNow) {
+        /* 统计“偏红”像素（R>180 且 R-G>80 且 R-B>80），量化红线体量 */
         uint32_t reddish = 0;
         for (int y = 0; y < sh; ++y) {
             const uint8_t *row = g_softBuf + (size_t)y * stride;
@@ -180,9 +188,12 @@ static void mkxp_softPresent()
                 if (R > 180 && (int)R - G > 80 && (int)R - B > 80) ++reddish;
             }
         }
+        ++dumpNext;
         fprintf(stderr, "[ios-embed] red-ish px=%u / %d  (frame #%llu)\n",
                 reddish, sw * sh, (unsigned long long)g_softFrames);
         mkxp_dumpSceneToDoc(dumpImg, g_softFrames);
+        CFRelease(dumpImg);
+    } else if (dumpImg) {
         CFRelease(dumpImg);
     }
 
@@ -195,6 +206,7 @@ static void mkxp_softPresent()
     /* 合并：若上一帧还在主线程排队，跳过本帧（不碰 g_softDisp，避免覆盖在途帧）。
      * 这一步必须在 memcpy 之前，保证在途帧引用的 g_softDisp 不被改写。 */
     if (atomic_exchange(&g_softPending, 1) == 1) return;
+    atomic_store(&g_firstFrameShown, 1);   // 引擎已出画面（供加载提示收起）
 
     /* 复用显示缓冲：把读回像素拷进 g_softDisp，再用零拷贝 provider 引用它。
      * 全程不每帧分配 786KB，从根本上消除 phys_footprint 的持续增长（jetsam OOM 闪退）。 */
@@ -295,6 +307,11 @@ static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id dra
 }
 
 static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
+    /* 后台禁止一切 GPU 提交：iOS 会拒绝（kIOGPUCommandBufferCallbackError
+     * BackgroundExecutionNotPermitted），实测退后台瞬间刷出数百条
+     * GLDRendererMetal completion error 且伴随引擎清理期崩溃。 */
+    if (g_appBackgrounded) return YES;
+
     uint64_t n = ++g_presentTotal;
     if (n <= 3 || n % 600 == 1) {
         fprintf(stderr, "[ios-embed] present #%llu (drawablePx=%dx%d)\n",
@@ -331,12 +348,29 @@ static void mkxp_onAppLifecycle(NSNotificationName name) {
     } else if ([name isEqualToString:UIApplicationWillEnterForegroundNotification]) {
         g_appBackgrounded = 0;
         fprintf(stderr, "[ios-embed] lifecycle: willEnterForeground (恢复软呈现)\n");
+        fprintf(stderr, "[ios-embed] lifecycle: willEnterForeground (恢复软呈现)\n");
     }
+}
+
+/* UIWindow setHidden 后台保护：引擎清理期在后台调 SDL_DestroyWindow ->
+ * UIKit_HideWindow -> [UIWindow setHidden:YES]，iOS 的 FrontBoardServices 直接
+ * assert（SIGTRAP，2026-10-18 日志 signal=5 实锤）。后台时忽略藏窗请求即可。 */
+static void (*g_origUIWinSetHidden)(id, SEL, BOOL);
+static void mkxp_uiwinSetHidden(id self, SEL _cmd, BOOL hidden)
+{
+    if (hidden && g_appBackgrounded) return;
+    g_origUIWinSetHidden(self, _cmd, hidden);
 }
 
 __attribute__((constructor))
 static void mkxp_installHooksEarly() {
     mkxp_installCrashSignalHandlers();
+
+    Method uiwinHidden = class_getInstanceMethod([UIWindow class], @selector(setHidden:));
+    if (uiwinHidden) {
+        g_origUIWinSetHidden = (void (*)(id, SEL, BOOL))method_getImplementation(uiwinHidden);
+        method_setImplementation(uiwinHidden, (IMP)mkxp_uiwinSetHidden);
+    }
     [[NSNotificationCenter defaultCenter]
         addObserverForName:UIApplicationDidEnterBackgroundNotification
                     object:nil queue:nil

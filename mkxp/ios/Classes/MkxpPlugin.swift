@@ -119,6 +119,8 @@ class MkxpMethodHandler: NSObject {
       result(nil)
     case "clearLog":
       MkxpLog.clear(); result(nil)
+    case "engineReady":
+      result(MkxpBridge.firstFrameShown())
     default:
       result(FlutterMethodNotImplemented)
     }
