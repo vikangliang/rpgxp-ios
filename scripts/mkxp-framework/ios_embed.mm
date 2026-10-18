@@ -51,6 +51,8 @@ static uint64_t g_softFrames = 0;
  * UIImage 更新 block 堆积（每个持 ~786KB → 几秒内存爆掉被系统 jetsam 杀）。
  * 主线程没处理完上一帧就不发新帧（丢弃），把上屏节奏交给主线程自身。 */
 static atomic_int g_softPending = 0;
+/* 生命周期：App 进后台时为 1，软呈现据此跳过 GL 工作 */
+static volatile sig_atomic_t g_appBackgrounded = 0;
 
 /* 场景快照落盘：无 Mac 环境下定位“画面内容对不对”的铁证。
  * 在 Documents/scene_dump_N.png 生成 PNG，Flutter 日志页可直接查看/分享。 */
@@ -98,6 +100,9 @@ static uint32_t mkxp_hashScene(const uint8_t *flip, int w, int h)
 
 static void mkxp_softPresent()
 {
+    /* 后台时跳过一切 GL 读回/显示（避免后台 GPU 提交 + 省内存） */
+    if (g_appBackgrounded) return;
+
     GLuint tex = 0, fbo = 0;
     int sw = 0, sh = 0, ox = 0, oy = 0, ww = 0, wh = 0;
     mkxp_ios_getScene(&tex, &fbo, &sw, &sh, &ox, &oy, &ww, &wh);
@@ -284,9 +289,29 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
     return g_origPresent(self, _cmd, target);
 }
 
+/* 生命周期：App 进后台时跳过我们的 GL 读回/显示（mkxp 自身也会 haltThreads，
+ * 但双保险；同时记录事件，便于日志里判断“崩溃是不是后台被杀”）。 */
+static void mkxp_onAppLifecycle(NSNotificationName name) {
+    if ([name isEqualToString:UIApplicationDidEnterBackgroundNotification]) {
+        g_appBackgrounded = 1;
+        fprintf(stderr, "[ios-embed] lifecycle: didEnterBackground (停止软呈现 GPU 工作)\n");
+    } else if ([name isEqualToString:UIApplicationWillEnterForegroundNotification]) {
+        g_appBackgrounded = 0;
+        fprintf(stderr, "[ios-embed] lifecycle: willEnterForeground (恢复软呈现)\n");
+    }
+}
+
 __attribute__((constructor))
 static void mkxp_installHooksEarly() {
     mkxp_installCrashSignalHandlers();
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationDidEnterBackgroundNotification
+                    object:nil queue:nil
+                usingBlock:^(NSNotification *note){ mkxp_onAppLifecycle(note.name); }];
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationWillEnterForegroundNotification
+                    object:nil queue:nil
+                usingBlock:^(NSNotification *note){ mkxp_onAppLifecycle(note.name); }];
     Class cls = [EAGLContext class];
     Method m = class_getInstanceMethod(cls, @selector(renderbufferStorage:fromDrawable:));
     if (m) { g_origRBS = (void(*)(id,SEL,NSUInteger,id))method_getImplementation(m);
