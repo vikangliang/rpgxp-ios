@@ -51,7 +51,7 @@ static uint64_t g_softFrames = 0;
  * 在 Documents/scene_dump_N.png 生成 PNG，Flutter 日志页可直接查看/分享。 */
 static void mkxp_dumpSceneToDoc(CGImageRef cg, uint64_t frameNo)
 {
-    static const int marks[] = {40, 600, 3600, 10800};  // ≈0.7s/10s/60s/180s
+    static const int marks[] = {42, 600, 3600, 10800};  // ≈0.7s/10s/60s/180s（对齐 %3 节流）
     static const int nMarks = sizeof(marks) / sizeof(marks[0]);
     static int next = 0;
     if (next >= nMarks) return;
@@ -98,8 +98,10 @@ static void mkxp_softPresent()
     mkxp_ios_getScene(&tex, &fbo, &sw, &sh, &ox, &oy, &ww, &wh);
     if (!fbo || sw <= 0 || sh <= 0) return;
 
-    /* 每 2 帧更新一次，控制 CPU 开销（约 30fps） */
-    if ((++g_softFrames & 1) != 0) return;
+    /* 每 3 帧更新一次（约 20fps 显示），降低 glReadPixels 给引擎线程的
+     * 开销——读回过频会让游戏逻辑变慢（画面“速度不对”），并加剧内存压力。
+     * 游戏逻辑仍以 mkxp 自身帧率跑，仅显示层降频。 */
+    if ((++g_softFrames % 3) != 0) return;
 
     if (sw != g_softW || sh != g_softH) {
         free(g_softBuf);

@@ -63,6 +63,22 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print" ios/Runner/Info.plist \
             | grep -E "FileSharing|DocumentBrowser" | tee -a /tmp/ios-build.log
 
+      # 让 SDL 游戏窗口能切横屏（菜单页仍由 Flutter SystemChrome 锁竖屏）。
+      # 默认 Flutter Info.plist 只含竖屏，setOrientation(true) 请求横屏会被系统忽略。
+      - name: Allow landscape orientations
+        run: |
+          set -eo pipefail
+          PB=/usr/libexec/PlistBuddy
+          PLIST=ios/Runner/Info.plist
+          for key in UISupportedInterfaceOrientations UISupportedInterfaceOrientations~ipad; do
+            $PB -c "Delete :$key" "$PLIST" 2>/dev/null || true
+            $PB -c "Add :$key array" "$PLIST"
+            $PB -c "Add :$key:0 string UIInterfaceOrientationPortrait" "$PLIST"
+            $PB -c "Add :$key:1 string UIInterfaceOrientationLandscapeLeft" "$PLIST"
+            $PB -c "Add :$key:2 string UIInterfaceOrientationLandscapeRight" "$PLIST"
+          done
+          $PB -c "Print :UISupportedInterfaceOrientations" "$PLIST" | tee -a /tmp/ios-build.log
+
       # 取本次提交的 build-mkxp 产物 MKXP.framework，放到插件目录供 pod 链接。
       # workflow_run 触发时用触发运行的 id（同一次提交的框架）；
       # 手动触发（workflow_dispatch）时退而求其次取最近一次成功。

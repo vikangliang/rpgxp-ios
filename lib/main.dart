@@ -1,11 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'screens/import.dart';
 import 'screens/library.dart';
 import 'screens/log_view.dart';
 import 'screens/settings.dart';
 
-void main() => runApp(const RpgxpLoaderApp());
+void main() {
+  // 菜单/库/设置页锁竖屏；游戏运行页由原生 setOrientation 单独把 SDL 窗口切横屏。
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+  ]);
+  runApp(const RpgxpLoaderApp());
+}
 
 class RpgxpLoaderApp extends StatelessWidget {
   const RpgxpLoaderApp({super.key});
