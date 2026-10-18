@@ -672,18 +672,20 @@ new2 = ("RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127
         "    fprintf(stderr, \"[mkxp-audio] bgm_stop track=%d\\n\", track);\n"
         "    shState->audio().bgmStop(track);")
 changed = False
+# 回调定义必须先插（守卫以定义文本为准；调用点文本里也含 bgmEnumCb，不能用作守卫）
+if old_cb in s and 'static PHYSFS_EnumerateCallbackResult bgmEnumCb' not in s:
+    s = s.replace(old_cb, new_cb, 1)
+    changed = True
 if old in s:
     s = s.replace(old, new, 1)
     changed = True
 if old2 in s:
     s = s.replace(old2, new2, 1)
     changed = True
-if old_cb in s and 'bgmEnumCb' not in s:
-    s = s.replace(old_cb, new_cb, 1)
-    changed = True
 if changed:
     if '#include <cstdio>' not in s:
-        s = s.replace('#include "audio.h"', '#include <cstdio>\n#include <ctime>\n#include "audio.h"', 1)
+        s = s.replace('#include "audio.h"',
+                      '#include <cstdio>\n#include <ctime>\n#include <physfs.h>\n#include "filesystem.h"\n#include "audio.h"', 1)
     open(p, 'w', encoding='utf-8').write(s)
     print("patched audio-binding.cpp: bgm diagnostics v2 (exists/enumerate/dedupe)")
 else:
