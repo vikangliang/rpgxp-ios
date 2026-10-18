@@ -686,21 +686,17 @@ p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
 old = "    GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )"
 new = ("    {\n"
-       "      /* 快速重复去重：日志实测同一 BGM 在零点几秒内被连续调用 3-10 次，\n"
-       "       * 每次都重启混音通道（= BGM 时断时续 + 可感知卡顿）。 Essentials 在\n"
-       "       * ME 插播后恢复 BGM 的合法重播间隔都在秒级以上，0.5s 内的同名调用\n"
-       "       * 视为脚本冗余，直接跳过。 */\n"
-       "      static std::string s_lastBgm;\n"
-       "      static clock_t s_lastT = 0;\n"
-       "      clock_t nowC = clock();\n"
-       "      if (s_lastBgm == filename &&\n"
-       "          (double)(nowC - s_lastT) / CLOCKS_PER_SEC < 0.5) {\n"
-       "        fprintf(stderr, \"[mkxp-audio] skip duplicate bgm_play '%s'\\n\", filename);\n"
+       "      /* RGSS 语义：同一 BGM 重复 bgm_play 时【继续播放不重启】——PC 版 RGSS1\n"
+       "        * 引擎内置该行为（换地图同曲不换），mkxp 缺失导致每次切图/转移都重启\n"
+       "        * 混音通道（= BGM 反复重头 + 顿挫）。仅当 BGM 被 bgm_stop / bgm_fade\n"
+       "        * 显式终止后才允许重新播放。 */\n"
+       "      if (s_bgmActive && s_curBgm == filename) {\n"
+       "        fprintf(stderr, \"[mkxp-audio] continue same bgm '%s' (no restart)\\n\", filename);\n"
        "        return Qnil;\n"
        "      }\n"
-       "      s_lastBgm = filename;\n"
-       "      s_lastT = nowC;\n"
-       "      /* 注意带扩展名探测：音频后端内部会补 .ogg/.wav/.mp3，裸名查一定 miss */\n"
+       "      s_curBgm = filename;\n"
+       "      s_bgmActive = true;\n"
+       "      /* 带扩展名探测（音频后端内部补 .ogg/.wav/.mp3），仅诊断用 */\n"
        "      bool fex = shState->fileSystem().exists(filename)\n"
        "              || shState->fileSystem().exists((std::string(filename) + \".ogg\").c_str())\n"
        "              || shState->fileSystem().exists((std::string(filename) + \".wav\").c_str())\n"
@@ -715,7 +711,10 @@ new = ("    {\n"
        "    }\n"
        "    GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )")
 old_cb = "RB_METHOD(audio_bgmPlay)"
-new_cb = ("static PHYSFS_EnumerateCallbackResult bgmEnumCb(void *, const char *, const char *fname) {\n"
+new_cb = ("static std::string s_curBgm;\n"
+          "static bool s_bgmActive = false;\n"
+          "\n"
+          "static PHYSFS_EnumerateCallbackResult bgmEnumCb(void *, const char *, const char *fname) {\n"
           "  fprintf(stderr, \" %s\", fname);\n"
           "  return PHYSFS_ENUM_OK;\n"
           "}\n"
@@ -724,7 +723,25 @@ new_cb = ("static PHYSFS_EnumerateCallbackResult bgmEnumCb(void *, const char *,
 old2 = "RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127;\n    rb_get_args(argc, argv, \"|i\", &track RB_ARG_END);\n    shState->audio().bgmStop(track);"
 new2 = ("RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127;\n    rb_get_args(argc, argv, \"|i\", &track RB_ARG_END);\n"
         "    fprintf(stderr, \"[mkxp-audio] bgm_stop track=%d\\n\", track);\n"
+        "    s_curBgm.clear();\n"
+        "    s_bgmActive = false;\n"
         "    shState->audio().bgmStop(track);")
+old3 = ("RB_METHOD(audio_bgmFade)\n"
+        "{\n"
+        "    RB_UNUSED_PARAM;\n"
+        "    int time;\n"
+        "    int track = -127;\n"
+        "    rb_get_args(argc, argv, \"i|i\", &time, &track RB_ARG_END);\n"
+        "    shState->audio().bgmFade(time, track);")
+new3 = ("RB_METHOD(audio_bgmFade)\n"
+        "{\n"
+        "    RB_UNUSED_PARAM;\n"
+        "    int time;\n"
+        "    int track = -127;\n"
+        "    rb_get_args(argc, argv, \"i|i\", &time, &track RB_ARG_END);\n"
+        "    s_curBgm.clear();\n"
+        "    s_bgmActive = false;\n"
+        "    shState->audio().bgmFade(time, track);")
 changed = False
 # 回调定义必须先插（守卫以定义文本为准；调用点文本里也含 bgmEnumCb，不能用作守卫）
 if old_cb in s and 'static PHYSFS_EnumerateCallbackResult bgmEnumCb' not in s:
@@ -736,12 +753,15 @@ if old in s:
 if old2 in s:
     s = s.replace(old2, new2, 1)
     changed = True
+if old3 in s:
+    s = s.replace(old3, new3, 1)
+    changed = True
 if changed:
     if '#include <cstdio>' not in s:
         s = s.replace('#include "audio.h"',
-                      '#include <cstdio>\n#include <ctime>\n#include <physfs.h>\n#include "filesystem.h"\n#include "audio.h"', 1)
+                      '#include <cstdio>\n#include <physfs.h>\n#include "filesystem.h"\n#include "audio.h"', 1)
     open(p, 'w', encoding='utf-8').write(s)
-    print("patched audio-binding.cpp: bgm diagnostics v2 (exists/enumerate/dedupe)")
+    print("patched audio-binding.cpp: bgm RGSS continue-semantics + diagnostics")
 else:
     print("audio-binding.cpp: anchors missing or already patched (ok)")
 PYEOF
