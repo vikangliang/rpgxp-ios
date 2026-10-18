@@ -278,6 +278,10 @@ final class MkxpDpadView: UIView {
   private let step: CGFloat = 66     // 键中心距
   private let radius: CGFloat = 31
   private var held: Set<Int32> = []
+  /// 本视图上仍活动的触摸（自维护）。不能用 event.allTouches：
+  /// 已 ended 的触摸 location 依然有效，计入会把键永远卡在按下
+  /// （表现为“最后点的方向一直自动走下去”、选项菜单上下失效）。
+  private var activeTouches: Set<UITouch> = []
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -308,16 +312,27 @@ final class MkxpDpadView: UIView {
   }
   required init?(coder: NSCoder) { fatalError() }
 
-  override func touchesBegan(_ t: Set<UITouch>, with e: UIEvent?) { update(t) }
-  override func touchesMoved(_ t: Set<UITouch>, with e: UIEvent?) { update(t) }
-  override func touchesEnded(_ t: Set<UITouch>, with e: UIEvent?) { update(e?.allTouches ?? t) }
-  override func touchesCancelled(_ t: Set<UITouch>, with e: UIEvent?) { update(e?.allTouches ?? t) }
+  override func touchesBegan(_ t: Set<UITouch>, with e: UIEvent?) {
+    activeTouches.formUnion(t)
+    refresh()
+  }
+  override func touchesMoved(_ t: Set<UITouch>, with e: UIEvent?) {
+    refresh()
+  }
+  override func touchesEnded(_ t: Set<UITouch>, with e: UIEvent?) {
+    t.forEach { activeTouches.remove($0) }
+    refresh()
+  }
+  override func touchesCancelled(_ t: Set<UITouch>, with e: UIEvent?) {
+    t.forEach { activeTouches.remove($0) }
+    refresh()
+  }
 
-  private func update(_ touches: Set<UITouch>) {
+  /// 按当前活动触摸重算方向键状态（只增删差异键，避免重复发 down/up）。
+  private func refresh() {
     var want = Set<Int32>()
-    for t in touches {
-      let p = t.location(in: self)
-      want.formUnion(keysFor(point: p))
+    for t in activeTouches {
+      want.formUnion(keysFor(point: t.location(in: self)))
     }
     for k in held.subtracting(want) { MkxpBridge.key(Int(k), down: false) }
     for k in want.subtracting(held) { MkxpBridge.key(Int(k), down: true) }
