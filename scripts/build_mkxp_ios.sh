@@ -251,6 +251,9 @@ EOF
         -I"../include" -I"../include/ruby" -I".." -I"." \
         -I"$RUBY_SRC" -I"$RUBY_SRC/include" -I"$VCPKG_INSTALL/include" 2>&1 | tail -8 || true
       if [ -f zlib_ext.o ]; then
+        echo "== zlib_ext.o 符号诊断 =="
+        nm zlib_ext.o 2>&1 | grep -i "Init_zlib" || echo "!! zlib_ext.o 里没有 Init_zlib（编译产物异常）"
+        nm zlib_ext.o 2>&1 | head -5
         libtool -static -o "$RUBY_A.new" "$RUBY_A" zlib_ext.o && mv -f "$RUBY_A.new" "$RUBY_A"
         echo "zlib 扩展已合并进 $RUBY_A"
       else
@@ -335,34 +338,6 @@ if [ -f "$MKXP_SRC/binding/binding-mri.cpp" ]; then
   sed -i '' 's/std::system(command\.c_str())/0/' "$MKXP_SRC/binding/binding-mri.cpp"
   echo "patched binding-mri.cpp std::system -> 0 (unavailable on iOS)"
 fi
-
-# BGM 诊断日志：Audio.bgm_play / bgm_stop 调用落盘（定位“切图后 BGM 消失”）
-python3 - "$MKXP_SRC/binding/audio-binding.cpp" <<'PYEOF'
-import sys
-p = sys.argv[1]
-s = open(p, encoding='utf-8').read()
-old = "    GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )"
-new = ("    fprintf(stderr, \"[mkxp-audio] bgm_play '%s' vol=%d pitch=%d\\n\", filename, volume, pitch);\n"
-       "    GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )")
-old2 = "RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127;\n    rb_get_args(argc, argv, \"|i\", &track RB_ARG_END);\n    shState->audio().bgmStop(track);"
-new2 = ("RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127;\n    rb_get_args(argc, argv, \"|i\", &track RB_ARG_END);\n"
-        "    fprintf(stderr, \"[mkxp-audio] bgm_stop track=%d\\n\", track);\n"
-        "    shState->audio().bgmStop(track);")
-changed = False
-if old in s:
-    s = s.replace(old, new, 1)
-    changed = True
-if old2 in s:
-    s = s.replace(old2, new2, 1)
-    changed = True
-if changed:
-    if '#include <cstdio>' not in s:
-        s = s.replace('#include "audio.h"', '#include <cstdio>\n#include "audio.h"', 1)
-    open(p, 'w', encoding='utf-8').write(s)
-    print("patched audio-binding.cpp: bgm_play/bgm_stop diagnostics")
-else:
-    print("audio-binding.cpp: anchors missing or already patched (ok)")
-PYEOF
 
 # iOS 兼容 shim（引擎适配，不动游戏工程）：
 #  1) 顶层 def（实际落在 Object 上）自动以“委托 main 对象”的方式提升为 Kernel
@@ -549,6 +524,36 @@ else
   echo "FATAL: $MKXP_SRC 不是 git 仓库，无法 apply framework-entry.patch"
   exit 1
 fi
+
+# BGM 诊断日志：Audio.bgm_play / bgm_stop 调用落盘（定位“切图后 BGM 消失”）。
+# 注意必须在 framework-entry.patch 之后执行——它也会改 audio-binding.cpp，
+# 先改会破坏官方补丁的 hunk 上下文（曾致 2/10 hunks failed → FATAL）。
+python3 - "$MKXP_SRC/binding/audio-binding.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = "    GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )"
+new = ("    fprintf(stderr, \"[mkxp-audio] bgm_play '%s' vol=%d pitch=%d\\n\", filename, volume, pitch);\n"
+       "    GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )")
+old2 = "RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127;\n    rb_get_args(argc, argv, \"|i\", &track RB_ARG_END);\n    shState->audio().bgmStop(track);"
+new2 = ("RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127;\n    rb_get_args(argc, argv, \"|i\", &track RB_ARG_END);\n"
+        "    fprintf(stderr, \"[mkxp-audio] bgm_stop track=%d\\n\", track);\n"
+        "    shState->audio().bgmStop(track);")
+changed = False
+if old in s:
+    s = s.replace(old, new, 1)
+    changed = True
+if old2 in s:
+    s = s.replace(old2, new2, 1)
+    changed = True
+if changed:
+    if '#include <cstdio>' not in s:
+        s = s.replace('#include "audio.h"', '#include <cstdio>\n#include "audio.h"', 1)
+    open(p, 'w', encoding='utf-8').write(s)
+    print("patched audio-binding.cpp: bgm_play/bgm_stop diagnostics")
+else:
+    print("audio-binding.cpp: anchors missing or already patched (ok)")
+PYEOF
 
 # ios-winsize.patch：修 iOS 黑屏（画面缩在窗口左下角）。
 # 根因：GraphicsPrivate::winSize 在构造时被初始化成 config 的 defScreenW/H(512x384)，
