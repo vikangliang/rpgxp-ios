@@ -46,7 +46,11 @@ extern "C" void mkxp_ios_getScene(GLuint *tex, GLuint *fbo, int *sw, int *sh,
  *      所以 readback 的行序恰好就是显示行序；真机实测再翻一次会上下颠倒。 */
 static UIImageView *g_softView = nil;
 static uint8_t *g_softBuf = NULL;    // 读回缓冲（行序 = 显示行序，见上）
-static uint8_t *g_softDisp = NULL;  // 复用显示缓冲：零拷贝 provider 引用它，避免每帧 786KB 分配泄漏
+/* 双缓冲乒乓：显示侧 CA 光栅化是【异步】的——pending 清零只代表 image 已设置，
+ * render server 可能仍在读上一块缓冲的像素。若引擎线程立刻往同一块 memcpy
+ * 下一帧，就会出现横向断纹（撕裂）。两块缓冲交替写，被引用的那块隔帧才复用。 */
+static uint8_t *g_softDisp[2] = {NULL, NULL};
+static int g_dispIdx = 0;
 static int g_softW = 0, g_softH = 0;
 static uint64_t g_softFrames = 0;
 /* 主线程上屏合并标志：避免主线程被 Flutter 浮层占满时，dispatch_async 的
@@ -134,13 +138,15 @@ static void mkxp_softPresent()
 
     if (sw != g_softW || sh != g_softH) {
         free(g_softBuf);
-        free(g_softDisp);
+        free(g_softDisp[0]);
+        free(g_softDisp[1]);
         g_softW = sw;
         g_softH = sh;
         g_softBuf = (uint8_t *)malloc((size_t)sw * sh * 4);
-        g_softDisp = (uint8_t *)malloc((size_t)sw * sh * 4);
+        g_softDisp[0] = (uint8_t *)malloc((size_t)sw * sh * 4);
+        g_softDisp[1] = (uint8_t *)malloc((size_t)sw * sh * 4);
     }
-    if (!g_softBuf || !g_softDisp) return;
+    if (!g_softBuf || !g_softDisp[0] || !g_softDisp[1]) return;
 
     GLint prevFbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
@@ -210,11 +216,12 @@ static void mkxp_softPresent()
     if (atomic_exchange(&g_softPending, 1) == 1) return;
     atomic_store(&g_firstFrameShown, 1);   // 引擎已出画面（供加载提示收起）
 
-    /* 复用显示缓冲：把读回像素拷进 g_softDisp，再用零拷贝 provider 引用它。
-     * 全程不每帧分配 786KB，从根本上消除 phys_footprint 的持续增长（jetsam OOM 闪退）。 */
-    memcpy(g_softDisp, g_softBuf, bytes);
+    /* 复用显示缓冲（乒乓）：把读回像素拷进当前未引用的那块，再用零拷贝 provider
+     * 引用它。全程不每帧分配 786KB，从根本上消除 phys_footprint 持续增长。 */
+    g_dispIdx ^= 1;
+    memcpy(g_softDisp[g_dispIdx], g_softBuf, bytes);
 
-    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, g_softDisp, (CFIndex)bytes, NULL);
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, g_softDisp[g_dispIdx], (CFIndex)bytes, NULL);
     if (!provider) { atomic_store(&g_softPending, 0); return; }
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGImageRef cg = CGImageCreate(sw, sh, 8, 32, (size_t)sw * 4, cs,
