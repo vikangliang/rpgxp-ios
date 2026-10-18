@@ -38,6 +38,18 @@ class MkxpMethodHandler: NSObject {
       result([]) // M2 扫描 Documents/games
     case "readLog":
       result(MkxpLog.readBootstrapLog())
+    case "listSceneDumps":
+      result(MkxpSceneDumps.list())
+    case "readSceneDump":
+      guard let args = call.arguments as? [String: Any],
+            let name = args["name"] as? String,
+            name.hasPrefix("scene_dump_"), name.hasSuffix(".png"),
+            !name.contains("/") else {
+        result(FlutterError(code: "badArgs", message: "readSceneDump 需要合法的 scene_dump_*.png 文件名", details: nil))
+        return
+      }
+      let url = MkxpLog.docsURL().appendingPathComponent(name)
+      result(FlutterStandardTypedData(bytes: (try? Data(contentsOf: url)) ?? Data()))
     case "launch":
       guard let args = call.arguments as? [String: Any],
             let path = args["path"] as? String, !path.isEmpty else {
@@ -110,6 +122,24 @@ class MkxpMethodHandler: NSObject {
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+}
+
+// MARK: - 场景快照（ios_embed.mm 落盘的 Documents/scene_dump_*.png）
+enum MkxpSceneDumps {
+  static func list() -> [[String: Any]] {
+    let fm = FileManager.default
+    let dir = MkxpLog.docsURL()
+    let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+    var out: [[String: Any]] = []
+    for name in names where name.hasPrefix("scene_dump_") && name.hasSuffix(".png") {
+      let path = dir.appendingPathComponent(name).path
+      let attr = (try? fm.attributesOfItem(atPath: path)) ?? [:]
+      let size = (attr[.size] as? NSNumber)?.intValue ?? 0
+      let mtime = (attr[.modificationDate] as? Date).map { Int($0.timeIntervalSince1970) } ?? 0
+      out.append(["name": name, "size": size, "mtime": mtime])
+    }
+    return out.sorted { ($0["mtime"] as? Int ?? 0) > ($1["mtime"] as? Int ?? 0) }
   }
 }
 

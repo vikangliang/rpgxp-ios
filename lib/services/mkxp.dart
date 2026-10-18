@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
 
 /// 游戏库条目（M2 由原生插件扫描 Documents/games 填充）
@@ -110,4 +111,39 @@ class Mkxp {
       return 'readLog 调用失败（原生未实现？）';
     }
   }
+
+  /// 场景快照列表（引擎落盘的 Documents/scene_dump_*.png，用于无 Mac 调试）。
+  static Future<List<SceneDump>> listSceneDumps() async {
+    try {
+      final r = await _ch.invokeListMethod('listSceneDumps');
+      return (r ?? []).map((e) => SceneDump.fromMap(e as Map)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// 读取一张场景快照的 PNG 字节。
+  static Future<Uint8List?> readSceneDump(String name) async {
+    try {
+      final r = await _ch.invokeMethod('readSceneDump', {'name': name});
+      if (r is Uint8List) return r;
+      if (r is TypedData) return r.buffer.asUint8List();
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// 场景快照条目。
+class SceneDump {
+  final String name;
+  final int mtime; // epoch 秒
+  final int size;
+  const SceneDump({required this.name, this.mtime = 0, this.size = 0});
+  factory SceneDump.fromMap(Map m) => SceneDump(
+        name: m['name'] ?? '',
+        mtime: m['mtime'] ?? 0,
+        size: m['size'] ?? 0,
+      );
 }
