@@ -258,14 +258,14 @@ EOF
         echo "zlib 扩展已合并进 $RUBY_A"
         # 合并后自检：libtool 偶发把成员丢掉（duplicate member 警告同场出现）；
         # 失败则用 ar 追加重合并一次（诊断输出 nm 的真实报错）。
-        if ! nm "$RUBY_A" 2>/dev/null | grep -q "Init_zlib"; then
+        if ! nm "$RUBY_A" 2>/dev/null | grep "Init_zlib" >/dev/null; then
           echo "::warning::libtool 合并后未检出 Init_zlib，nm 报错如下："
           nm "$RUBY_A" 2>&1 | head -3
           echo "== 改用 ar 追加重合并 =="
           cp -f "$RUBY_A" /tmp/ruby_backup.a
           ar -qc "$RUBY_A" zlib_ext.o 2>/dev/null || true
           ranlib "$RUBY_A" 2>/dev/null || true
-          if nm "$RUBY_A" 2>/dev/null | grep -q "Init_zlib"; then
+          if nm "$RUBY_A" 2>/dev/null | grep "Init_zlib" >/dev/null; then
             echo "ar 追加后 Init_zlib: OK"
           else
             cp -f /tmp/ruby_backup.a "$RUBY_A"
@@ -280,7 +280,7 @@ EOF
     fi
     # 关键自检：libruby 里必须能找到 Init_zlib（require 'zlib' 运行时的实体）
     if [ -n "$RUBY_A" ]; then
-      if nm "$RUBY_A" 2>/dev/null | grep -q "Init_zlib"; then
+      if nm "$RUBY_A" 2>/dev/null | grep "Init_zlib" >/dev/null; then
         echo "libruby contains Init_zlib: OK"
       else
         echo "::error::libruby-static.a 里没有 Init_zlib——require zlib 运行时必失败"
