@@ -402,7 +402,7 @@ shim = '''    /* iOS compat hook (engine adaptation; game project untouched):
         "          parent = '.' if parent == ''\\n"
         "          m = nil\\n"
         "          begin\\n"
-        "            m = Dir.children(parent).find { |n| n.casecmp(p) == 0 }\\n"
+        "            m = Dir.children(parent).find { |n| n.casecmp(p) == 0 || n.delete(' ').casecmp(p.delete(' ')) == 0 }\\n"
         "          rescue StandardError\\n"
         "            ok = false\\n"
         "            break\\n"
@@ -521,6 +521,91 @@ else:
     print("filesystem.cpp: anchors missing or already patched (ok)")
 PYEOF
 
+# 空格不敏感解析：游戏请求 "Fusion Pixel 12px Monospaced zh_hans.ttf"（带空格），
+# 磁盘上却只有 "FusionPixel12pxMonospacedzh_hans.ttf"（无空格）→ 字体回退 →
+# 度量不一致 → 消息文字漏末尾 1-2 字。把 pathCache 的键与查找统一按“去空格+
+# 小写”归一（与大小写修复同一机制）。
+python3 - "$MKXP_SRC/src/filesystem/filesystem.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+if 'normKey' in s:
+    print("filesystem.cpp: space-insensitive already patched (ok)")
+else:
+    n = 0
+    # 1) 归一化助手（小写+去空格）
+    helper = ("static void strTolower(std::string &str) {\n"
+              "  for (size_t i = 0; i < str.size(); ++i)\n"
+              "    str[i] = tolower(str[i]);\n"
+              "}\n"
+              "/* iOS engine adaptation: Windows games treat spaces as insignificant in\n"
+              "   asset names too (font file shipped without the spaces of its name). */\n"
+              "static std::string normKey(const std::string &in) {\n"
+              "  std::string out;\n"
+              "  out.reserve(in.size());\n"
+              "  for (size_t i = 0; i < in.size(); ++i)\n"
+              "    if (in[i] != ' ')\n"
+              "      out.push_back((char)tolower(in[i]));\n"
+              "  return out;\n"
+              "}\n")
+    old_helper = ("static void strTolower(std::string &str) {\n"
+                  "  for (size_t i = 0; i < str.size(); ++i)\n"
+                  "    str[i] = tolower(str[i]);\n"
+                  "}\n")
+    if old_helper in s:
+        s = s.replace(old_helper, helper, 1); n += 1
+    # 2) 枚举建缓存时用归一键
+    old_cache = "std::string lowerCase = mixedCase;\n  strTolower(lowerCase);"
+    if old_cache in s:
+        s = s.replace(old_cache, "std::string lowerCase = normKey(mixedCase);", 1); n += 1
+    # 3) openRead 查找键归一（原位压缩空格并更新 len）
+    old_lookup = ("  if (p->havePathCache)\n"
+                  "    for (size_t i = 0; i < len; ++i)\n"
+                  "      buffer[i] = tolower(buffer[i]);")
+    new_lookup = ("  if (p->havePathCache)\n"
+                  "  {\n"
+                  "    for (size_t i = 0; i < len; ++i)\n"
+                  "      buffer[i] = tolower(buffer[i]);\n"
+                  "    size_t w = 0;\n"
+                  "    for (size_t i = 0; i < len; ++i)\n"
+                  "      if (buffer[i] != ' ')\n"
+                  "        buffer[w++] = buffer[i];\n"
+                  "    buffer[w] = '\\0';\n"
+                  "    len = w;\n"
+                  "  }")
+    if old_lookup in s:
+        s = s.replace(old_lookup, new_lookup, 1); n += 1
+    # 4) exists / openReadRaw 的回退查找同样归一
+    old_l1 = "      lower[i] = tolower(lower[i]);\n    if (p->pathCache.contains(lower))"
+    new_l1 = ("      lower[i] = tolower(lower[i]);\n"
+              "    std::string t; t.reserve(lower.size());\n"
+              "    for (size_t i = 0; i < lower.size(); ++i)\n"
+              "      if (lower[i] != ' ') t.push_back(lower[i]);\n"
+              "    lower = t;\n"
+              "    if (p->pathCache.contains(lower))")
+    c1 = s.count(old_l1)
+    s = s.replace(old_l1, new_l1)
+    n += c1
+    # 5) fileLists 里的文件名成员同样去空格（openRead 用归一后的 file 比对）
+    old_fn = ("    std::string lowerFilename(fname);\n"
+              "    strTolower(lowerFilename);\n"
+              "    list.push_back(lowerFilename);")
+    if old_fn in s:
+        s = s.replace(old_fn,
+                      "    list.push_back(normKey(fname));", 1)
+        n += 1
+    # 6) desensitize（字体等直接走它的路径）也归一（只改声明行，后续 transform 幂等无害）
+    old_de = "  std::string fn_lower(filename);"
+    if old_de in s:
+        s = s.replace(old_de, "  std::string fn_lower = normKey(filename);", 1)
+        n += 1
+    if n >= 3:
+        open(p, 'w', encoding='utf-8').write(s)
+        print(f"patched filesystem.cpp: space-insensitive resolution ({n} sites)")
+    else:
+        print(f"filesystem.cpp: space-insensitive anchors incomplete ({n})")
+PYEOF
+
 # ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
 # framework-entry.patch（git diff，LF 行尾）：
 #   1. src/main.cpp: int main() -> extern "C" int mkxp_z_main()
@@ -550,8 +635,38 @@ import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
 old = "    GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )"
-new = ("    fprintf(stderr, \"[mkxp-audio] bgm_play '%s' vol=%d pitch=%d\\n\", filename, volume, pitch);\n"
+new = ("    {\n"
+       "      /* 快速重复去重：日志实测同一 BGM 在零点几秒内被连续调用 3-10 次，\n"
+       "       * 每次都重启混音通道（= BGM 时断时续 + 可感知卡顿）。 Essentials 在\n"
+       "       * ME 插播后恢复 BGM 的合法重播间隔都在秒级以上，0.5s 内的同名调用\n"
+       "       * 视为脚本冗余，直接跳过。 */\n"
+       "      static std::string s_lastBgm;\n"
+       "      static clock_t s_lastT = 0;\n"
+       "      clock_t nowC = clock();\n"
+       "      if (s_lastBgm == filename &&\n"
+       "          (double)(nowC - s_lastT) / CLOCKS_PER_SEC < 0.5) {\n"
+       "        fprintf(stderr, \"[mkxp-audio] skip duplicate bgm_play '%s'\\n\", filename);\n"
+       "        return Qnil;\n"
+       "      }\n"
+       "      s_lastBgm = filename;\n"
+       "      s_lastT = nowC;\n"
+       "      bool fex = shState->fileSystem().exists(filename);\n"
+       "      fprintf(stderr, \"[mkxp-audio] bgm_play '%s' vol=%d pitch=%d exists=%d\\n\",\n"
+       "              filename, volume, pitch, (int)fex);\n"
+       "      if (!fex) {\n"
+       "        fprintf(stderr, \"[mkxp-audio] !! missing, Audio/BGM contents:\");\n"
+       "        PHYSFS_enumerate(\"Audio/BGM\", bgmEnumCb, nullptr);\n"
+       "        fprintf(stderr, \"\\n\");\n"
+       "      }\n"
+       "    }\n"
        "    GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )")
+old_cb = "RB_METHOD(audio_bgmPlay)"
+new_cb = ("static PHYSFS_EnumerateCallbackResult bgmEnumCb(void *, const char *, const char *fname) {\n"
+          "  fprintf(stderr, \" %s\", fname);\n"
+          "  return PHYSFS_ENUM_OK;\n"
+          "}\n"
+          "\n"
+          "RB_METHOD(audio_bgmPlay)")
 old2 = "RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127;\n    rb_get_args(argc, argv, \"|i\", &track RB_ARG_END);\n    shState->audio().bgmStop(track);"
 new2 = ("RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127;\n    rb_get_args(argc, argv, \"|i\", &track RB_ARG_END);\n"
         "    fprintf(stderr, \"[mkxp-audio] bgm_stop track=%d\\n\", track);\n"
@@ -563,11 +678,14 @@ if old in s:
 if old2 in s:
     s = s.replace(old2, new2, 1)
     changed = True
+if old_cb in s and 'bgmEnumCb' not in s:
+    s = s.replace(old_cb, new_cb, 1)
+    changed = True
 if changed:
     if '#include <cstdio>' not in s:
-        s = s.replace('#include "audio.h"', '#include <cstdio>\n#include "audio.h"', 1)
+        s = s.replace('#include "audio.h"', '#include <cstdio>\n#include <ctime>\n#include "audio.h"', 1)
     open(p, 'w', encoding='utf-8').write(s)
-    print("patched audio-binding.cpp: bgm_play/bgm_stop diagnostics")
+    print("patched audio-binding.cpp: bgm diagnostics v2 (exists/enumerate/dedupe)")
 else:
     print("audio-binding.cpp: anchors missing or already patched (ok)")
 PYEOF
