@@ -12,6 +12,7 @@
 #import <SDL.h>
 #import <SDL_syswm.h>
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <OpenGLES/ES2/gl.h>
 #import <OpenGLES/ES2/glext.h>
 #import <stdio.h>
@@ -225,11 +226,22 @@ static void mkxp_softPresent()
 
     dispatch_async(dispatch_get_main_queue(), ^{
         @autoreleasepool {
+            CFTimeInterval t0 = CFAbsoluteTimeGetCurrent();
             if (g_softView) {
                 UIImage *img = [UIImage imageWithCGImage:cg];
                 g_softView.image = img;
             }
             CGImageRelease(cg);
+            /* 主线程显示开销（CGImage 解码 + UIKit 侧成本），卡顿定位数据 */
+            static double s_acc = 0;
+            static int s_n = 0;
+            s_acc += CFAbsoluteTimeGetCurrent() - t0;
+            if (++s_n >= 600) {
+                fprintf(stderr, "[ios-embed] main-display avg %.2f ms (n=600)\n",
+                        s_acc / s_n * 1000.0);
+                s_acc = 0;
+                s_n = 0;
+            }
         }
         atomic_store(&g_softPending, 0);
     });
@@ -339,15 +351,19 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
         mkxp_softPresent();
 
     /* 帧耗时统计：present(EAGL 提交+vsync 等待) + 读回 + 拷贝的总开销。
-     * 卡顿定性数据——若均值远超 16.6ms 即为引擎线程被拖慢的直接证据。 */
+     * 卡顿定性数据——avg 看 CPU 占用，max 看尖峰（尖峰>16.6ms 才是真掉帧）。 */
     {
         static double s_acc = 0;
+        static double s_max = 0;
         static int s_n = 0;
-        s_acc += CFAbsoluteTimeGetCurrent() - hookT0;
+        double dt = CFAbsoluteTimeGetCurrent() - hookT0;
+        s_acc += dt;
+        if (dt > s_max) s_max = dt;
         if (++s_n >= 600) {
-            fprintf(stderr, "[ios-embed] present-hook avg %.2f ms (n=600)\n",
-                    s_acc / s_n * 1000.0);
+            fprintf(stderr, "[ios-embed] present-hook avg %.2f ms, max %.2f ms (n=600)\n",
+                    s_acc / s_n * 1000.0, s_max * 1000.0);
             s_acc = 0;
+            s_max = 0;
             s_n = 0;
         }
     }
@@ -378,6 +394,17 @@ static void mkxp_uiwinSetHidden(id self, SEL _cmd, BOOL hidden)
     g_origUIWinSetHidden(self, _cmd, hidden);
 }
 
+/// ProMotion 空心跳：RGSS 引擎逻辑固定 40fps，60Hz 屏上帧间隔 15/30ms 交替
+/// （= 走路/卷动时固有 judder）；120Hz 下 40 整除（3×8.3ms 均匀）。
+/// 挂一个 120Hz 的空 CADisplayLink 促使 ProMotion 设备整帧率跑 120；
+/// 60Hz 设备系统自动钳制到 60，无副作用。
+@interface MkxpPerfTick : NSObject
++ (void)tick:(CADisplayLink *)dl;
+@end
+@implementation MkxpPerfTick
++ (void)tick:(CADisplayLink *)dl { (void)dl; }
+@end
+
 __attribute__((constructor))
 static void mkxp_installHooksEarly() {
     mkxp_installCrashSignalHandlers();
@@ -386,6 +413,20 @@ static void mkxp_installHooksEarly() {
     if (uiwinHidden) {
         g_origUIWinSetHidden = (void (*)(id, SEL, BOOL))method_getImplementation(uiwinHidden);
         method_setImplementation(uiwinHidden, (IMP)mkxp_uiwinSetHidden);
+    }
+
+    /* ProMotion 120Hz 心跳（见 MkxpPerfTick 注释） */
+    if (@available(iOS 15.0, *)) {
+        static CADisplayLink *s_promoLink = nil;
+        if (!s_promoLink && [UIScreen mainScreen].maximumFramesPerSecond > 60) {
+            s_promoLink = [CADisplayLink displayLinkWithTarget:[MkxpPerfTick class]
+                                                      selector:@selector(tick:)];
+            s_promoLink.preferredFrameRateRange = CAFrameRateRangeMake(60, 120, 120);
+            [s_promoLink addToRunLoop:[NSRunLoop mainRunLoop]
+                              forMode:NSRunLoopCommonModes];
+            fprintf(stderr, "[ios-embed] ProMotion 120Hz tick installed (max fps=%d)\n",
+                    (int)[UIScreen mainScreen].maximumFramesPerSecond);
+        }
     }
     [[NSNotificationCenter defaultCenter]
         addObserverForName:UIApplicationDidEnterBackgroundNotification
