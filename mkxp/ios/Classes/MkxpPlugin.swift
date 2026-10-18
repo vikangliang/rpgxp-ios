@@ -157,7 +157,8 @@ enum MkxpSceneDumps {
 /// 重新解码并改名（严格启发式，绝不误伤合法的 é 等西文字符）。
 enum MkxpFileFix {
   private static let gb18030 = String.Encoding(rawValue:
-      CFStringConvertEncodingToNSStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
+      CFStringConvertEncodingToNSStringEncoding(
+          CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
 
   static func normalize(_ dir: URL) {
     let fm = FileManager.default
