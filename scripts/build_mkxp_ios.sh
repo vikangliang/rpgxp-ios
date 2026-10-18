@@ -607,6 +607,49 @@ else:
         print(f"filesystem.cpp: space-insensitive anchors incomplete ({n})")
 PYEOF
 
+# 混合帧限速（iPhone 11 等 60Hz 屏的顺滑度）：
+# FPSLimiter 用 SDL_Delay/nanosleep 粗睡，iOS 上恒过睡 1-2ms，idealDiff 补偿环
+# 会把过睡变成 40fps 帧间隔的额外抖动（叠加在 60Hz 采样的固有 judder 上）。
+# 改为“粗睡大头 + 末 2ms 忙等”，把帧间隔抖动压到 ~0.1ms（约 5% 单核开销）。
+python3 - "$MKXP_SRC/src/display/graphics.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+if 'spinTicks' in s:
+    print("graphics.cpp: hybrid limiter already patched (ok)")
+else:
+    i = s.find("void delayTicks(uint64_t ticks)")
+    if i < 0:
+        print("graphics.cpp: delayTicks not found")
+    else:
+        j = s.find("#endif", i)
+        k = s.find("    }", j)
+        if j < 0 or k < 0:
+            print("graphics.cpp: delayTicks end not found")
+        else:
+            ls = s.rfind("\n", 0, i) + 1
+            end = k + len("    }")
+            newfn = (
+"    void delayTicks(uint64_t ticks) {\n"
+"        /* iOS engine adaptation (hybrid limiter): SDL_Delay granularity is\n"
+"         * ~1-2ms and always oversleeps; the idealDiff compensation then turns\n"
+"         * that into visible frame-interval wobble at 40fps. Coarse-sleep the\n"
+"         * bulk, busy-spin the last ~2ms for tight pacing (~5% of one core). */\n"
+"        const uint64_t spinTicks = tickFreqMS * 2; /* 2ms */\n"
+"        if (ticks > spinTicks) {\n"
+"            SDL_Delay((ticks - spinTicks) / tickFreqMS);\n"
+"            uint64_t deadline = SDL_GetPerformanceCounter() + spinTicks;\n"
+"            while (SDL_GetPerformanceCounter() < deadline) { }\n"
+"        } else if (ticks > 0) {\n"
+"            uint64_t deadline = SDL_GetPerformanceCounter() + ticks;\n"
+"            while (SDL_GetPerformanceCounter() < deadline) { }\n"
+"        }\n"
+"    }")
+            s = s[:ls] + newfn + s[end:]
+            open(p, 'w', encoding='utf-8').write(s)
+            print("patched graphics.cpp: hybrid frame limiter (coarse sleep + 2ms spin)")
+PYEOF
+
 # ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
 # framework-entry.patch（git diff，LF 行尾）：
 #   1. src/main.cpp: int main() -> extern "C" int mkxp_z_main()
