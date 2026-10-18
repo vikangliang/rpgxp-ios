@@ -592,6 +592,110 @@ else:
     print("graphics.cpp: transition anchor missing or already patched (ok)")
 PYEOF
 
+# 解码位图 LRU 缓存（按路径）：拍照点进场、菜单图标等"同一路径反复加载"的
+# 场景跳过磁盘 IO + PNG 解码（真新镇第 9 行拍照点=PartyPicture 进场时同步
+# 加载 5+ 张跟随精灵表，iPhone 上解码耗时=可感知卡顿；PC 快察觉不到）。
+# 内存上限 64MB，超大图不缓存；GIF 路径不缓存（动画语义复杂）。
+python3 - "$MKXP_SRC/src/display/bitmap.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+if 'MKXPIosBmpCache' in s:
+    print("bitmap.cpp: decoded-bitmap cache already patched (ok)")
+else:
+    cache_code = (
+"/* iOS engine adaptation: decoded-bitmap LRU cache keyed by path.\n"
+" * Repeated loads of the same asset (photo-spot entry, menus) skip disk IO\n"
+" * and PNG decode. Memory capped; oversized images are not cached. */\n"
+"#include <map>\n"
+"#include <list>\n"
+"#include <string>\n"
+"#include <mutex>\n"
+"namespace MKXPIosBmpCache {\n"
+"struct Entry { SDL_Surface *surf; size_t bytes; };\n"
+"static std::map<std::string, Entry> g_map;\n"
+"static std::list<std::string> g_order;\n"
+"static size_t g_bytes = 0;\n"
+"static std::mutex g_mtx;\n"
+"static const size_t CAP_BYTES = 64u * 1024 * 1024;\n"
+"static SDL_Surface *get(const std::string &k)\n"
+"{\n"
+"    std::lock_guard<std::mutex> lock(g_mtx);\n"
+"    std::map<std::string, Entry>::iterator it = g_map.find(k);\n"
+"    if (it == g_map.end())\n"
+"        return 0;\n"
+"    g_order.remove(k);\n"
+"    g_order.push_back(k);\n"
+"    return it->second.surf;\n"
+"}\n"
+"static void put(const std::string &k, SDL_Surface *s)\n"
+"{\n"
+"    std::lock_guard<std::mutex> lock(g_mtx);\n"
+"    if (g_map.count(k))\n"
+"        return;\n"
+"    size_t bytes = (size_t)s->w * (size_t)s->h * 4;\n"
+"    if (bytes > CAP_BYTES)\n"
+"        return;\n"
+"    while (g_bytes + bytes > CAP_BYTES && !g_order.empty())\n"
+"    {\n"
+"        std::string oldKey = g_order.front();\n"
+"        g_order.pop_front();\n"
+"        std::map<std::string, Entry>::iterator it = g_map.find(oldKey);\n"
+"        if (it != g_map.end())\n"
+"        {\n"
+"            g_bytes -= it->second.bytes;\n"
+"            SDL_FreeSurface(it->second.surf);\n"
+"            g_map.erase(it);\n"
+"        }\n"
+"    }\n"
+"    Entry e;\n"
+"    e.surf = SDL_DuplicateSurface(s);\n"
+"    e.bytes = bytes;\n"
+"    if (!e.surf)\n"
+"        return;\n"
+"    g_map[k] = e;\n"
+"    g_bytes += bytes;\n"
+"    g_order.push_back(k);\n"
+"}\n"
+"}\n")
+    old_ctor = "Bitmap::Bitmap(const char *filename)\n{\n    BitmapOpenHandler handler;"
+    new_ctor = cache_code + "\n" + old_ctor
+    c1 = old_ctor in s
+    old_swap = "    SDL_Surface *imgSurf = handler.surface;"
+    new_swap = ("    /* iOS engine adaptation: decoded-surface LRU cache */\n"
+                "    std::string cacheKey(filename);\n"
+                "    SDL_Surface *cachedSurf = MKXPIosBmpCache::get(cacheKey);\n"
+                "    SDL_Surface *imgSurf;\n"
+                "    bool cacheMiss;\n"
+                "    if (cachedSurf)\n"
+                "    {\n"
+                "        if (handler.surface) SDL_FreeSurface(handler.surface);\n"
+                "        imgSurf = SDL_DuplicateSurface(cachedSurf);\n"
+                "        cacheMiss = false;\n"
+                "    }\n"
+                "    else\n"
+                "    {\n"
+                "        imgSurf = handler.surface;\n"
+                "        cacheMiss = true;\n"
+                "    }")
+    c2 = old_swap in s
+    old_upload = "        TEX::uploadImage(p->gl.width, p->gl.height, imgSurf->pixels, GL_RGBA);\n        \n        SDL_FreeSurface(imgSurf);"
+    new_upload = ("        TEX::uploadImage(p->gl.width, p->gl.height, imgSurf->pixels, GL_RGBA);\n"
+                  "        \n"
+                  "        if (cacheMiss)\n"
+                  "            MKXPIosBmpCache::put(cacheKey, imgSurf);\n"
+                  "        SDL_FreeSurface(imgSurf);")
+    c3 = old_upload in s
+    if c1 and c2 and c3:
+        s = s.replace(old_ctor, new_ctor, 1)
+        s = s.replace(old_swap, new_swap, 1)
+        s = s.replace(old_upload, new_upload, 1)
+        open(p, 'w', encoding='utf-8').write(s)
+        print("patched bitmap.cpp: decoded-bitmap LRU cache (64MB cap)")
+    else:
+        print(f"bitmap.cpp: anchors missing (ctor={c1} swap={c2} upload={c3})")
+PYEOF
+
 # ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
 # framework-entry.patch（git diff，LF 行尾）：
 #   1. src/main.cpp: int main() -> extern "C" int mkxp_z_main()
