@@ -20,6 +20,7 @@
 #import <signal.h>
 #import <execinfo.h>
 #import <mach/mach.h>
+#import <stdatomic.h>
 #import <objc/runtime.h>
 
 static UIView *g_hostView = nil;
@@ -46,6 +47,10 @@ static UIImageView *g_softView = nil;
 static uint8_t *g_softBuf = NULL;    // 读回缓冲（行序 = 显示行序，见上）
 static int g_softW = 0, g_softH = 0;
 static uint64_t g_softFrames = 0;
+/* 主线程上屏合并标志：避免主线程被 Flutter 浮层占满时，dispatch_async 的
+ * UIImage 更新 block 堆积（每个持 ~786KB → 几秒内存爆掉被系统 jetsam 杀）。
+ * 主线程没处理完上一帧就不发新帧（丢弃），把上屏节奏交给主线程自身。 */
+static atomic_int g_softPending = 0;
 
 /* 场景快照落盘：无 Mac 环境下定位“画面内容对不对”的铁证。
  * 在 Documents/scene_dump_N.png 生成 PNG，Flutter 日志页可直接查看/分享。 */
@@ -173,8 +178,13 @@ static void mkxp_softPresent()
     CGDataProviderRelease(provider);
     if (!cg) return;
 
-    /* CFRetain/CFRelease 与 ARC/MRR 无关，可在线程间安全交接 */
+    /* CFRetain/CFRelease 与 ARC/MRR 无关，可在线程间安全交接。
+     * 合并：若上一帧还在主线程排队就丢弃本帧，杜绝 block 堆积导致 OOM 闪退。 */
     CFRetain(cg);
+    if (atomic_exchange(&g_softPending, 1) == 1) {
+        CFRelease(cg);          // 主线程还没处理完，丢掉这一帧
+        return;
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
         @autoreleasepool {
             if (g_softView) {
@@ -183,6 +193,7 @@ static void mkxp_softPresent()
             }
             CFRelease(cg);
         }
+        atomic_store(&g_softPending, 0);
     });
 
     static int logged = 0;
