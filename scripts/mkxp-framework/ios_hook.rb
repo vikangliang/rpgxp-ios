@@ -2,6 +2,17 @@ $__mkxp_main = self
 $__mkxp_rcache = {}
 $__mkxp_miss = {}
 $__mkxp_probe = 0
+$__mkxp_logs = Hash.new(0)
+def __mkxp_rel?(s)
+  t = s.to_s
+  t =~ /Followers|Swimming|Levitates|Characters\//
+end
+def __mkxp_log(tag, msg)
+  $__mkxp_logs[tag] += 1
+  $stderr.puts "[#{tag}##{$__mkxp_logs[tag]}] #{msg}" if $__mkxp_logs[tag] <= 60
+rescue StandardError
+  # 日志永不影响主流程
+end
 $__mkxp_resolve = lambda do |s|
   str = s.to_s
   next str if str.empty?
@@ -123,8 +134,8 @@ class << Object
             rescue StandardError
               false
             end
+            __mkxp_log("gfc", "in=#{file.inspect} r=#{r.inspect} orig=#{ret.inspect} file?=#{exists}") if __mkxp_rel?(r)
             if exists
-              $stderr.puts "[mkxp-fs] pbGetFileChar bypass: orig=nil but file exists '#{r}'"
               return "1"
             end
           end
@@ -136,18 +147,39 @@ class << Object
         ::Object.send(:define_method, :pbTryString) do |x|
           r = res2.call(x)
           ret = orig2.bind(self).call(r)
-          next nil_or_empty?(ret) ? nil : r
+          out = nil_or_empty?(ret) ? nil : r
+          __mkxp_log("try", "in=#{x.inspect} -> #{out.inspect}") if __mkxp_rel?(x) || __mkxp_rel?(r)
+          next out
         end
       elsif m == :ow_sprite_filename
         # VOWE/跟随精灵的图名解析（顶层 def）。"？"精灵=它回退到 000.png。
         # 包一层：凡命中 000 回退就打出物种/形态/性别/闪光度——失败现场直出。
+        # 并在首次调用时把 GameData::Species.check_graphic_file 也包上日志
+        # （它是 Species 的单例方法，method_added 钩子够不到，只能延迟包装）。
         orig3 = ::Object.instance_method(:ow_sprite_filename)
         ::Object.send(:define_method, :ow_sprite_filename) do |*args, &blk|
+          unless $__mkxp_cgf_done
+            $__mkxp_cgf_done = true
+            begin
+              sp = ::GameData::Species
+              ocgf = sp.method(:check_graphic_file)
+              sp.define_singleton_method(:check_graphic_file) do |*a, &b|
+                rr = ocgf.call(*a, &b)
+                __mkxp_log("cgf", "sub=#{a[6].inspect} sp=#{a[1].inspect} " \
+                                  "form=#{a[2].inspect} g=#{a[3].inspect} " \
+                                  "shiny=#{a[4].inspect} shadow=#{a[5].inspect} -> #{rr.inspect}")
+                rr
+              end
+              __mkxp_log("cgf", "check_graphic_file wrapper installed")
+            rescue StandardError => e
+              __mkxp_log("cgf", "cgf wrap failed: #{e.class}")
+            end
+          end
           r = orig3.bind(self).call(*args, &blk)
           if r.to_s.include?("000.png")
             $stderr.puts "[mkxp-ow] '?' fallback! species=#{args[2].inspect} " \
                          "form=#{args[3].inspect} gender=#{args[4].inspect} " \
-                         "shiny=#{args[5].inspect} -> '#{r}'"
+                         "shiny=#{args[5].inspect} water=#{args[0].inspect},#{args[1].inspect} -> '#{r}'"
           end
           r
         end
@@ -159,29 +191,38 @@ class << Object
         resR = $__mkxp_resolve
         ::Object.send(:define_method, :pbResolveBitmap) do |x|
           ret = origR.bind(self).call(x)
-          next ret unless nil_or_empty?(ret)
-          s = x.to_s
-          roots = [s]
-          roots << ("Graphics/Characters/" + s) unless s.start_with?("Graphics/")
-          found = nil
-          roots.each do |cand|
-            [".png", ".gif"].each do |ext|
-              rr = resR.call(cand + ext)
-              next if nil_or_empty?(rr)
-              exists = begin
-                File.file?(rr)
-              rescue StandardError
-                false
+          if nil_or_empty?(ret)
+            s = x.to_s
+            roots = [s]
+            roots << ("Graphics/Characters/" + s) unless s.start_with?("Graphics/")
+            found = nil
+            roots.each do |cand|
+              [".png", ".gif"].each do |ext|
+                rr = resR.call(cand + ext)
+                next if nil_or_empty?(rr)
+                ex = begin
+                  File.exist?(rr)
+                rescue StandardError
+                  :err
+                end
+                fi = begin
+                  File.file?(rr)
+                rescue StandardError
+                  :err
+                end
+                if fi == true
+                  __mkxp_log("rbm", "bypass hit in=#{x.inspect} rr=#{rr.inspect} " \
+                                    "exist=#{ex} file=#{fi} enc=#{rr.encoding}")
+                  found = rr
+                  break
+                end
               end
-              if exists
-                $stderr.puts "[mkxp-fs] pbResolveBitmap bypass hit: '#{cand + ext}'"
-                found = rr
-                break
-              end
+              break if found
             end
-            break if found
+            ret = found
           end
-          found
+          __mkxp_log("rbm", "in=#{x.inspect} -> #{ret.inspect}") if __mkxp_rel?(x) || __mkxp_rel?(ret.to_s)
+          ret
         end
       elsif m != :method_added
         k = ::Kernel
