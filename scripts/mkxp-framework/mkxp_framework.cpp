@@ -96,13 +96,11 @@ int mkxp_run(const char *gamePath)
      * 接管 UIApplication。必须在 SDL_Init 之前调用（任意线程均可）。 */
     SDL_SetMainReady();
 
-    /* SDL uikit 窗口允许的朝向：暂用竖屏打通渲染链路。
-     * 背景：iOS 16+ scene-based 应用里，scene 的实际方向由 Flutter 主窗口控制
-     * （本 App 菜单页竖屏）。SDL 自建 window 若声明横屏，会与 portrait scene 的
-     * 合成空间不一致（实测：窗口被掰成 896×414 而 scene 是 414×896，画面/Marker
-     * 均不可见——见 2026-10-17 日志）。先竖屏跑通画面；横屏后续用
-     * UIWindowScene.requestGeometryUpdate 让整个 scene（含 Flutter 窗口）转横屏。 */
-    SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait");
+    /* SDL uikit 窗口允许的朝向：游戏运行期锁定横屏（引擎自建窗口即画面载体）。
+     * 横屏由 Dart 游戏页 SystemChrome.setPreferredOrientations(横屏) 把整个
+     * Flutter scene 转横屏，本 SDL 窗口随 scene 同为横屏，不再有“竖屏框里挤 4:3”。
+     * 菜单/库/设置页仍竖屏（引擎未运行，不受此 hint 影响）。 */
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
 
     /* Ruby GC 调优（iOS 无 JIT，Ruby 只能纯解释执行）：Essentials 启动期要
      * 解释 1MB 脚本并定义上万对象（宝可梦/技能/道具…），默认 GC 阈值会触发

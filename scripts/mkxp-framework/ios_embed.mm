@@ -109,10 +109,21 @@ static void mkxp_softPresent()
     mkxp_ios_getScene(&tex, &fbo, &sw, &sh, &ox, &oy, &ww, &wh);
     if (!fbo || sw <= 0 || sh <= 0) return;
 
-    /* 每 3 帧更新一次（约 20fps 显示），降低 glReadPixels 给引擎线程的
-     * 开销——读回过频会让游戏逻辑变慢（画面“速度不对”），并加剧内存压力。
-     * 游戏逻辑仍以 mkxp 自身帧率跑，仅显示层降频。 */
-    if ((++g_softFrames % 3) != 0) return;
+    /* 每帧都尝试上屏：静止帧由下方 hash 跳过（几乎零成本），动画帧以引擎满帧率
+     * 显示，避免之前“每 3 帧才上屏→显示仅 ~20fps→动画看着速度不对/卡顿”。
+     * 内存泄漏已通过零拷贝复用缓冲根治，无需再用降频压内存。 */
+    ++g_softFrames;
+
+    /* 引擎重启探测器：软呈现帧计数器只增不减；若它回退，说明引擎被重新
+     * launch（mkxp_run 再次调用）→ “bgm+画面隔几秒重启”的定性铁证。 */
+    {
+        static uint64_t s_prev = 0;
+        if (g_softFrames < s_prev)
+            fprintf(stderr,
+                    "[ios-embed] *** ENGINE RESTARTED (frame %llu -> %llu) ***\n",
+                    (unsigned long long)s_prev, (unsigned long long)g_softFrames);
+        s_prev = g_softFrames;
+    }
 
     if (sw != g_softW || sh != g_softH) {
         free(g_softBuf);
