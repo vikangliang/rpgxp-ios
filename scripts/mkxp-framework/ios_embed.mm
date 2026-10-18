@@ -45,6 +45,7 @@ extern "C" void mkxp_ios_getScene(GLuint *tex, GLuint *fbo, int *sw, int *sh,
  *      所以 readback 的行序恰好就是显示行序；真机实测再翻一次会上下颠倒。 */
 static UIImageView *g_softView = nil;
 static uint8_t *g_softBuf = NULL;    // 读回缓冲（行序 = 显示行序，见上）
+static uint8_t *g_softDisp = NULL;  // 复用显示缓冲：零拷贝 provider 引用它，避免每帧 786KB 分配泄漏
 static int g_softW = 0, g_softH = 0;
 static uint64_t g_softFrames = 0;
 /* 主线程上屏合并标志：避免主线程被 Flutter 浮层占满时，dispatch_async 的
@@ -115,11 +116,13 @@ static void mkxp_softPresent()
 
     if (sw != g_softW || sh != g_softH) {
         free(g_softBuf);
+        free(g_softDisp);
         g_softW = sw;
         g_softH = sh;
         g_softBuf = (uint8_t *)malloc((size_t)sw * sh * 4);
+        g_softDisp = (uint8_t *)malloc((size_t)sw * sh * 4);
     }
-    if (!g_softBuf) return;
+    if (!g_softBuf || !g_softDisp) return;
 
     GLint prevFbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
@@ -139,22 +142,20 @@ static void mkxp_softPresent()
 
     /* 不翻转：readback 行序即显示行序（见文件头说明） */
     size_t stride = (size_t)sw * 4;
+    size_t bytes = stride * (size_t)sh;
 
-    /* 场景快照（不受跳过逻辑影响，保证准时落盘） */
+    /* 场景快照（不受跳过逻辑影响，保证准时落盘）。
+     * 用零拷贝 provider 引用 g_softBuf，避免 CFDataCreate 的 786KB 拷贝泄漏。 */
     CGImageRef dumpImg = NULL;
     {
-        CFDataRef dd = CFDataCreate(NULL, g_softBuf, (CFIndex)(stride * (size_t)sh));
-        if (dd) {
-            CGDataProviderRef dp = CGDataProviderCreateWithCFData(dd);
-            CFRelease(dd);
-            if (dp) {
-                CGColorSpaceRef c = CGColorSpaceCreateDeviceRGB();
-                dumpImg = CGImageCreate(sw, sh, 8, 32, stride, c,
-                                        kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast,
-                                        dp, NULL, false, kCGRenderingIntentDefault);
-                CGColorSpaceRelease(c);
-                CGDataProviderRelease(dp);
-            }
+        CGDataProviderRef dp = CGDataProviderCreateWithData(NULL, g_softBuf, (CFIndex)bytes, NULL);
+        if (dp) {
+            CGColorSpaceRef c = CGColorSpaceCreateDeviceRGB();
+            dumpImg = CGImageCreate(sw, sh, 8, 32, stride, c,
+                                    kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast,
+                                    dp, NULL, false, kCGRenderingIntentDefault);
+            CGColorSpaceRelease(c);
+            CGDataProviderRelease(dp);
         }
     }
     if (dumpImg) {
@@ -168,35 +169,31 @@ static void mkxp_softPresent()
     if (hsh == s_lastHash) return;
     s_lastHash = hsh;
 
-    /* 用 CFData 拷贝一份，避免后续复用 g_softBuf 影响正在显示的图像 */
-    CFDataRef data = CFDataCreate(NULL, g_softBuf, (CFIndex)(stride * (size_t)sh));
-    if (!data) return;
-    CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
-    CFRelease(data);
-    if (!provider) return;
+    /* 合并：若上一帧还在主线程排队，跳过本帧（不碰 g_softDisp，避免覆盖在途帧）。
+     * 这一步必须在 memcpy 之前，保证在途帧引用的 g_softDisp 不被改写。 */
+    if (atomic_exchange(&g_softPending, 1) == 1) return;
 
+    /* 复用显示缓冲：把读回像素拷进 g_softDisp，再用零拷贝 provider 引用它。
+     * 全程不每帧分配 786KB，从根本上消除 phys_footprint 的持续增长（jetsam OOM 闪退）。 */
+    memcpy(g_softDisp, g_softBuf, bytes);
+
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, g_softDisp, (CFIndex)bytes, NULL);
+    if (!provider) { atomic_store(&g_softPending, 0); return; }
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGImageRef cg = CGImageCreate(sw, sh, 8, 32, (size_t)sw * 4, cs,
                                   kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast,
                                   provider, NULL, false, kCGRenderingIntentDefault);
     CGColorSpaceRelease(cs);
-    CGDataProviderRelease(provider);
-    if (!cg) return;
+    CGDataProviderRelease(provider);   // cg 仍持有 g_softDisp（provider 用 NULL 释放回调，不会 free 它）
+    if (!cg) { atomic_store(&g_softPending, 0); return; }
 
-    /* CFRetain/CFRelease 与 ARC/MRR 无关，可在线程间安全交接。
-     * 合并：若上一帧还在主线程排队就丢弃本帧，杜绝 block 堆积导致 OOM 闪退。 */
-    CFRetain(cg);
-    if (atomic_exchange(&g_softPending, 1) == 1) {
-        CFRelease(cg);          // 主线程还没处理完，丢掉这一帧
-        return;
-    }
     dispatch_async(dispatch_get_main_queue(), ^{
         @autoreleasepool {
             if (g_softView) {
                 UIImage *img = [UIImage imageWithCGImage:cg];
                 g_softView.image = img;
             }
-            CFRelease(cg);
+            CGImageRelease(cg);
         }
         atomic_store(&g_softPending, 0);
     });
