@@ -36,31 +36,45 @@ final class MkxpTouchOverlay: NSObject {
       .first { $0.activationState == .foregroundActive } as? UIWindowScene)
       ?? (UIApplication.shared.connectedScenes.first as? UIWindowScene)
     guard let scene else { return }
-    let screen = scene.screen.bounds
     let size = CGSize(width: 156, height: 116)
     let win = UIWindow(windowScene: scene)
     win.windowLevel = UIWindow.Level(rawValue: 2005)   // 高于 SDL 引擎窗口(1999)与触摸浮层
     win.backgroundColor = .clear
+    // 关键：HUD 窗口必须【不接收触摸】，否则全屏窗口会挡住下层触摸浮层的所有按键
+    win.isUserInteractionEnabled = false
     let vc = UIViewController()
     vc.view.backgroundColor = .clear
-    let box = UIView(frame: CGRect(
-        x: (screen.width - size.width) / 2,
-        y: (screen.height - size.height) / 2,
-        width: size.width, height: size.height))
+    let box = UIView(frame: CGRect(x: 0, y: 0, width: size.width, height: size.height))
     box.backgroundColor = UIColor(white: 0.07, alpha: 0.86)
     box.layer.cornerRadius = 18
+    box.translatesAutoresizingMaskIntoConstraints = false
     let spinner = UIActivityIndicatorView(style: .large)
     spinner.color = .white
-    spinner.frame = CGRect(x: (size.width - 37) / 2, y: 22, width: 37, height: 37)
+    spinner.translatesAutoresizingMaskIntoConstraints = false
     spinner.startAnimating()
-    let label = UILabel(frame: CGRect(x: 0, y: 66, width: size.width, height: 22))
+    let label = UILabel()
     label.text = "正在启动游戏…"
     label.textColor = UIColor(white: 1, alpha: 0.85)
     label.font = .systemFont(ofSize: 14, weight: .medium)
     label.textAlignment = .center
+    label.translatesAutoresizingMaskIntoConstraints = false
     box.addSubview(spinner)
     box.addSubview(label)
     vc.view.addSubview(box)
+    // 用约束居中：设备旋转（HUD 创建时 scene 已横屏）也不歪——
+    // UIScreen.bounds 恒为竖屏坐标，按它算 frame 会在横屏下跑到底部
+    NSLayoutConstraint.activate([
+        box.centerXAnchor.constraint(equalTo: vc.view.centerXAnchor),
+        box.centerYAnchor.constraint(equalTo: vc.view.centerYAnchor),
+        box.widthAnchor.constraint(equalToConstant: size.width),
+        box.heightAnchor.constraint(equalToConstant: size.height),
+        spinner.centerXAnchor.constraint(equalTo: box.centerXAnchor),
+        spinner.topAnchor.constraint(equalTo: box.topAnchor, constant: 20),
+        label.topAnchor.constraint(equalTo: spinner.bottomAnchor, constant: 8),
+        label.centerXAnchor.constraint(equalTo: box.centerXAnchor),
+        label.leadingAnchor.constraint(greaterThanOrEqualTo: box.leadingAnchor, constant: 8),
+        label.trailingAnchor.constraint(lessThanOrEqualTo: box.trailingAnchor, constant: -8),
+    ])
     win.rootViewController = vc
     win.isHidden = false
     loadingWindow = win
