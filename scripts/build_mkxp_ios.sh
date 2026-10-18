@@ -419,7 +419,7 @@ shim = '''    /* iOS compat hook (engine adaptation; game project untouched):
         "        acc\\n"
         "      else\\n"
         "        $__mkxp_miss[str] = ($__mkxp_miss[str] || 0) + 1\\n"
-        "        $stderr.puts \\\"[mkxp-fs] miss: #{str}\\\" if $__mkxp_miss[str] == 1\\n"
+        "        $stderr.puts '[mkxp-fs] miss: ' + str if $__mkxp_miss[str] == 1\\n"
         "        str\\n"
         "      end\\n"
         "    end\\n"
