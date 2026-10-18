@@ -72,6 +72,15 @@ int mkxp_run(const char *gamePath)
     if (g_engineRunning.load())
         return -2;
 
+    /* MRI GC 调优：宝可梦sp 的脚本体量很大（Scripts 5MB+、60+ 插件），默认 GC
+     * 策略会造成周期性停顿（表现为“各种时候都偶尔卡顿”，走动/卷动/弹字皆可见）。
+     * 放宽初始槽与 malloc 阈值，显著降低 GC 频率（内存换流畅；
+     * 当前进程内存 ~290MB，iOS 上限远未触及）。必须在 ruby_init 之前设置。 */
+    setenv("RUBY_GC_HEAP_INIT_SLOTS", "600000", 0);
+    setenv("RUBY_GC_HEAP_GROWTH_FACTOR", "1.8", 0);
+    setenv("RUBY_GC_MALLOC_LIMIT", "67108864", 0);
+    setenv("RUBY_GC_OLDMALLOC_LIMIT", "134217728", 0);
+
     /* stdout/stderr → Documents/mkxp.log：引擎 C++ 日志、Ruby/Essentials 启动报错、
      * shader 编译错误全部落盘，供 App 内日志页读取（无 Mac 环境的唯一调试通道）。
      * 沙盒进程 HOME 即 App 沙盒根。stderr 不缓冲，崩溃前也能看到已写内容。 */

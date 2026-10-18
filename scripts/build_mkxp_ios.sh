@@ -336,6 +336,34 @@ if [ -f "$MKXP_SRC/binding/binding-mri.cpp" ]; then
   echo "patched binding-mri.cpp std::system -> 0 (unavailable on iOS)"
 fi
 
+# BGM 诊断日志：Audio.bgm_play / bgm_stop 调用落盘（定位“切图后 BGM 消失”）
+python3 - "$MKXP_SRC/binding/audio-binding.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = "    GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )"
+new = ("    fprintf(stderr, \"[mkxp-audio] bgm_play '%s' vol=%d pitch=%d\\n\", filename, volume, pitch);\n"
+       "    GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )")
+old2 = "RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127;\n    rb_get_args(argc, argv, \"|i\", &track RB_ARG_END);\n    shState->audio().bgmStop(track);"
+new2 = ("RB_METHOD(audio_bgmStop)\n{\n    RB_UNUSED_PARAM;\n    int track = -127;\n    rb_get_args(argc, argv, \"|i\", &track RB_ARG_END);\n"
+        "    fprintf(stderr, \"[mkxp-audio] bgm_stop track=%d\\n\", track);\n"
+        "    shState->audio().bgmStop(track);")
+changed = False
+if old in s:
+    s = s.replace(old, new, 1)
+    changed = True
+if old2 in s:
+    s = s.replace(old2, new2, 1)
+    changed = True
+if changed:
+    if '#include <cstdio>' not in s:
+        s = s.replace('#include <ruby/thread.h>', '#include <ruby/thread.h>\n#include <cstdio>', 1)
+    open(p, 'w', encoding='utf-8').write(s)
+    print("patched audio-binding.cpp: bgm_play/bgm_stop diagnostics")
+else:
+    print("audio-binding.cpp: anchors missing or already patched (ok)")
+PYEOF
+
 # iOS 兼容 shim（引擎适配，不动游戏工程）：
 #  1) 顶层 def（实际落在 Object 上）自动以“委托 main 对象”的方式提升为 Kernel
 #     单例方法——RGSS 允许 Kernel.pbXxx 显式接收者调用（宝可梦sp 的 Modular

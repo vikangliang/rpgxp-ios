@@ -7,9 +7,9 @@ import UIKit
 /// 根视图 `isUserInteractionEnabled = false`，让游戏区的触摸穿透到下层 SDL 窗口；
 /// 只有摇杆与动作键子视图接收触摸。
 ///
-/// 键位映射（Essentials 默认，可在设置重映射）：
+/// 键位映射（用户指定）：
 ///   方向：Up=8 / Down=2 / Left=4 / Right=6（Input::ButtonCode）
-///   动作：C 确定=13 / ✕ 取消=12 / Z 特殊=16 / ☰ 菜单=14
+///   动作：C 确定=13 / ✕ 取消=12 / Z=电脑键盘Z（RGSS A）=11 / ☰ 菜单=电脑键盘D（RGSS Z）=16
 final class MkxpTouchOverlay: NSObject {
   static let shared = MkxpTouchOverlay()
 
@@ -157,37 +157,29 @@ final class MkxpTouchOverlay: NSObject {
 
   // MARK: - 控件构建
 
-  /// 十字四向方向键（替代圆环摇杆）：上下左右 4 个圆形玻璃键，按下/抬起发 RGSS 键码。
+  /// 十字方向区：单一触摸追踪视图（覆盖整个十字外接范围）。
+  /// 之前 4 个独立 UIButton 的缺陷：按住后手指滑出按钮不会触发 touchUp，
+  /// 原方向键一直卡在“按下”→ 表现为“偶尔失灵”。单视图追踪可随手滑换向、
+  /// 也天然支持斜向双键（如右+上）。
   private func buildDpad(in ctl: UIView) {
     let d: CGFloat = 62          // 单键直径
     let step = d + 4             // 键中心距
     let cx: CGFloat = 118        // 十字中心 x（左侧偏下，少挡画面）
     let h = max(ctl.bounds.height, UIScreen.main.bounds.height)
     let cy = h - 170             // 十字中心 y
-    let items: [(String, Int32, CGRect)] = [
-      ("▲", KEY_UP,    CGRect(x: cx - d/2,          y: cy - step - d/2, width: d, height: d)),
-      ("▼", KEY_DOWN,  CGRect(x: cx - d/2,          y: cy + step - d/2, width: d, height: d)),
-      ("◀", KEY_LEFT,  CGRect(x: cx - step - d/2,   y: cy - d/2,        width: d, height: d)),
-      ("▶", KEY_RIGHT, CGRect(x: cx + step - d/2,   y: cy - d/2,        width: d, height: d)),
-    ]
-    for (label, key, frame) in items {
-      let b = makeGlassButton(title: label)
-      b.frame = frame
-      b.titleLabel?.font = .systemFont(ofSize: 20, weight: .bold)
-      b.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
-      b.addTarget(self, action: #selector(actionDown(_:)), for: .touchDown)
-      b.addTarget(self, action: #selector(actionUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
-      b.tag = Int(key)
-      ctl.addSubview(b)
-      actionButtons.append(b)
-    }
+    let span = step * 2 + d      // 触摸区外接边长
+    let pad = MkxpDpadView(frame: CGRect(
+        x: cx - span / 2, y: cy - span / 2, width: span, height: span))
+    pad.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
+    ctl.addSubview(pad)
   }
 
   private func buildActionButtons(in ctl: UIView, root: UIView) {
-    // (label, RGSS key) —— Essentials 默认
+    // (label, RGSS key) —— 按用户键位要求：
+    //   C 确定=13 / ✕ 取消=12 / Z=电脑键盘Z（RGSS A）=11 / ☰ 菜单=电脑键盘D（RGSS Z）=16
     let items: [(String, Int32)] = [
       ("C", 13), ("✕", 12),
-      ("Z", 16), ("☰", 14),
+      ("Z", 11), ("☰", 16),
     ]
     let d: CGFloat = 72, gap: CGFloat = 14
     let block = d * 2 + gap
@@ -277,5 +269,69 @@ final class MkxpPassthroughView: UIView {
   override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
     let v = super.hitTest(point, with: event)
     return v === self ? nil : v
+  }
+}
+
+/// 十字方向触摸区：单视图追踪全部触摸，按位置映射 4/8 向 RGSS 键码。
+/// 手指从 ▲ 滑到 ▶ 会自动抬起 ▲ 按下 ▶（旧的多 UIButton 方案会卡键）。
+final class MkxpDpadView: UIView {
+  private let step: CGFloat = 66     // 键中心距
+  private let radius: CGFloat = 31
+  private var held: Set<Int32> = []
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    backgroundColor = .clear
+    isMultipleTouchEnabled = true
+    // 4 个纯装饰圆键（不可交互，触摸全由本视图统一处理）
+    let items: [(String, CGPoint)] = [
+      ("▲", CGPoint(x: 0, y: -step)), ("▼", CGPoint(x: 0, y: step)),
+      ("◀", CGPoint(x: -step, y: 0)), ("▶", CGPoint(x: step, y: 0)),
+    ]
+    for (arrow, off) in items {
+      let c = UIView(frame: CGRect(x: 0, y: 0, width: radius * 2, height: radius * 2))
+      c.center = CGPoint(x: bounds.midX + off.x, y: bounds.midY + off.y)
+      c.backgroundColor = UIColor(white: 1, alpha: 0.10)
+      c.layer.cornerRadius = radius
+      c.layer.borderWidth = 1
+      c.layer.borderColor = UIColor(white: 1, alpha: 0.25).cgColor
+      c.isUserInteractionEnabled = false
+      let lb = UILabel(frame: c.bounds)
+      lb.text = arrow
+      lb.textColor = .white
+      lb.font = .systemFont(ofSize: 20, weight: .bold)
+      lb.textAlignment = .center
+      lb.isUserInteractionEnabled = false
+      c.addSubview(lb)
+      addSubview(c)
+    }
+  }
+  required init?(coder: NSCoder) { fatalError() }
+
+  override func touchesBegan(_ t: Set<UITouch>, with e: UIEvent?) { update(t) }
+  override func touchesMoved(_ t: Set<UITouch>, with e: UIEvent?) { update(t) }
+  override func touchesEnded(_ t: Set<UITouch>, with e: UIEvent?) { update(e?.allTouches ?? t) }
+  override func touchesCancelled(_ t: Set<UITouch>, with e: UIEvent?) { update(e?.allTouches ?? t) }
+
+  private func update(_ touches: Set<UITouch>) {
+    var want = Set<Int32>()
+    for t in touches {
+      let p = t.location(in: self)
+      want.formUnion(keysFor(point: p))
+    }
+    for k in held.subtracting(want) { MkxpBridge.key(Int(k), down: false) }
+    for k in want.subtracting(held) { MkxpBridge.key(Int(k), down: true) }
+    held = want
+  }
+
+  /// 位置 → 键码集合：横向/纵向独立判定（死区 16pt），斜向自然合成两键。
+  private func keysFor(point p: CGPoint) -> Set<Int32> {
+    let dx = p.x - bounds.midX
+    let dy = p.y - bounds.midY
+    let dead: CGFloat = 16
+    var s = Set<Int32>()
+    if abs(dx) >= dead { s.insert(dx < 0 ? 4 : 6) }   // Left=4 Right=6
+    if abs(dy) >= dead { s.insert(dy < 0 ? 8 : 2) }   // Up=8 Down=2
+    return s
   }
 }

@@ -314,6 +314,7 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
     if (g_appBackgrounded) return YES;
 
     uint64_t n = ++g_presentTotal;
+    CFTimeInterval hookT0 = CFAbsoluteTimeGetCurrent();
     if (n <= 3 || n % 600 == 1) {
         fprintf(stderr, "[ios-embed] present #%llu (drawablePx=%dx%d)\n",
                 (unsigned long long)n, g_drawW, g_drawH);
@@ -336,6 +337,20 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
 
     if (!rotateFrame)
         mkxp_softPresent();
+
+    /* 帧耗时统计：present(EAGL 提交+vsync 等待) + 读回 + 拷贝的总开销。
+     * 卡顿定性数据——若均值远超 16.6ms 即为引擎线程被拖慢的直接证据。 */
+    {
+        static double s_acc = 0;
+        static int s_n = 0;
+        s_acc += CFAbsoluteTimeGetCurrent() - hookT0;
+        if (++s_n >= 600) {
+            fprintf(stderr, "[ios-embed] present-hook avg %.2f ms (n=600)\n",
+                    s_acc / s_n * 1000.0);
+            s_acc = 0;
+            s_n = 0;
+        }
+    }
 
     return ok;
 }
