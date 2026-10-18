@@ -408,7 +408,7 @@ shim = '''    /* iOS compat hook (engine adaptation; game project untouched):
         "            ok = false\\n"
         "            break\\n"
         "          end\\n"
-        "          if m.nil?\\n"
+        "          if m.nil? && last && ['.gif', '.png', '.jpg', '.jpeg'].any? { |e| p.downcase.end_with?(e) }; base = p[0, p.rindex('.')]; ['png', 'gif', 'jpg', 'jpeg'].each { |ext| alt = base + '.' + ext; mm = Dir.children(parent).find { |n| n.casecmp(alt) == 0 || n.delete(' ').casecmp(alt.delete(' ')) == 0 }; if mm; m = mm; break; end }; end; if m.nil?\\n"
         "            ok = false\\n"
         "            break\\n"
         "          end\\n"
@@ -654,6 +654,33 @@ else:
             s = s[:ls] + newfn + s[end:]
             open(p, 'w', encoding='utf-8').write(s)
             print("patched graphics.cpp: hybrid frame limiter (coarse sleep + 2ms spin)")
+PYEOF
+
+# 转场图缺失兜底：Graphics.transition(duration, "Graphics/Maps/xxx") 若图缺失，
+# `new Bitmap(filename)` 会抛异常 → transition 中途夭折 → 冻结态不解 →
+# 场所转移黑屏超长（实测 真新镇.png 缺失）。回退为默认淡入淡出。
+python3 - "$MKXP_SRC/src/display/graphics.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = "    Bitmap *transMap = *filename ? new Bitmap(filename) : 0;"
+new = ("    Bitmap *transMap = 0;\n"
+       "    if (*filename) {\n"
+       "        /* iOS engine adaptation: a missing custom transition graphic used to\n"
+       "         * throw out of Graphics::transition, leaving the screen frozen black\n"
+       "         * for the whole transfer. Fall back to the simple fade instead. */\n"
+       "        try {\n"
+       "            transMap = new Bitmap(filename);\n"
+       "        } catch (const Exception &e) {\n"
+       "            transMap = 0;\n"
+       "        }\n"
+       "    }")
+if old in s and 'Fall back to the simple fade' not in s:
+    s = s.replace(old, new, 1)
+    open(p, 'w', encoding='utf-8').write(s)
+    print("patched graphics.cpp: missing transition graphic -> simple fade fallback")
+else:
+    print("graphics.cpp: transition anchor missing or already patched (ok)")
 PYEOF
 
 # ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
