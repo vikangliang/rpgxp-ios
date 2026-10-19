@@ -762,6 +762,46 @@ else:
     print("bitmap.cpp: missing-bitmap anchor missing")
 PYEOF
 
+# ---------- 3a-1.6. EventScriptError 弹窗兜底：showExc 落日志不弹框 ----------
+# mkxp-z 的 binding-mri.cpp::showExc 把 e.message 拼成 "Script 'X' line N: C
+# occured.\n\n<full err>"，调 showMsg -> eThread.showMessageBox -> SDL_ShowSimpleMessageBox。
+# 这条路径只在 mriBindingExecute() 末尾（脚本整体退出时）触发，RGSS 线程死了游戏才挂。
+# 但 iOS 上 EventScriptError 命中的 SDL 弹窗是 iOS 系统级 alert，无法消掉（除非重启进程）。
+# 此补丁：强制 Debug() << 完整 e.message（含 Exception: / Message: / ***Full script:
+# / Backtrace:），并跳过 showMsg() 弹窗。stderr.flush() 确保崩溃前日志落到
+# Documents/mkxp.log，下次崩就有真因。
+python3 - "$MKXP_SRC/Binding/binding-mri.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = (
+"    std::string ms(640, '\\0');\n"
+"    snprintf(&ms[0], ms.size(), \"Script '%s' line %s: %s occured.\\n\\n%s\",\n"
+"             file.c_str(), line, RSTRING_PTR(name), RSTRING_PTR(msg));\n"
+"    \n"
+"    showMsg(ms);\n")
+new = (
+"    std::string ms(640, '\\0');\n"
+"    snprintf(&ms[0], ms.size(), \"Script '%s' line %s: %s occured.\\n\\n%s\",\n"
+"             file.c_str(), line, RSTRING_PTR(name), RSTRING_PTR(msg));\n"
+"    // iOS engine adaptation: showExc -> showMsg -> SDL_ShowSimpleMessageBox\n"
+"    // -> iOS system dialog that hard-locks the app (e.g., EventScriptError in\n"
+" // Interpreter#execute_script when the user-imported game is missing\n"
+" // Graphics/Maps/*.png). The dialog can't be dismissed; game dies too.\n"
+"    // Force the entire e.message to stderr so the cause is in mkxp.log\n"
+"    // (Exception: / Message: / ***Full script: / Backtrace:), then SKIP\n"
+"    // showMsg entirely. The user can quit via the App '...' menu.\n"
+"    Debug() << \"rgss: ruby exception (suppressed dialog):\" << ms.c_str();\n"
+"    std::cerr.flush();\n"
+"    // showMsg(ms);\n")
+if old in s:
+    s = s.replace(old, new, 1)
+    open(p, 'w', encoding='utf-8').write(s)
+    print("patched binding-mri.cpp: showExc -> log only (no modal dialog)")
+else:
+    print("binding-mri.cpp: showExc anchor missing")
+PYEOF
+
 # ---------- 3a-2. iOS 横线修复：tainted 区域非法矩形护栏 ----------
 # 设备日志里反复出现 "pixman_region_union_rect: Invalid rectangle passed"，
 # 来源是 Bitmap::addTaintedArea / substractTaintedArea 收到宽高<=0 或越界的
@@ -903,7 +943,7 @@ if [ -f "$MKXP_SRC/.git/config" ]; then
 
   # 零死角校验：确认关键补丁 hunk 真的落进源码（避免 patch -f 静默丢弃）。
   # 任何签名缺失 = 对应修复没生效 = 构建直接失败，绝不让“试探包”流到真机。
-  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/" "swapInterval=" "mkxp: bitmap missing"; do
+  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/" "swapInterval=" "mkxp: bitmap missing" "rgss: ruby exception (suppressed dialog)"; do
     if ! grep -rqF "$sig" "$MKXP_SRC/src"; then
       echo "FATAL: 关键补丁签名缺失: $sig （hunk 可能被丢弃，修复未生效）"; exit 1
     fi
