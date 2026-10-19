@@ -339,7 +339,7 @@ index 67c7799..83126e1 100644
      
      void initStaticKbBindings()
 diff --git a/src/main.cpp b/src/main.cpp
-index 4779221..14ab52e 100644
+index 4779221..202c674 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -35,6 +35,8 @@
@@ -383,7 +383,7 @@ index 4779221..14ab52e 100644
  #ifdef MKXPZ_BUILD_XCODE
      {
          std::string downloadsPath = "/Users/" + mkxp_sys::getUserName() + "/Downloads";
-@@ -414,7 +432,12 @@ int main(int argc, char *argv[]) {
+@@ -414,7 +430,12 @@ int main(int argc, char *argv[]) {
      if (!mode.refresh_rate)
        conf.syncToRefreshrate = false;
  
@@ -397,7 +397,7 @@ index 4779221..14ab52e 100644
  
  #ifndef MKXPZ_INIT_GL_LATER
      SDL_GLContext glCtx = initGL(win, conf, 0);
-@@ -422,84 +445,93 @@ int main(int argc, char *argv[]) {
+@@ -422,84 +443,93 @@ int main(int argc, char *argv[]) {
      SDL_GLContext glCtx = NULL;
  #endif
  
@@ -542,3 +542,331 @@ index 4779221..14ab52e 100644
  
      return 0;
  }
+diff --git a/src/audio/alstream.cpp b/src/audio/alstream.cpp
+index 73dfe41..f29cd3c 100644
+--- a/src/audio/alstream.cpp
++++ b/src/audio/alstream.cpp
+@@ -42,7 +42,7 @@ ALStream::ALStream(LoopMode loopMode,
+ 	  source(0),
+ 	  thread(0),
+ 	  preemptPause(false),
+-      pitch(1.0f)
++      pitch(1.0f), healRetries(0), lastHealTicks(0)
+ {
+ 	alSrc = AL::Source::gen();
+ 
+@@ -344,14 +344,42 @@ void ALStream::checkStopped()
+ 	if (!streamInited)
+ 		return;
+ 
+-	/* If alSrc isn't playing, but we haven't
+-	 * exhausted the data source yet, we're just
+-	 * having a buffer underrun */
+-	if (!sourceExhausted)
++	ALenum s = AL::Source::getState(alSrc);
++
++	if (s == AL_PLAYING)
++	{
++		healRetries = 0;
++		lastHealTicks = 0;
+ 		return;
++	}
+ 
+-	if (AL::Source::getState(alSrc) == AL_PLAYING)
++	/* If alSrc isn't playing, but we haven't exhausted the data source
++	 * yet, we're either having a transient buffer underrun (normally
++	 * self-healed by streamData) or hit the iOS "audio vacuum": after an
++	 * interruption the OpenAL device went invalid, the source died but
++	 * was never marked exhausted, so BGM would stay silently dead. Heal
++	 * by restarting the stream, throttled to once/2s, capped at 30 tries
++	 * (~60s) so we keep retrying (e.g. until the device comes back)
++	 * without busy-looping or restarting forever. */
++	if (!sourceExhausted)
++	{
++		if (healRetries >= 30)
++		{
++			Debug() << "rgss: bgm heal gave up after" << healRetries;
++			stopStream();
++			state = Stopped;
++			return;
++		}
++		uint32_t now = SDL_GetTicks();
++		if (now - lastHealTicks < 2000)
++			return;
++		lastHealTicks = now;
++		healRetries++;
++		Debug() << "rgss: bgm heal attempt" << healRetries << "alstate=" << s;
++		stopStream();
++		startStream(startOffset);
+ 		return;
++	}
+ 
+ 	stopStream();
+ 	state = Stopped;
+diff --git a/src/audio/alstream.h b/src/audio/alstream.h
+index e8c1606..c111a1f 100644
+--- a/src/audio/alstream.h
++++ b/src/audio/alstream.h
+@@ -61,6 +61,12 @@ struct ALStream
+ 	AtomicFlag streamInited;
+ 	AtomicFlag sourceExhausted;
+ 
++	/* BGM self-heal: when the AL source stops unexpectedly without being
++	 * exhausted (transient underrun, or iOS "audio vacuum" after an
++	 * interruption), the stream is restarted. These track retry state. */
++	int healRetries;
++	uint32_t lastHealTicks;
++
+ 	AtomicFlag threadTermReq;
+ 
+ 	AtomicFlag needsRewind;
+diff --git a/src/audio/audio.cpp b/src/audio/audio.cpp
+index 6e42182..44365d7 100644
+--- a/src/audio/audio.cpp
++++ b/src/audio/audio.cpp
+@@ -130,6 +130,18 @@ struct AudioPrivate
+ 
+ 				me.unlockStream();
+ 
++				/* BGM heartbeat: periodically query BGM tracks so
++				 * ALStream::checkStopped() can self-heal a stream that
++				 * stopped unexpectedly (e.g. iOS audio vacuum after an
++				 * interruption). Without this, BGM-only playback never
++				 * triggers checkStopped() and stays silently dead. */
++				for (auto track : bgmTracks)
++				{
++					track->lockStream();
++					track->stream.queryState();
++					track->unlockStream();
++				}
++
+ 				break;
+ 			}
+ 
+diff --git a/src/audio/vorbissource.cpp b/src/audio/vorbissource.cpp
+index 7716a69..cb91502 100644
+--- a/src/audio/vorbissource.cpp
++++ b/src/audio/vorbissource.cpp
+@@ -185,6 +185,7 @@ struct VorbisSource : ALDataSource
+ 		Status retStatus = ALDataSource::NoError;
+ 
+ 		bool readAgain = false;
++		int holeRetries = 0;
+ 
+ 		if (loop.valid)
+ 		{
+@@ -200,9 +201,17 @@ struct VorbisSource : ALDataSource
+ 
+ 			if (res < 0)
+ 			{
+-				/* Read error */
+-				retStatus = ALDataSource::Error;
++				/* Read error (e.g. OV_HOLE / lost sync). Don't kill the
++				 * stream permanently; resync and retry a bounded number of
++				 * times so transient glitches and loop points don't turn
++				 * into permanent BGM silence. */
++				if (++holeRetries <= 8)
++				{
++					ov_raw_seek(&vf, ov_raw_tell(&vf));
++					continue;
++				}
+ 
++				retStatus = ALDataSource::Error;
+ 				break;
+ 			}
+ 
+diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
+index 4b43123..93721b2 100644
+--- a/src/display/bitmap.cpp
++++ b/src/display/bitmap.cpp
+@@ -22,6 +22,10 @@
+ #include "bitmap.h"
+ 
+ #include <SDL.h>
++#include <cstdio>
++#include <unordered_map>
++#include <list>
++#include <vector>
+ #include <SDL_image.h>
+ #include <SDL_ttf.h>
+ #include <SDL_rect.h>
+@@ -466,8 +470,103 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
+     }
+ };
+ 
++/* ---- Decoded-pixel LRU cache (iOS perf) ----
++ * Stores post-ensureFormat ABGR8888 pixels keyed by normalized filename.
++ * Caches the most expensive part (RGSSAD decrypt + PNG decode) so that
++ * returning to a map / ending a battle re-uses decoded pixels instead of
++ * re-decoding from scratch. Each Bitmap gets its own copy of the cached
++ * bytes, so the cache only holds immutable pixels and can never be
++ * corrupted by a later blt/modification of a Bitmap. ---- */
++namespace {
++
++struct DecodedPixelCache
++{
++    struct Entry
++    {
++        int w, h;
++        std::vector<uint8_t> px; // ABGR8888
++    };
++
++    std::unordered_map<std::string, Entry> map;
++    std::list<std::string> lru; // front = most recent
++    int64_t totalBytes;
++    int64_t hits, miss, ops;
++    static const int64_t CAP_BYTES = 64LL * 1024 * 1024;
++    SDL_mutex *mut;
++
++    DecodedPixelCache()
++        : totalBytes(0), hits(0), miss(0), ops(0)
++    { mut = SDL_CreateMutex(); }
++
++    bool get(const std::string &key, int &w, int &h, std::vector<uint8_t> &out)
++    {
++        SDL_LockMutex(mut);
++        auto it = map.find(key);
++        bool hit = (it != map.end());
++        if (hit)
++        {
++            w = it->second.w; h = it->second.h; out = it->second.px;
++            lru.remove(key); lru.push_front(key);
++            hits++;
++        }
++        SDL_UnlockMutex(mut);
++        return hit;
++    }
++
++    void put(const std::string &key, int w, int h, const uint8_t *p, size_t n)
++    {
++        SDL_LockMutex(mut);
++        int64_t add = (int64_t)n;
++        while (totalBytes + add > CAP_BYTES && lru.size() > 0)
++        {
++            std::string oldk = lru.back();
++            auto oit = map.find(oldk);
++            if (oit == map.end()) { lru.pop_back(); continue; }
++            totalBytes -= (int64_t)oit->second.px.size();
++            map.erase(oit);
++            lru.pop_back();
++        }
++        Entry e; e.w = w; e.h = h; e.px.assign(p, p + n);
++        map[key] = e;
++        lru.remove(key); lru.push_front(key);
++        totalBytes += add;
++        miss++; ops++;
++        if (ops % 1024 == 0)
++            fprintf(stderr, "rgss: decode-cache hits=%lld miss=%lld\n", (long long)hits, (long long)miss);
++        SDL_UnlockMutex(mut);
++    }
++};
++
++DecodedPixelCache g_decodedPixelCache;
++
++} // namespace
++
+ Bitmap::Bitmap(const char *filename)
+ {
++    /* Fast path: decoded-pixel cache. Skips RGSSAD decrypt + PNG decode
++     * entirely on re-entry (battle end, map return). Cached pixels are
++     * post-ensureFormat ABGR8888 bytes, identical to the normal path's
++     * imgSurf->pixels, so we upload them DIRECTLY (no SDL surface, no
++     * re-decode) to reproduce the exact same GPU bytes. The (rare)
++     * mega-surface case is skipped and falls through to normal decode. */
++    {
++        int cw = 0, ch = 0;
++        std::vector<uint8_t> cpx;
++        if (g_decodedPixelCache.get(filename, cw, ch, cpx))
++        {
++            if (cw <= glState.caps.maxTexSize && ch <= glState.caps.maxTexSize)
++            {
++                p = new BitmapPrivate(this);
++                TEXFBO tex = shState->texPool().request(cw, ch);
++                p->gl = tex;
++                TEX::bind(p->gl.tex);
++                TEX::uploadImage(cw, ch, cpx.data(), GL_RGBA);
++                p->addTaintedArea(rect());
++                return;
++            }
++        }
++    }
++
+     BitmapOpenHandler handler;
+     shState->fileSystem().openRead(handler, filename);
+     
+@@ -578,7 +677,16 @@ Bitmap::Bitmap(const char *filename)
+     
+     
+     p->ensureFormat(imgSurf, SDL_PIXELFORMAT_ABGR8888);
+-    
++
++    /* Cache decoded pixels for fast re-entry (battle end / map
++     * return). Skip huge surfaces (mega-path) to bound memory. */
++    if (imgSurf->w <= glState.caps.maxTexSize && imgSurf->h <= glState.caps.maxTexSize)
++    {
++        g_decodedPixelCache.put(filename, imgSurf->w, imgSurf->h,
++            (const uint8_t*)imgSurf->pixels,
++            (size_t)imgSurf->w * imgSurf->h * 4);
++    }
++
+     if (imgSurf->w > glState.caps.maxTexSize || imgSurf->h > glState.caps.maxTexSize)
+     {
+         /* Mega surface */
+diff --git a/src/eventthread.cpp b/src/eventthread.cpp
+index 91ddec7..56ea0fc 100644
+--- a/src/eventthread.cpp
++++ b/src/eventthread.cpp
+@@ -681,6 +681,27 @@ int EventThread::eventFilter(void *data, SDL_Event *event)
+     return 1;
+ }
+ 
++/* iOS audio interruption / route-change bridge.
++ * Called from ios_embed.mm when AVAudioSession is interrupted or the route
++ * changes (phone call, AirPods switch, headphone unplug). Reuses the exact
++ * pause/resume logic from the SDL app-lifecycle handling above so the
++ * OpenAL device stays valid and BGM can self-heal instead of going silent. */
++extern "C" void mkxp_ios_audioInterruptBegin()
++{
++    if (HAVE_ALC_DEVICE_PAUSE)
++        alc.DevicePause(shState->rtData().alcDev);
++
++    shState->rtData().syncPoint.haltThreads();
++}
++
++extern "C" void mkxp_ios_audioInterruptEnd()
++{
++    shState->rtData().syncPoint.resumeThreads();
++
++    if (HAVE_ALC_DEVICE_PAUSE)
++        alc.DeviceResume(shState->rtData().alcDev);
++}
++
+ void EventThread::cleanup()
+ {
+     SDL_Event event;
+diff --git a/src/main.cpp b/src/main.cpp
+index 202c674..d7e0394 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -30,6 +30,7 @@
+ #include <SDL_sound.h>
+ #include <SDL_ttf.h>
+ 
++#include <cstdio>
+ #include <assert.h>
+ #include <string.h>
+ #include <string>
+@@ -574,7 +575,13 @@ static SDL_GLContext initGL(SDL_Window *win, Config &conf,
+   printGLInfo();
+ 
+   bool vsync = conf.vsync || conf.syncToRefreshrate;
++#ifdef MKXPZ_IOS_EMBED
++  /* iOS: force VSync on to eliminate screen tearing (esp. outdoor maps).
++   * Double buffering is already enabled; interval=1 flips on vblank. */
++  vsync = true;
++#endif
+   SDL_GL_SetSwapInterval(vsync ? 1 : 0);
++  fprintf(stderr, "[mkxp] swapInterval=%d\n", vsync ? 1 : 0);
+ 
+   // GLDebugLogger dLogger;
+   return glCtx;

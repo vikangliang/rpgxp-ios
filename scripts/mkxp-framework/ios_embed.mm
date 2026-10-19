@@ -12,6 +12,7 @@
 #import <SDL.h>
 #import <SDL_syswm.h>
 #import <UIKit/UIKit.h>
+#import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <OpenGLES/ES2/gl.h>
 #import <OpenGLES/ES2/glext.h>
@@ -65,6 +66,11 @@ static volatile sig_atomic_t g_appBackgrounded = 0;
 /* 供桥接层查询（MkxpPlugin "engineReady"）。extern "C"：本文件是 ObjC++，
  * 不加会被 C++ 改名，Swift 按纯 C 符号链接会报 Undefined symbol。 */
 extern "C" int mkxp_ios_firstFrameShown(void) { return atomic_load(&g_firstFrameShown); }
+
+/* 音频会话中断/路由桥接：由 eventthread.cpp 提供，复用其暂停-恢复逻辑，
+ * 让 OpenAL 设备在 iOS 中断/路由变更后保持有效，BGM 可自愈而非永久静音。 */
+extern "C" void mkxp_ios_audioInterruptBegin(void);
+extern "C" void mkxp_ios_audioInterruptEnd(void);
 
 /* 场景快照落盘：无 Mac 环境下定位“画面内容对不对”的铁证。
  * 在 Documents/scene_dump_N.png 生成 PNG，Flutter 日志页可直接查看/分享。 */
@@ -449,6 +455,41 @@ static void mkxp_installHooksEarly() {
         addObserverForName:UIApplicationWillEnterForegroundNotification
                     object:nil queue:nil
                 usingBlock:^(NSNotification *note){ mkxp_onAppLifecycle(note.name); }];
+
+    /* iOS 音频会话：中断(来电/其他 App 抢占)/路由变更(AirPods 切换/拔耳机)
+     * 会让 OpenAL 设备失效、BGM 永久静音。复用 eventthread 的暂停-恢复逻辑
+     * 自愈；中断结束/路由变更后重新激活会话。 */
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:AVAudioSessionInterruptionNotification
+                    object:nil queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note){
+        NSNumber *t = note.userInfo[AVAudioSessionInterruptionTypeKey];
+        if (t.integerValue == AVAudioSessionInterruptionTypeBegan) {
+            fprintf(stderr, "[ios-embed] AVAudioSession interruption BEGAN\n");
+            mkxp_ios_audioInterruptBegin();
+        } else {
+            fprintf(stderr, "[ios-embed] AVAudioSession interruption ENDED\n");
+            NSError *e = nil;
+            [[AVAudioSession sharedInstance] setActive:YES error:&e];
+            if (e) fprintf(stderr, "[ios-embed] AVAudioSession setActive err=%s\n",
+                           e.localizedDescription.UTF8String);
+            mkxp_ios_audioInterruptEnd();
+        }
+    }];
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:AVAudioSessionRouteChangeNotification
+                    object:nil queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note){
+        NSNumber *r = note.userInfo[AVAudioSessionRouteChangeReasonKey];
+        fprintf(stderr, "[ios-embed] AVAudioSession routeChange reason=%ld\n",
+                (long)r.integerValue);
+        NSError *e = nil;
+        [[AVAudioSession sharedInstance] setActive:YES error:&e];
+        if (e) fprintf(stderr, "[ios-embed] AVAudioSession setActive err=%s\n",
+                       e.localizedDescription.UTF8String);
+        mkxp_ios_audioInterruptEnd();
+    }];
+
     Class cls = [EAGLContext class];
     Method m = class_getInstanceMethod(cls, @selector(renderbufferStorage:fromDrawable:));
     if (m) { g_origRBS = (void(*)(id,SEL,NSUInteger,id))method_getImplementation(m);

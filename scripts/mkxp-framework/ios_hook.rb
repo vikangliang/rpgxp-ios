@@ -230,6 +230,13 @@ class << Object
           __mkxp_log("rbm", "in=#{x.inspect} -> #{ret.inspect}") if __mkxp_rel?(x) || __mkxp_rel?(ret.to_s)
           ret
         end
+      elsif m == :draw_text || m == :draw_text_ex
+        # 文本缺字诊断+防御（④）：拦截 Bitmap#draw_text / draw_text_ex。
+        # 诊断：记录字节数 vs 可见字符数并打出上游调用栈，定位 Essentials
+        # 里"按字节而非码点切片多字节字符"的脚本方法。防御：对不完整的
+        # UTF-8 尾部字节安全剥离，避免末尾多字节被切半产生乱码；合法 UTF-8
+        # 字符串完全不受影响。
+        __mkxp_wrap_text_method(m)
       elsif m != :method_added
         k = ::Kernel
         unless k.respond_to?(m)
@@ -244,6 +251,51 @@ class << Object
     end
   end
 end
+# ---- 文本缺字诊断+防御（④） ----
+# 拦截 Bitmap#draw_text / draw_text_ex：记录字节 vs 可见字符并打上游调用栈，
+# 定位 Essentials 按字节切片多字节字符的脚本方法；并对不完整 UTF-8 尾部做安全
+# 剥离（合法 UTF-8 不受影响）。
+def __mkxp_wrap_text_method(name)
+  return unless defined?(::Bitmap)
+  return unless ::Bitmap.method_defined?(name)
+  orig = :"__mkxp_orig_#{name}"
+  return if ::Bitmap.method_defined?(orig)
+  ::Bitmap.send(:alias_method, orig, name)
+  ::Bitmap.send(:define_method, name) do |*args, &blk|
+    ai = args.index { |a| a.is_a?(String) }
+    if ai
+      s = args[ai]
+      u = s.dup.force_encoding(Encoding::UTF_8)
+      if !u.valid_encoding?
+        $stderr.puts "[mkxp-text] INCOMPLETE UTF-8 #{name} bytes=#{u.bytesize} " \
+                     "caller=#{(caller[0..5]).inspect} str=#{s.inspect[0, 80]}"
+        i = u.length
+        fixed = ""
+        while i > 0
+          begin
+            t = u[0, i]
+            if t.valid_encoding?
+              fixed = t
+              break
+            end
+          rescue StandardError; end
+          i -= 1
+        end
+        args[ai] = fixed
+      else
+        $__mkxp_logs["txt"] += 1
+        $stderr.puts "[mkxp-text] #{name} bytes=#{u.bytesize} chars=#{u.length} " \
+                     "caller=#{(caller[0..3]).inspect}" if $__mkxp_logs["txt"] <= 120
+      end
+    end
+    send(orig, *args, &blk)
+  end
+rescue StandardError => e
+  $stderr.puts "[mkxp-text] wrap #{name} failed: #{e.class}: #{e.message}"
+end
+__mkxp_wrap_text_method(:draw_text)
+__mkxp_wrap_text_method(:draw_text_ex)
+
 class << Kernel
   def method_added(m)
     begin; Kernel.send(:module_function, m); rescue StandardError; end
@@ -252,7 +304,7 @@ end
 begin
   rgssad = FileTest.exist?("./Game.rgssad") ? "YES" : "no"
   pwd = (Dir.pwd rescue "??")
-  $stderr.puts "[mkxp-ios] compat hooks v8 installed (ROOT FIX: resolver string-ownership dup - game's gsub! on returned fname was mutating the shared cache object in place; + bypass, probes, cgf trace) cwd=#{pwd} rgssad=#{rgssad}"
+  $stderr.puts "[mkxp-ios] compat hooks v9 installed (ROOT FIX: resolver string-ownership dup - game's gsub! on returned fname was mutating the shared cache object in place; + bypass, probes, cgf trace; + text draw_text diagnostics/defense) cwd=#{pwd} rgssad=#{rgssad}"
 rescue StandardError => e
   $stderr.puts "[mkxp-ios] compat hooks v7 installed (banner detail failed: #{e.class})"
 end

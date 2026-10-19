@@ -363,3 +363,44 @@ M3 真机调通进行中（zlib/GL/UIKit/黑屏无声/JPEG/GC 已连环修，最
 | `.github/workflows/build-mkxp.yml` | 编 framework |
 | `.github/workflows/ios.yml` | 编 App IPA |
 | `README.md` | 进度 / 决策 / 路线图 |
+
+
+## M3 运行时修复（2026-10-19，CI 待真机验）
+
+> 一次性处理四个真机运行时问题；所有 mkxp-z C++ 改动进 `framework-entry.patch`，
+> iOS 音频会话进 `ios_embed.mm`，文本防御进 `ios_hook.rb`。目标：装一次 IPA 验证全部。
+
+### ① BGM 间歇性停止
+- 根因：流式解码出错即永久 Stopped 无自愈（`alstream.cpp` checkStopped）；`vorbissource.cpp` ov_read<0 / OV_HOLE 致死；
+  iOS 缺 `AVAudioSession` 中断/路由处理 -> 设备失效后 BGM 永久静音（"音频真空态"）。
+- 修复：
+  - `vorbissource.cpp`：`ov_read<0` 有限次（8）跳过重试，不再直接判死；
+  - `alstream.cpp`：checkStopped 在 state==Playing 且 AL source 非 AL_PLAYING 时**有界自愈重启**（<=30 次、2s 节流），
+    超限退化为原永久停止；
+  - `audio.cpp`：MeNotPlaying 加 BGM 心跳（周期 queryState 触发自愈）；
+  - `ios_embed.mm`：注册 `AVAudioSessionInterruptionNotification` / `RouteChangeNotification`，
+    复用 `eventthread.cpp` 的 alcDevicePause+haltThreads / resume 逻辑（新增 `mkxp_ios_audioInterruptBegin/End`）；
+    中断结束/路由变更后 `AVAudioSession setActive:YES` 重新激活会话。
+- 真机验证：长时间播放不中断、循环不猝死、插拔耳机/来电后 BGM 自动恢复；日志 `rgss: bgm heal attempt`。
+
+### ② 室外横向撕裂（横线/裂痕）
+- 根因：VSync 默认关（`main.cpp` SetSwapInterval(0)），双缓冲不防无 VSync 翻面撕裂；室内帧差小不可见，室外明显。
+- 修复：`main.cpp` iOS（`MKXPZ_IOS_EMBED`）强制 `SDL_GL_SetSwapInterval(1)`；日志打印 `swapInterval`。
+- 真机验证：室外横线消失。
+
+### ③ 室内->室外加载慢
+- 根因：`Bitmap` 构造完全同步（RGSSAD 解密 + PNG 解码 + GPU 上传），无解码像素缓存；
+  战斗返回/重进地图重复冷解码。
+- 修复：`bitmap.cpp` 加**解码像素 LRU 缓存**（容量 64MB，按路径缓存解密后 ABGR8888 像素；
+  命中即直接 `TEX::uploadImage`，不经过 SDL surface，**字节级等价于原上传，不串色**）；
+  逐 Bitmap 各自拷贝上传，缓存只持不可变像素，绝不被 blt 改坏。
+- 真机验证：日志 `rgss: decode-cache hits=... miss=...`；室内->室外/战斗返回耗时下降、cache hit 占多数。
+
+### ④ 文本时不时少一两个字
+- 根因（探查结论）：mkxp-z C++ `drawText` 对 UTF-8 正确，缺字几乎必然在**上游游戏脚本按字节切片多字节字符**
+  （游戏脚本不在本仓，无法直改根因）。
+- 修复（安全不回归）：`ios_hook.rb` 包装 `Bitmap#draw_text` / `draw_text_ex` ——
+  诊断（bytes vs chars + 上游调用栈前几帧，定位切片方法）+ 防御（对不完整 UTF-8 尾部安全剥离，合法字符串不受影响）；
+  hook 版本升至 v9。
+- 真机验证：日志 `mkxp-text` 若出现 `INCOMPLETE UTF-8` 或 `draw_text bytes=...` 即定位到上游方法；
+  文本尾部不再因不完整 UTF-8 乱码。
