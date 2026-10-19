@@ -284,8 +284,8 @@ def __mkxp_wrap_text_method(name)
         args[ai] = fixed
       else
         $__mkxp_logs["txt"] += 1
-        $stderr.puts "[mkxp-text] #{name} bytes=#{u.bytesize} chars=#{u.length} str=#{s.inspect[0,120]} " \
-                     "caller=#{(caller[0..12]).inspect}" if $__mkxp_logs["txt"] <= 300
+        $stderr.puts "[mkxp-text] #{name} bytes=#{u.bytesize} chars=#{u.length} " \
+                     "caller=#{(caller[0..3]).inspect}" if $__mkxp_logs["txt"] <= 120
       end
     end
     send(orig, *args, &blk)
@@ -304,7 +304,7 @@ end
 begin
   rgssad = FileTest.exist?("./Game.rgssad") ? "YES" : "no"
   pwd = (Dir.pwd rescue "??")
-  $stderr.puts "[mkxp-ios] compat hooks v10 installed (ROOT FIX: resolver string-ownership dup - game's gsub! on returned fname was mutating the shared cache object in place; + bypass, probes, cgf trace; + text draw_text diagnostics/defense with deepened caller[0..12] to locate upstream message-box slicer) cwd=#{pwd} rgssad=#{rgssad}"
+  $stderr.puts "[mkxp-ios] compat hooks v9 installed (ROOT FIX: resolver string-ownership dup - game's gsub! on returned fname was mutating the shared cache object in place; + bypass, probes, cgf trace; + text draw_text diagnostics/defense) cwd=#{pwd} rgssad=#{rgssad}"
 rescue StandardError => e
   $stderr.puts "[mkxp-ios] compat hooks v7 installed (banner detail failed: #{e.class})"
 end
