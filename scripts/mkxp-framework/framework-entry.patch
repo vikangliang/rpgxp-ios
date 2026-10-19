@@ -543,7 +543,6 @@ index 4779221..202c674 100644
      return 0;
  }
 diff --git a/src/audio/alstream.cpp b/src/audio/alstream.cpp
-index 73dfe41..5fe92c6 100644
 --- a/src/audio/alstream.cpp
 +++ b/src/audio/alstream.cpp
 @@ -42,7 +42,7 @@ ALStream::ALStream(LoopMode loopMode,
@@ -555,7 +554,7 @@ index 73dfe41..5fe92c6 100644
  {
  	alSrc = AL::Source::gen();
  
-@@ -344,17 +344,36 @@ void ALStream::checkStopped()
+@@ -344,17 +344,57 @@ void ALStream::checkStopped()
  	if (!streamInited)
  		return;
  
@@ -563,10 +562,24 @@ index 73dfe41..5fe92c6 100644
 -	 * exhausted the data source yet, we're just
 -	 * having a buffer underrun */
 -	if (!sourceExhausted)
--		return;
-+	ALenum s = AL::Source::getState(alSrc);
++	/* If streaming thread hasn't queued up
++	 * buffers yet there's not point in querying
++	 * the AL source */
++	/* Only a logically-Playing stream can die unexpectedly. Paused/Stopped
++	 * tracks are explicitly managed (ME/jingle pause, user stop) and must
++	 * NOT be restarted here: the previous unconditional heal restarted the
++	 * BGM under a playing ME (jingle replaces BGM, repeated restarts) and
++	 * looped finished non-looping tracks (device-verified 2026-10-19 via
++	 * "bgm heal attempt" spam while alstate=AL_STOPPED). */
++	if (state != Playing)
++	{
++		healRetries = 0;
++		lastHealTicks = 0;
+ 		return;
++	}
  
 -	if (AL::Source::getState(alSrc) == AL_PLAYING)
++	ALenum s = AL::Source::getState(alSrc);
 +	if (s == AL_PLAYING)
 +	{
 +		healRetries = 0;
@@ -574,12 +587,18 @@ index 73dfe41..5fe92c6 100644
  		return;
 +	}
  
-+	/* Source is not playing while state==Playing: the stream died
-+	 * unexpectedly (transient underrun, iOS "audio vacuum" after an
-+	 * interruption, decode glitch, or device invalidation). Heal by
-+	 * restarting the stream, throttled to once/2s, capped at 30 tries
-+	 * (~60s) so we keep retrying (e.g. until the device comes back)
-+	 * without busy-looping or restarting forever. */
++	/* End of a non-looping track (data exhausted): stop cleanly. */
++	if (sourceExhausted)
++	{
++		stopStream();
++		state = Stopped;
++		return;
++	}
++
++	/* Playing but the AL source died before data end: transient underrun
++	 * or the iOS audio-vacuum after an interruption/device invalidation.
++	 * Heal by restarting the stream, throttled to once per 2s, capped at
++	 * 30 tries (~60s) so we keep retrying without busy-looping forever. */
 +	if (healRetries >= 30)
 +	{
 +		Debug() << "rgss: bgm heal gave up after" << healRetries;
@@ -680,7 +699,6 @@ index 7716a69..cb91502 100644
  			}
  
 diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
-index 4b43123..f68141a 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
 @@ -22,6 +22,10 @@
@@ -694,7 +712,7 @@ index 4b43123..f68141a 100644
  #include <SDL_image.h>
  #include <SDL_ttf.h>
  #include <SDL_rect.h>
-@@ -466,8 +470,116 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
+@@ -466,8 +470,128 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
      }
  };
  
@@ -719,7 +737,7 @@ index 4b43123..f68141a 100644
 +    std::list<std::string> lru; // front = most recent
 +    int64_t totalBytes;
 +    int64_t hits, miss, ops;
-+    static const int64_t CAP_BYTES = 64LL * 1024 * 1024;
++    static const int64_t CAP_BYTES = 128LL * 1024 * 1024;
 +    SDL_mutex *mut;
 +
 +    DecodedPixelCache()
@@ -756,6 +774,7 @@ index 4b43123..f68141a 100644
 +        std::string key = normalizeKey(keyIn);
 +        SDL_LockMutex(mut);
 +        int64_t add = (int64_t)n;
++        if (add > CAP_BYTES) { miss++; ops++; SDL_UnlockMutex(mut); return; }
 +        while (totalBytes + add > CAP_BYTES && lru.size() > 0)
 +        {
 +            std::string oldk = lru.back();
@@ -793,16 +812,27 @@ index 4b43123..f68141a 100644
 +        std::vector<uint8_t> cpx;
 +        if (g_decodedPixelCache.get(filename, cw, ch, cpx))
 +        {
-+            if (cw <= glState.caps.maxTexSize && ch <= glState.caps.maxTexSize)
++            p = new BitmapPrivate(this);
++            if (cw > glState.caps.maxTexSize || ch > glState.caps.maxTexSize)
 +            {
-+                p = new BitmapPrivate(this);
++                /* Mega-size cached asset (e.g. 256x38660 tileset): rebuild
++                 * the mega surface from cached pixels - skips PNG decode. */
++                SDL_Surface *ms = SDL_CreateRGBSurfaceWithFormat(0, cw, ch, 32, SDL_PIXELFORMAT_ABGR8888);
++                for (int y = 0; y < ch; ++y)
++                    memcpy((uint8_t*)ms->pixels + (size_t)y * ms->pitch,
++                           cpx.data() + (size_t)y * cw * 4, (size_t)cw * 4);
++                p->megaSurface = ms;
++                SDL_SetSurfaceBlendMode(p->megaSurface, SDL_BLENDMODE_NONE);
++            }
++            else
++            {
 +                TEXFBO tex = shState->texPool().request(cw, ch);
 +                p->gl = tex;
 +                TEX::bind(p->gl.tex);
 +                TEX::uploadImage(cw, ch, cpx.data(), GL_RGBA);
 +                p->addTaintedArea(rect());
-+                return;
 +            }
++            return;
 +        }
 +    }
 +
@@ -811,7 +841,7 @@ index 4b43123..f68141a 100644
      BitmapOpenHandler handler;
      shState->fileSystem().openRead(handler, filename);
      
-@@ -578,7 +690,21 @@ Bitmap::Bitmap(const char *filename)
+@@ -578,7 +702,18 @@ Bitmap::Bitmap(const char *filename)
      
      
      p->ensureFormat(imgSurf, SDL_PIXELFORMAT_ABGR8888);
@@ -824,16 +854,14 @@ index 4b43123..f68141a 100644
 +        if (_dt > 30)
 +            fprintf(stderr, "rgss: slow decode %s t=%ums\n", filename, _dt);
 +    }
-+    if (imgSurf->w <= glState.caps.maxTexSize && imgSurf->h <= glState.caps.maxTexSize)
-+    {
-+        g_decodedPixelCache.put(filename, imgSurf->w, imgSurf->h,
-+            (const uint8_t*)imgSurf->pixels,
-+            (size_t)imgSurf->w * imgSurf->h * 4);
-+    }
++    g_decodedPixelCache.put(filename, imgSurf->w, imgSurf->h,
++        (const uint8_t*)imgSurf->pixels,
++        (size_t)imgSurf->w * imgSurf->h * 4);
 +
      if (imgSurf->w > glState.caps.maxTexSize || imgSurf->h > glState.caps.maxTexSize)
      {
          /* Mega surface */
+
 diff --git a/src/eventthread.cpp b/src/eventthread.cpp
 index 91ddec7..56ea0fc 100644
 --- a/src/eventthread.cpp
@@ -892,3 +920,4 @@ index 202c674..d7e0394 100644
  
    // GLDebugLogger dLogger;
    return glCtx;
+

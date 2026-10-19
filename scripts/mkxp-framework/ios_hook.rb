@@ -230,6 +230,32 @@ class << Object
           __mkxp_log("rbm", "in=#{x.inspect} -> #{ret.inspect}") if __mkxp_rel?(x) || __mkxp_rel?(ret.to_s)
           ret
         end
+      elsif m == :pbDrawTextPositions
+        # 消息框/多行文本逐字绘制的汇聚点（def pbDrawTextPositions(bitmap, textpos)，
+        # drawTextEx/Window_Message 都汇到这里）。记录每条文本行实际收到的字符序列：
+        # 若用户看到缺字而本日志字符齐全 → 字被"绘制裁剪"（宽度测量/视口问题）；
+        # 本日志里就缺 → 上游切片丢字。二者一锤定音。
+        origP = ::Object.instance_method(:pbDrawTextPositions)
+        ::Object.send(:define_method, :pbDrawTextPositions) do |bitmap, textpos|
+          begin
+            $__mkxp_logs["dtp"] += 1
+            if $__mkxp_logs["dtp"] <= 40
+              chars = textpos.map { |e| e[0].to_s }.join
+              u = chars.dup.force_encoding(Encoding::UTF_8)
+              fn = begin
+                bitmap.font.name
+              rescue StandardError
+                "?"
+              end
+              $stderr.puts "[mkxp-dtp]##{$__mkxp_logs['dtp']} entries=#{textpos.size} " \
+                           "bytes=#{u.bytesize} chars=#{u.length} valid=#{u.valid_encoding?} " \
+                           "font=#{fn.inspect} text=#{chars.inspect[0, 120]}"
+            end
+          rescue StandardError
+            # 日志永不影响绘制
+          end
+          origP.bind(self).call(bitmap, textpos)
+        end
       elsif m == :draw_text || m == :draw_text_ex
         # 文本缺字诊断+防御（④）：拦截 Bitmap#draw_text / draw_text_ex。
         # 诊断：记录字节数 vs 可见字符数并打出上游调用栈，定位 Essentials
@@ -304,7 +330,7 @@ end
 begin
   rgssad = FileTest.exist?("./Game.rgssad") ? "YES" : "no"
   pwd = (Dir.pwd rescue "??")
-  $stderr.puts "[mkxp-ios] compat hooks v9 installed (ROOT FIX: resolver string-ownership dup - game's gsub! on returned fname was mutating the shared cache object in place; + bypass, probes, cgf trace; + text draw_text diagnostics/defense) cwd=#{pwd} rgssad=#{rgssad}"
+  $stderr.puts "[mkxp-ios] compat hooks v10 installed (BGM heal gated to logical-Playing&&!exhausted - ME/jingle pause & track EOF no longer misfire; tileset mega-surface pixel cache 128MB; pbDrawTextPositions per-line trace for missing-char triage; + all prior fixes) cwd=#{pwd} rgssad=#{rgssad}"
 rescue StandardError => e
-  $stderr.puts "[mkxp-ios] compat hooks v7 installed (banner detail failed: #{e.class})"
+  $stderr.puts "[mkxp-ios] compat hooks v10 installed (banner detail failed: #{e.class})"
 end
