@@ -237,20 +237,6 @@ class << Object
         # UTF-8 尾部字节安全剥离，避免末尾多字节被切半产生乱码；合法 UTF-8
         # 字符串完全不受影响。
         __mkxp_wrap_text_method(m)
-      elsif m == :pbDrawTextPositions
-        # ④ 消息框少字定位：draw_text 诊断已证实每段文本都是合法完整 UTF-8，
-        # 所以少字发生在"把整条消息切成多段"的上游排版/换行方法里。这里打
-        # 调用栈定位那个上游方法，并打每段全文，便于对比找出丢字的那一步。
-        origP = ::Object.instance_method(:pbDrawTextPositions) rescue nil
-        next unless origP
-        ::Object.send(:define_method, :pbDrawTextPositions) do |*args, &blk|
-          if args[1].is_a?(Array)
-            texts = args[1].map { |p| p.is_a?(Array) ? p[0] : p }
-            $stderr.puts "[mkxp-text] pbDrawTextPositions caller=#{(caller[0..7]).inspect}"
-            $stderr.puts "[mkxp-text]   nseg=#{texts.size} texts=#{texts.inspect[0, 500]}"
-          end
-          origP.bind(self).call(*args, &blk)
-        end
       elsif m != :method_added
         k = ::Kernel
         unless k.respond_to?(m)
@@ -318,7 +304,7 @@ end
 begin
   rgssad = FileTest.exist?("./Game.rgssad") ? "YES" : "no"
   pwd = (Dir.pwd rescue "??")
-  $stderr.puts "[mkxp-ios] compat hooks v10 installed (ROOT FIX: resolver string-ownership dup - game's gsub! on returned fname was mutating the shared cache object in place; + bypass, probes, cgf trace; + text draw_text diagnostics/defense; + pbDrawTextPositions caller trace to locate upstream message-box slicer) cwd=#{pwd} rgssad=#{rgssad}"
+  $stderr.puts "[mkxp-ios] compat hooks v9 installed (ROOT FIX: resolver string-ownership dup - game's gsub! on returned fname was mutating the shared cache object in place; + bypass, probes, cgf trace; + text draw_text diagnostics/defense) cwd=#{pwd} rgssad=#{rgssad}"
 rescue StandardError => e
   $stderr.puts "[mkxp-ios] compat hooks v7 installed (banner detail failed: #{e.class})"
 end
