@@ -554,7 +554,7 @@ diff --git a/src/audio/alstream.cpp b/src/audio/alstream.cpp
  {
  	alSrc = AL::Source::gen();
  
-@@ -344,17 +344,57 @@ void ALStream::checkStopped()
+@@ -344,17 +344,62 @@ void ALStream::checkStopped()
  	if (!streamInited)
  		return;
  
@@ -612,12 +612,18 @@ diff --git a/src/audio/alstream.cpp b/src/audio/alstream.cpp
 +	lastHealTicks = now;
 +	healRetries++;
 +	Debug() << "rgss: bgm heal attempt" << healRetries << "alstate=" << s;
++	/* Resume from the CURRENT decode position, not startOffset: an underrun
++	 * must not restart the track from the beginning (the audible "repeat")
++	 * the user hears). queryOffset() is captured BEFORE stopStream() zeroes
++	 * procFrames, so we continue seamlessly where playback died. */
++	float resumeOff = queryOffset();
  	stopStream();
 -	state = Stopped;
-+	startStream(startOffset);
++	startStream(resumeOff);
  }
  
  /* thread func */
+
 diff --git a/src/audio/alstream.h b/src/audio/alstream.h
 index e8c1606..c111a1f 100644
 --- a/src/audio/alstream.h
@@ -712,7 +718,7 @@ diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
  #include <SDL_image.h>
  #include <SDL_ttf.h>
  #include <SDL_rect.h>
-@@ -466,8 +470,128 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
+@@ -466,8 +470,140 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
      }
  };
  
@@ -737,7 +743,7 @@ diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
 +    std::list<std::string> lru; // front = most recent
 +    int64_t totalBytes;
 +    int64_t hits, miss, ops;
-+    static const int64_t CAP_BYTES = 128LL * 1024 * 1024;
++    static const int64_t CAP_BYTES = 192LL * 1024 * 1024;
 +    SDL_mutex *mut;
 +
 +    DecodedPixelCache()
@@ -778,6 +784,18 @@ diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
 +        while (totalBytes + add > CAP_BYTES && lru.size() > 0)
 +        {
 +            std::string oldk = lru.back();
++            /* Pin tilesets: the single largest, most-reloaded asset
++             * (e.g. 256x38660 "Outside" = ~38MB decoded). Evicting them
++             * forces a ~150ms re-decode on every map entry, which
++             * dominated outdoor load times; "sunny" weather's full-screen
++             * overlays were evicting them from the old 64MB cap. Keep them
++             * regardless of LRU age. */
++            if (oldk.find("tilesets/") != std::string::npos)
++            {
++                lru.remove(oldk);
++                lru.push_front(oldk);
++                continue;
++            }
 +            auto oit = map.find(oldk);
 +            if (oit == map.end()) { lru.pop_back(); continue; }
 +            totalBytes -= (int64_t)oit->second.px.size();

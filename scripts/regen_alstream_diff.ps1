@@ -87,8 +87,13 @@ $newCS = "$t" + "if (!streamInited)" + $nl `
   + "$t" + "lastHealTicks = now;" + $nl `
   + "$t" + "healRetries++;" + $nl `
   + "$t" + "Debug() << " + $q + "rgss: bgm heal attempt" + $q + " << healRetries << " + $q + "alstate=" + $q + " << s;" + $nl `
+  + "$t" + "/* Resume from the CURRENT decode position, not startOffset: an underrun" + $nl `
+  + "$t" + " * must not restart the track from the beginning (the audible " + $q + "repeat" + $q + ")" + $nl `
+  + "$t" + " * the user hears). queryOffset() is captured BEFORE stopStream() zeroes" + $nl `
+  + "$t" + " * procFrames, so we continue seamlessly where playback died. */" + $nl `
+  + "$t" + "float resumeOff = queryOffset();" + $nl `
   + "$t" + "stopStream();" + $nl `
-  + "$t" + "startStream(startOffset);" + $nl `
+  + "$t" + "startStream(resumeOff);" + $nl `
   + "}"
 if (-not $s.Contains($oldCS)) { Write-Output "ERROR: checkStopped anchor missing"; exit 1 }
 $s = $s.Replace($oldCS, $newCS)

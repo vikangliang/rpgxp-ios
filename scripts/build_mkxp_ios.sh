@@ -696,6 +696,127 @@ else:
         print(f"bitmap.cpp: anchors missing (ctor={c1} swap={c2} upload={c3})")
 PYEOF
 
+# ---------- 3a-2. iOS 横线修复：tainted 区域非法矩形护栏 ----------
+# 设备日志里反复出现 "pixman_region_union_rect: Invalid rectangle passed"，
+# 来源是 Bitmap::addTaintedArea / substractTaintedArea 收到宽高<=0 或越界的
+# 矩形（blit 整块被裁掉 / Plane 零范围）。pixman 拒绝该矩形并污染 tainted
+# 区域，导致下一帧 GL 子上传用错矩形 -> 地图出现横向错位带（室内也有轻微）。
+# 此补丁在 pristine 上、framework-entry.patch 之前应用，锚点稳定。
+python3 - "$MKXP_SRC/src/display/bitmap.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+
+# Guard 1: addTaintedArea
+old_add = (
+"    void addTaintedArea(const IntRect &rect)\n"
+"    {\n"
+"        IntRect norm = normalizedRect(rect);\n"
+"        pixman_region_union_rect\n"
+"        (&tainted, &tainted, norm.x, norm.y, norm.w, norm.h);\n"
+"    }")
+new_add = (
+"    void addTaintedArea(const IntRect &rect)\n"
+"    {\n"
+"        IntRect norm = normalizedRect(rect);\n"
+"        /* iOS: a fully-clipped / zero-extent blit yields norm.w<=0 or\n"
+"         * norm.h<=0; pixman rejects it (\"Invalid rectangle passed\") and\n"
+"         * corrupts the tainted region, so the next GL sub-upload uses a\n"
+"         * wrong rectangle -> horizontal band artifacts. Skip + log. */\n"
+"        if (norm.w <= 0 || norm.h <= 0)\n"
+"        {\n"
+"            static int _skipped = 0;\n"
+"            if (_skipped < 30)\n"
+"                fprintf(stderr, \"rgss: tainted skip w=%d h=%d x=%d y=%d\n\",\n"
+"                        norm.w, norm.h, norm.x, norm.y), _skipped++;\n"
+"            return;\n"
+"        }\n"
+"        pixman_region_union_rect\n"
+"        (&tainted, &tainted, norm.x, norm.y, norm.w, norm.h);\n"
+"    }")
+
+# Guard 2: substractTaintedArea
+old_sub = (
+"    void substractTaintedArea(const IntRect &rect)\n"
+"    {\n"
+"        if (!touchesTaintedArea(rect))\n"
+"            return;\n"
+"        \n"
+"        pixman_region16_t m_reg;\n"
+"        pixman_region_init_rect(&m_reg, rect.x, rect.y, rect.w, rect.h);\n"
+"        \n"
+"        pixman_region_subtract(&tainted, &m_reg, &tainted);\n"
+"        \n"
+"        pixman_region_fini(&m_reg);\n"
+"    }")
+new_sub = (
+"    void substractTaintedArea(const IntRect &rect)\n"
+"    {\n"
+"        if (!touchesTaintedArea(rect))\n"
+"            return;\n"
+"        /* iOS: guard invalid rect (zero/negative extent) for pixman */\n"
+"        if (rect.w <= 0 || rect.h <= 0)\n"
+"            return;\n"
+"        \n"
+"        pixman_region16_t m_reg;\n"
+"        pixman_region_init_rect(&m_reg, rect.x, rect.y, rect.w, rect.h);\n"
+"        \n"
+"        pixman_region_subtract(&tainted, &m_reg, &tainted);\n"
+"        \n"
+"        pixman_region_fini(&m_reg);\n"
+"    }")
+
+c1 = old_add in s
+c2 = old_sub in s
+if c1 and c2:
+    s = s.replace(old_add, new_add, 1)
+    s = s.replace(old_sub, new_sub, 1)
+    open(p, 'w', encoding='utf-8').write(s)
+    print("patched bitmap.cpp: tainted-region rect guards (iOS horizontal-band fix)")
+else:
+    print(f"bitmap.cpp: tainted anchors missing (add={c1} sub={c2})")
+PYEOF
+
+# ---------- 3a-3. iOS 文本缺字诊断：drawText 视口裁剪日志 ----------
+# dtp 追踪已确认到达 draw_text 的字符串完整（valid=true，无丢字）；且 drawText
+# 会把文本 squeeze 进 rect.w（水平不裁切）。所以“缺字”只能是逐字绘制时该字的
+# x 超出窗口位图（被视口裁掉）。本补丁在文本表面被 bitmap 边界裁掉时记录，用于
+# 一锤定音确认“缺字=视口裁切”（典型诱因：自定义像素字体 FusionPixelMonoPatched
+# 在 iOS 未加载成功、回退默认字体导致整行略宽溢出）。
+python3 - "$MKXP_SRC/src/display/bitmap.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old_clip = (
+"            if (inters.w != txtRect.w || inters.h != txtRect.h)\n"
+"            {\n"
+"                /* Clip the text surface */\n"
+"                subSrcX = inters.x - txtRect.x;\n")
+new_clip = (
+"            if (inters.w != txtRect.w || inters.h != txtRect.h)\n"
+"            {\n"
+"                /* Clip the text surface */\n"
+"                /* iOS: text surface partially outside the bitmap == the window\n"
+"                 * viewport. The game lays out per-char x with its font metrics;\n"
+"                 * if the requested custom font failed to load and mkxp fell back\n"
+"                 * to a default, metrics differ -> line overflow -> last chars\n"
+"                 * clipped. Log to confirm the missing-char cause. */\n"
+"                static int _clip = 0;\n"
+"                if (_clip < 40)\n"
+"                {\n"
+"                    fprintf(stderr, \"rgss: text clipped surf=%dx%d vis=%dx%d x=%d y=%d str=%s\\n\",\n"
+"                            txtRect.w, txtRect.h, inters.w, inters.h, txtRect.x, txtRect.y, str);\n"
+"                    _clip++;\n"
+"                }\n"
+"                subSrcX = inters.x - txtRect.x;\n")
+if old_clip in s:
+    s = s.replace(old_clip, new_clip, 1)
+    open(p, 'w', encoding='utf-8').write(s)
+    print("patched bitmap.cpp: drawText viewport-clip diagnostic (iOS missing-char triage)")
+else:
+    print("bitmap.cpp: drawText clip anchor missing")
+PYEOF
+
 # ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
 # framework-entry.patch（git diff，LF 行尾）：
 #   1. src/main.cpp: int main() -> extern "C" int mkxp_z_main()
@@ -708,10 +829,20 @@ if [ -f "$MKXP_SRC/.git/config" ]; then
   # 回退到 patch -p1（按上下文模糊匹配，对计数不敏感），避免手工维护 diff 时计数漂移
   # 导致整块 "corrupt patch"。两者都失败才真正报错。
   git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/framework-entry.patch" 2>/dev/null \
-   || patch -p1 -f --no-backup-if-mismatch -d "$MKXP_SRC" \
+   || { echo "WARN: git apply 失败，回退 patch -p1 -f（可能静默丢弃不匹配 hunk）"; \
+        patch -p1 -f --no-backup-if-mismatch -d "$MKXP_SRC" \
         < "$ROOT/scripts/mkxp-framework/framework-entry.patch" \
-   || { echo "FATAL: framework-entry.patch 应用失败（v2.4.2 源码对不上？）"; exit 1; }
+        || { echo "FATAL: framework-entry.patch 应用失败（v2.4.2 源码对不上？）"; exit 1; }; }
   echo "applied framework-entry.patch"
+
+  # 零死角校验：确认关键补丁 hunk 真的落进源码（避免 patch -f 静默丢弃）。
+  # 任何签名缺失 = 对应修复没生效 = 构建直接失败，绝不让“试探包”流到真机。
+  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/"; do
+    if ! grep -rqF "$sig" "$MKXP_SRC/src"; then
+      echo "FATAL: 关键补丁签名缺失: $sig （hunk 可能被丢弃，修复未生效）"; exit 1
+    fi
+  done
+  echo "verified: all critical patch signatures present"
 else
   echo "FATAL: $MKXP_SRC 不是 git 仓库，无法 apply framework-entry.patch"
   exit 1
