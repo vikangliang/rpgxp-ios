@@ -788,27 +788,27 @@ import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
 old_clip = (
-"            if (inters.w != txtRect.w || inters.h != txtRect.h)\n"
-"            {\n"
-"                /* Clip the text surface */\n"
-"                subSrcX = inters.x - txtRect.x;\n")
-new_clip = (
-"            if (inters.w != txtRect.w || inters.h != txtRect.h)\n"
-"            {\n"
-"                /* Clip the text surface */\n"
-"                /* iOS: text surface partially outside the bitmap == the window\n"
-"                 * viewport. The game lays out per-char x with its font metrics;\n"
-"                 * if the requested custom font failed to load and mkxp fell back\n"
-"                 * to a default, metrics differ -> line overflow -> last chars\n"
-"                 * clipped. Log to confirm the missing-char cause. */\n"
-"                static int _clip = 0;\n"
-"                if (_clip < 40)\n"
+"                if (inters.w != txtRect.w || inters.h != txtRect.h)\n"
 "                {\n"
-"                    fprintf(stderr, \"rgss: text clipped surf=%dx%d vis=%dx%d x=%d y=%d str=%s\\n\",\n"
-"                            txtRect.w, txtRect.h, inters.w, inters.h, txtRect.x, txtRect.y, str);\n"
-"                    _clip++;\n"
-"                }\n"
-"                subSrcX = inters.x - txtRect.x;\n")
+"                    /* Clip the text surface */\n"
+"                    subSrcX = inters.x - txtRect.x;\n")
+new_clip = (
+"                if (inters.w != txtRect.w || inters.h != txtRect.h)\n"
+"                {\n"
+"                    /* Clip the text surface */\n"
+"                    /* iOS: text surface partially outside the bitmap == the window\n"
+"                     * viewport. The game lays out per-char x with its font metrics;\n"
+"                     * if the requested custom font failed to load and mkxp fell back\n"
+"                     * to a default, metrics differ -> line overflow -> last chars\n"
+"                     * clipped. Log to confirm the missing-char cause. */\n"
+"                    static int _clip = 0;\n"
+"                    if (_clip < 40)\n"
+"                    {\n"
+"                        fprintf(stderr, \"rgss: text clipped surf=%dx%d vis=%dx%d x=%d y=%d str=%s\n\",\n"
+"                                txtRect.w, txtRect.h, inters.w, inters.h, txtRect.x, txtRect.y, str);\n"
+"                        _clip++;\n"
+"                    }\n"
+"                    subSrcX = inters.x - txtRect.x;\n")
 if old_clip in s:
     s = s.replace(old_clip, new_clip, 1)
     open(p, 'w', encoding='utf-8').write(s)
@@ -837,7 +837,7 @@ if [ -f "$MKXP_SRC/.git/config" ]; then
 
   # 零死角校验：确认关键补丁 hunk 真的落进源码（避免 patch -f 静默丢弃）。
   # 任何签名缺失 = 对应修复没生效 = 构建直接失败，绝不让“试探包”流到真机。
-  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/"; do
+  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/" "swapInterval="; do
     if ! grep -rqF "$sig" "$MKXP_SRC/src"; then
       echo "FATAL: 关键补丁签名缺失: $sig （hunk 可能被丢弃，修复未生效）"; exit 1
     fi
