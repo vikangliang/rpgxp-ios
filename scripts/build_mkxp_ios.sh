@@ -696,6 +696,72 @@ else:
         print(f"bitmap.cpp: anchors missing (ctor={c1} swap={c2} upload={c3})")
 PYEOF
 
+# ---------- 3a-1.5. EventScriptError 崩点修复：Bitmap 缺文件不抛异常 ----------
+# 真实 mkxp.log 显示：
+#   [mkxp-fs] miss: Graphics/Maps/深灰市.png
+#   [mkxp-audio] events: bgm_play ...
+#   Section033:177:in `rescue in execute_script': EventScriptError
+# 根因：Bitmap::Bitmap(filename) 缺文件时抛 Exception SDLError -> 进入 Ruby
+# execute_script 的 rescue -> raise EventScriptError.new(msg) -> SDL_ShowSimpleMessageBox
+# 硬卡死。mkxp-z 的异常打印只输出 'Section...line N: <Class>'，不含 e.message，
+# 真实堆栈 / Exception / Full script 一概丢。
+# 修复：Bitmap(filename) 在 (handler.error 非空) 或 (无 gif 且无 surface) 时，
+# 分配 1×1 透明 GL 纹理作为 fallback，继续走 ctor 末尾的 addTaintedArea 后 return，
+# 不再抛 Exception；后续 Sprite/Event 把该 Bitmap 当 1×1 透明位图处理，事件脚本
+# 不再因缺图而崩。
+python3 - "$MKXP_SRC/src/display/bitmap.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = (
+"    if (!handler.error.empty()) {\n"
+"        // Not loaded with SDL, but I want it to be caught with the same exception type\n"
+"        throw Exception(Exception::SDLError, \"Error loading image '%s': %s\", filename, handler.error.c_str());\n"
+"    }\n"
+"    else if (!handler.gif && !handler.surface) {\n"
+"        throw Exception(Exception::SDLError, \"Error loading image '%s': %s\",\n"
+"                        filename, SDL_GetError());\n"
+"    }\n")
+new = (
+"    if (!handler.error.empty()) {\n"
+"        // iOS engine adaptation: missing/broken bitmap used to throw -> Ruby\n"
+"        // event Script -> EventScriptError (Section033:177 'rescue in execute_script'\n"
+"        // hard-crashes the game on a single bad asset - confirmed via mkxp.log when\n"
+"        // the user-imported game zip is missing Graphics/Maps/*.png). Fall back to a\n"
+"        // 1x1 transparent GL texture so the game continues.\n"
+"        Debug() << \"mkxp: bitmap load error\" << filename << handler.error.c_str() << \"(empty 1x1 fallback)\";\n"
+"        SDL_Surface *fb_surf = SDL_CreateRGBSurfaceWithFormat(0, 1, 1, 32, SDL_PIXELFORMAT_ABGR8888);\n"
+"        if (!fb_surf) throw Exception(Exception::SDLError, \"mkxp: fallback alloc failed\");\n"
+"        p = new BitmapPrivate(this);\n"
+"        TEXFBO tex = shState->texPool().request(1, 1);\n"
+"        p->gl = tex;\n"
+"        TEX::bind(p->gl.tex);\n"
+"        TEX::uploadImage(1, 1, fb_surf->pixels, GL_RGBA);\n"
+"        SDL_FreeSurface(fb_surf);\n"
+"        p->addTaintedArea(rect());\n"
+"        return;\n"
+"    }\n"
+"    else if (!handler.gif && !handler.surface) {\n"
+"        Debug() << \"mkxp: bitmap missing\" << filename << SDL_GetError() << \"(empty 1x1 fallback)\";\n"
+"        SDL_Surface *fb_surf = SDL_CreateRGBSurfaceWithFormat(0, 1, 1, 32, SDL_PIXELFORMAT_ABGR8888);\n"
+"        if (!fb_surf) throw Exception(Exception::SDLError, \"mkxp: fallback alloc failed\");\n"
+"        p = new BitmapPrivate(this);\n"
+"        TEXFBO tex = shState->texPool().request(1, 1);\n"
+"        p->gl = tex;\n"
+"        TEX::bind(p->gl.tex);\n"
+"        TEX::uploadImage(1, 1, fb_surf->pixels, GL_RGBA);\n"
+"        SDL_FreeSurface(fb_surf);\n"
+"        p->addTaintedArea(rect());\n"
+"        return;\n"
+"    }\n")
+if old in s:
+    s = s.replace(old, new, 1)
+    open(p, 'w', encoding='utf-8').write(s)
+    print("patched bitmap.cpp: missing-bitmap -> empty 1x1 fallback (no EventScriptError crash)")
+else:
+    print("bitmap.cpp: missing-bitmap anchor missing")
+PYEOF
+
 # ---------- 3a-2. iOS 横线修复：tainted 区域非法矩形护栏 ----------
 # 设备日志里反复出现 "pixman_region_union_rect: Invalid rectangle passed"，
 # 来源是 Bitmap::addTaintedArea / substractTaintedArea 收到宽高<=0 或越界的
@@ -837,7 +903,7 @@ if [ -f "$MKXP_SRC/.git/config" ]; then
 
   # 零死角校验：确认关键补丁 hunk 真的落进源码（避免 patch -f 静默丢弃）。
   # 任何签名缺失 = 对应修复没生效 = 构建直接失败，绝不让“试探包”流到真机。
-  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/" "swapInterval="; do
+  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/" "swapInterval=" "mkxp: bitmap missing"; do
     if ! grep -rqF "$sig" "$MKXP_SRC/src"; then
       echo "FATAL: 关键补丁签名缺失: $sig （hunk 可能被丢弃，修复未生效）"; exit 1
     fi
