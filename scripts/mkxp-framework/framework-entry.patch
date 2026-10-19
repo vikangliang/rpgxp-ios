@@ -543,7 +543,7 @@ index 4779221..202c674 100644
      return 0;
  }
 diff --git a/src/audio/alstream.cpp b/src/audio/alstream.cpp
-index 73dfe41..f29cd3c 100644
+index 73dfe41..5fe92c6 100644
 --- a/src/audio/alstream.cpp
 +++ b/src/audio/alstream.cpp
 @@ -42,7 +42,7 @@ ALStream::ALStream(LoopMode loopMode,
@@ -555,7 +555,7 @@ index 73dfe41..f29cd3c 100644
  {
  	alSrc = AL::Source::gen();
  
-@@ -344,14 +344,42 @@ void ALStream::checkStopped()
+@@ -344,17 +344,36 @@ void ALStream::checkStopped()
  	if (!streamInited)
  		return;
  
@@ -563,8 +563,10 @@ index 73dfe41..f29cd3c 100644
 -	 * exhausted the data source yet, we're just
 -	 * having a buffer underrun */
 -	if (!sourceExhausted)
+-		return;
 +	ALenum s = AL::Source::getState(alSrc);
-+
+ 
+-	if (AL::Source::getState(alSrc) == AL_PLAYING)
 +	if (s == AL_PLAYING)
 +	{
 +		healRetries = 0;
@@ -572,37 +574,31 @@ index 73dfe41..f29cd3c 100644
  		return;
 +	}
  
--	if (AL::Source::getState(alSrc) == AL_PLAYING)
-+	/* If alSrc isn't playing, but we haven't exhausted the data source
-+	 * yet, we're either having a transient buffer underrun (normally
-+	 * self-healed by streamData) or hit the iOS "audio vacuum": after an
-+	 * interruption the OpenAL device went invalid, the source died but
-+	 * was never marked exhausted, so BGM would stay silently dead. Heal
-+	 * by restarting the stream, throttled to once/2s, capped at 30 tries
++	/* Source is not playing while state==Playing: the stream died
++	 * unexpectedly (transient underrun, iOS "audio vacuum" after an
++	 * interruption, decode glitch, or device invalidation). Heal by
++	 * restarting the stream, throttled to once/2s, capped at 30 tries
 +	 * (~60s) so we keep retrying (e.g. until the device comes back)
 +	 * without busy-looping or restarting forever. */
-+	if (!sourceExhausted)
++	if (healRetries >= 30)
 +	{
-+		if (healRetries >= 30)
-+		{
-+			Debug() << "rgss: bgm heal gave up after" << healRetries;
-+			stopStream();
-+			state = Stopped;
-+			return;
-+		}
-+		uint32_t now = SDL_GetTicks();
-+		if (now - lastHealTicks < 2000)
-+			return;
-+		lastHealTicks = now;
-+		healRetries++;
-+		Debug() << "rgss: bgm heal attempt" << healRetries << "alstate=" << s;
++		Debug() << "rgss: bgm heal gave up after" << healRetries;
 +		stopStream();
-+		startStream(startOffset);
- 		return;
++		state = Stopped;
++		return;
 +	}
- 
++	uint32_t now = SDL_GetTicks();
++	if (now - lastHealTicks < 2000)
++		return;
++	lastHealTicks = now;
++	healRetries++;
++	Debug() << "rgss: bgm heal attempt" << healRetries << "alstate=" << s;
  	stopStream();
- 	state = Stopped;
+-	state = Stopped;
++	startStream(startOffset);
+ }
+ 
+ /* thread func */
 diff --git a/src/audio/alstream.h b/src/audio/alstream.h
 index e8c1606..c111a1f 100644
 --- a/src/audio/alstream.h
@@ -621,28 +617,36 @@ index e8c1606..c111a1f 100644
  
  	AtomicFlag needsRewind;
 diff --git a/src/audio/audio.cpp b/src/audio/audio.cpp
-index 6e42182..44365d7 100644
+index 6e42182..22a058e 100644
 --- a/src/audio/audio.cpp
 +++ b/src/audio/audio.cpp
-@@ -130,6 +130,18 @@ struct AudioPrivate
+@@ -30,6 +30,7 @@
+ #include "exception.h"
  
- 				me.unlockStream();
+ #include <string>
++#include <cstdio>
+ #include <vector>
  
-+				/* BGM heartbeat: periodically query BGM tracks so
-+				 * ALStream::checkStopped() can self-heal a stream that
-+				 * stopped unexpectedly (e.g. iOS audio vacuum after an
-+				 * interruption). Without this, BGM-only playback never
-+				 * triggers checkStopped() and stays silently dead. */
-+				for (auto track : bgmTracks)
-+				{
-+					track->lockStream();
-+					track->stream.queryState();
-+					track->unlockStream();
-+				}
+ #include <SDL_thread.h>
+@@ -113,6 +114,18 @@ struct AudioPrivate
+ 			if (meWatch.termReq)
+ 				return;
+ 
++			/* BGM heartbeat (every tick, all ME states): query BGM tracks so
++			 * ALStream::checkStopped() can self-heal a stream that stopped
++			 * unexpectedly (iOS audio vacuum after interruption, decode glitch,
++			 * device invalidation). Runs unconditionally so BGM-only playback
++			 * (ME not playing) is covered too. */
++			for (auto track : bgmTracks)
++			{
++				track->lockStream();
++				track->stream.queryState();
++				track->unlockStream();
++			}
 +
- 				break;
- 			}
- 
+ 			switch (meWatch.state)
+ 			{
+ 			case MeNotPlaying:
 diff --git a/src/audio/vorbissource.cpp b/src/audio/vorbissource.cpp
 index 7716a69..cb91502 100644
 --- a/src/audio/vorbissource.cpp
@@ -676,7 +680,7 @@ index 7716a69..cb91502 100644
  			}
  
 diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
-index 4b43123..93721b2 100644
+index 4b43123..f68141a 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
 @@ -22,6 +22,10 @@
@@ -690,7 +694,7 @@ index 4b43123..93721b2 100644
  #include <SDL_image.h>
  #include <SDL_ttf.h>
  #include <SDL_rect.h>
-@@ -466,8 +470,103 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
+@@ -466,8 +470,116 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
      }
  };
  
@@ -722,8 +726,18 @@ index 4b43123..93721b2 100644
 +        : totalBytes(0), hits(0), miss(0), ops(0)
 +    { mut = SDL_CreateMutex(); }
 +
-+    bool get(const std::string &key, int &w, int &h, std::vector<uint8_t> &out)
++    static std::string normalizeKey(const std::string &k)
 +    {
++        std::string s = k;
++        for (auto &c : s) if (c == '\\') c = '/';
++        while (s.size() >= 2 && s[0] == '.' && s[1] == '/') s = s.substr(2);
++        for (auto &c : s) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
++        return s;
++    }
++
++    bool get(const std::string &keyIn, int &w, int &h, std::vector<uint8_t> &out)
++    {
++        std::string key = normalizeKey(keyIn);
 +        SDL_LockMutex(mut);
 +        auto it = map.find(key);
 +        bool hit = (it != map.end());
@@ -737,8 +751,9 @@ index 4b43123..93721b2 100644
 +        return hit;
 +    }
 +
-+    void put(const std::string &key, int w, int h, const uint8_t *p, size_t n)
++    void put(const std::string &keyIn, int w, int h, const uint8_t *p, size_t n)
 +    {
++        std::string key = normalizeKey(keyIn);
 +        SDL_LockMutex(mut);
 +        int64_t add = (int64_t)n;
 +        while (totalBytes + add > CAP_BYTES && lru.size() > 0)
@@ -755,7 +770,7 @@ index 4b43123..93721b2 100644
 +        lru.remove(key); lru.push_front(key);
 +        totalBytes += add;
 +        miss++; ops++;
-+        if (ops % 1024 == 0)
++        if (ops % 32 == 0)
 +            fprintf(stderr, "rgss: decode-cache hits=%lld miss=%lld\n", (long long)hits, (long long)miss);
 +        SDL_UnlockMutex(mut);
 +    }
@@ -791,10 +806,12 @@ index 4b43123..93721b2 100644
 +        }
 +    }
 +
++    uint32_t _decT0 = SDL_GetTicks();
++
      BitmapOpenHandler handler;
      shState->fileSystem().openRead(handler, filename);
      
-@@ -578,7 +677,16 @@ Bitmap::Bitmap(const char *filename)
+@@ -578,7 +690,21 @@ Bitmap::Bitmap(const char *filename)
      
      
      p->ensureFormat(imgSurf, SDL_PIXELFORMAT_ABGR8888);
@@ -802,6 +819,11 @@ index 4b43123..93721b2 100644
 +
 +    /* Cache decoded pixels for fast re-entry (battle end / map
 +     * return). Skip huge surfaces (mega-path) to bound memory. */
++    {
++        uint32_t _dt = SDL_GetTicks() - _decT0;
++        if (_dt > 30)
++            fprintf(stderr, "rgss: slow decode %s t=%ums\n", filename, _dt);
++    }
 +    if (imgSurf->w <= glState.caps.maxTexSize && imgSurf->h <= glState.caps.maxTexSize)
 +    {
 +        g_decodedPixelCache.put(filename, imgSurf->w, imgSurf->h,
