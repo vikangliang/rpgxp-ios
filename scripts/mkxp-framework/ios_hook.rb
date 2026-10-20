@@ -277,6 +277,26 @@ class << Object
     end
   end
 end
+# ---- EventScriptError 根治：Game_Player#has_follower 改 public ----
+# 真机日志坐实：`[Following Pokemon EX]` 插件用显式接收者调用 Game_Player 的
+# 私有方法 has_follower（如 $player.has_follower），Ruby 3.3 严禁"私有方法+显式
+# 接收者" -> NoMethodError -> execute_script rescue 包成 EventScriptError -> 弹窗。
+# 这是游戏脚本/插件 bug（PC 旧 Ruby 不报），引擎侧把该方法改 public 即可绕过。
+# has_follower 在游戏脚本里定义（ios_hook 运行时还不存在），故惰性修复：在
+# draw_text 包裹（进地图画地名/HUD 就会调用，保证在事件执行前）首次触发时改 public。
+$__mkxp_hf_fixed = false
+def __mkxp_public_has_follower
+  return if $__mkxp_hf_fixed
+  return unless defined?(::Game_Player)
+  begin
+    ::Game_Player.send(:public, :has_follower)
+    $__mkxp_hf_fixed = true
+    $stderr.puts "[mkxp-ios] Game_Player#has_follower -> public (Following Pokemon EX private-call fix)"
+  rescue StandardError => e
+    # has_follower 尚未定义（NameError）等：下次再试，不打断主流程
+  end
+end
+
 # ---- 文本缺字诊断+防御（④） ----
 # 拦截 Bitmap#draw_text / draw_text_ex：记录字节 vs 可见字符并打上游调用栈，
 # 定位 Essentials 按字节切片多字节字符的脚本方法；并对不完整 UTF-8 尾部做安全
@@ -288,6 +308,7 @@ def __mkxp_wrap_text_method(name)
   return if ::Bitmap.method_defined?(orig)
   ::Bitmap.send(:alias_method, orig, name)
   ::Bitmap.send(:define_method, name) do |*args, &blk|
+    __mkxp_public_has_follower
     ai = args.index { |a| a.is_a?(String) }
     if ai
       s = args[ai]
