@@ -286,8 +286,8 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
 
 ## 下一步该做什么（2026-10-20 更新）
 
-M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM **已根治（f33e34b）**、③加载 已修，EventScriptError 已根治、**⑤退出闪退已根治（7e1e20b）**）；②撕裂已加 glFinish
-修复（待真机验证）、④文本待定位上游。构建冲突已修通；当前最新 `f33e34b`（CI 双绿，IPA 可装）。剩余真实待办：
+M2 已全部完成；M3 真机调通 + 六运行时修复（①BGM **已根治（f33e34b）**、③加载 已修，EventScriptError 已根治、**⑤退出闪退已根治（7e1e20b）**、**⑥运行中闪退 OOM jetsam 已根治（8548a7c）**）；②撕裂已加 glFinish
+修复（待真机验证）、④文本待定位上游、**byte order 撤回（c7e2f27）**。构建冲突已修通；当前最新 `a93647d`（CI 已绿，artifact 待发布）。剩余真实待办：
 
 1. **② 撕裂修复真机验证**：`d55c23d` 已在 ios_embed.mm 软呈现读回前加 glFinish()（强制整帧画完再读回，消除
    Metal 异步读回半帧）。侧载后到室外大地图跑几分钟验证；若仍裂，下一步给 UIImageView 上屏加 CADisplayLink
@@ -295,11 +295,13 @@ M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM **已根治�
 2. **④ 消息框少字定位+根治**：已锤定「引擎不丢字、是上游脚本按字节/宽度切片丢整字」。需用**低开销**方式定位
    上游排版方法（勿在 draw_text/pbDrawTextPositions 热路径加 caller/inspect 重日志——两度引发红线/撕裂回归），
    或用户提供 `Scripts.rxdata` 直接读消息框排版源码；定位后用 `ios_hook.rb` 重定义该方法（码点安全版）修掉。
-   装 `7e1e20b` 后查 mkxp.log 里 `mkxp-font: scanned path=` 与 `mkxp-font: FALLBACK requested=` 行确认 iOS
+   装 `a93647d` 后查 mkxp.log 里 `mkxp-font: scanned path=` 与 `mkxp-font: FALLBACK requested=` 行确认 iOS
    字体 family 解析情况（已知 essentials 用了 `Fusion Pixel 12px Monospaced zh_hans` 但 TTF 内部
    name ID 1 实际是另一字符串——确认这条即可定位）。
 3. ~~**退出崩溃（signal=5）**：已根治（`7e1e20b`）。每次退出都崩在 SDL_DestroyWindow -> UIKit_HideWindow 主线程断言；真机日志 15 次复现。修：dispatch_async 推主线程。详见下方 M3 修复条目。~~
-4. **可选打磨**：开 `UIFileSharingEnabled`；触感反馈；`mkxp.log` 实时刷新。
+4. ~~**运行中崩溃（OOM jetsam）**：已根治（`8548a7c`）。phys_footprint 1.3GB 触发 iOS jetsam 杀进程（无 crash 日志）。修：decode cache 192→96MB + 取消 tileset pin。详见下方 M3 修复条目。~~
+5. **byte order 撤回（c7e2f27）**：之前 1f6230e 误把 `kCGBitmapByteOrder32Big` 改 `Little`——按 Apple 文档 8-bit 组件下两者等价；撤回后画面色彩是否恢复正常待用户验。
+6. **可选打磨**：开 `UIFileSharingEnabled`；触感反馈；`mkxp.log` 实时刷新。
 
 ### M3 修复：BGM 获得物品后不继续播放（`f33e34b`，2026-10-20 真机验过）
 
@@ -315,7 +317,51 @@ M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM **已根治�
 
 **副作用/下一轮**：
 - framework 自带 `alstream.cpp checkStopped` 的 heal 太激进（每帧杀流线程）待清理：改成只调 AL::Source::play(alSrc) 不杀流线程；heartbeat 移到 `meWatch.state == MeNotPlaying` 才跑（避免 ME 中与 meWatch 抢时序）
-- `Tileset Outside 150ms 重解码 cache miss` 与 `文本缺字` 两项仍挂账，下一轮一次打包
+- ~~`Tileset Outside 150ms 重解码 cache miss` 与 `文本缺字` 两项仍挂账，下一轮一次打包~~
+
+### M3 修复：运行中闪退（OOM jetsam，用户感知"运行中崩"）（`8548a7c`，待真机验）
+
+**根因**（由 `mkxp_2026-10-20T19-52-41.401223.log` 实锤，**注意与"退出时崩"是不同 bug**，参见上面"下一步 #3 已根治"的 signal=5 那条）：
+
+内存序列（每 600 帧采样，iOS 引擎端通过 task_info(TASK_VM_INFO) 读 phys_footprint）：
+
+```
+L15    present#709  phys=1325.7 MB  ← 启动 700+ 帧时已 1.3GB
+L28443 present#705  phys=1113.5 MB  ← 持续 1.1GB+
+L30096 present#458  phys=1309.1 MB  ← 峰值 1.3GB
+L31212 present#457  phys= 470.0 MB  ← **iOS jetsam 杀进程后重启**（无 Shutting down 日志）
+L33687 present#692  phys=1045.5 MB  ← 重启后再次涨到 1GB+
+L34751 present#418  phys= 378.3 MB  ← 又被 jetsam 杀
+```
+
+iPhone 给单 App 物理内存上限 1.5-2GB；phys_footprint 1.3GB 离阈值很近，资源加载瞬时超阈值 → iOS jetsam 杀进程。**没有 crash 日志，没有 Shutting down**——用户感知的"运行中崩"就是这个。
+
+**真因**：
+1. `framework-entry.patch` 的 `DecodedPixelCache` 上限 **192MB**
+2. tileset **pin** 永不驱逐（Outside=38MB / Exterior1-7 各 1-2MB 等巨型 tileset 永远不被 LRU 替换）
+3. 加上引擎/Ruby heap/iOS framework 分配，工作集稳定 1.1-1.3GB
+
+pin 是早期为"Outdoor 地图重入有 150ms re-decode hitch"加的优化——**反模式**：占用 1GB+ 持久内存换 150ms 偶发卡顿，远不如让 LRU 正常工作 + 用户接受 150ms 重入卡顿。
+
+**修法**（`scripts/mkxp-framework/framework-entry.patch`，本轮同步修了 patch hunk 链式偏移 bug，详见 `feedback_patch_hunk_alignment.md`）：
+
+```cpp
+static const int64_t CAP_BYTES = 96LL * 1024 * 1024;  // 192MB → 96MB
+// 取消 tileset pin：
+// while (totalBytes + add > CAP_BYTES && lru.size() > 0) {
+//     auto oit = map.find(lru.back());
+//     map.erase(oit); lru.pop_back();
+// }
+```
+
+**真机验**（待用户装 `a93647d` 后）：
+- mem@present#N 序列应在 600-800MB 稳定（之前 1.3GB）
+- 跑 30 分钟以上不再 jetsam 杀
+- 地图重入（室外↔室内）会有 ~150ms re-decode 卡顿（用户可接受，OOM 杀进程不可接受）
+
+**关键诊断手段**：iOS 引擎端**直接读 task_info**——`ios_embed.mm:317` 的 `mkxp_logMemoryFootprint` 是无 Mac 调试 iOS OOM 的核心代偿。看 mem@present#N 序列定位峰值 + 跌幅（OOM kill 标志）+ 涨速（泄漏率）。
+
+**附记**：日志里 82 次 `pixman_region_union_rect Invalid rectangle passed` 是**独立症状**（Cairo/pixman 警告，不是 crash），跟 OOM 没有时序关联（最近 BUG 距最近 crash 至少 21 行），已在 `bitmap.cpp tainted-region rect guards` 打过补丁但仍触发——可能是另一处调用路径没拦到，下一轮查。
 
 ### M3 修复：退出闪退 `signal=5` 根治（`7e1e20b`，2026-10-20 真机验过）
 
