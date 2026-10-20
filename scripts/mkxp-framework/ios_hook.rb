@@ -256,6 +256,11 @@ class << Object
           end
           origP.bind(self).call(bitmap, textpos)
         end
+      elsif m == :calculate_entry_hazard_damage
+        # Battle::AI 私有方法被显式接收者调用（Gen 9 Pack + Deluxe Battle Kit 冲突）。
+        # 与 Game_Player#has_follower 同根：私有方法+显式接收者 -> Ruby 3.3 NoMethodError。
+        # 引擎侧放开可见性绕过（game project untouched）。
+        __mkxp_public_ai_hazard
       elsif m == :draw_text || m == :draw_text_ex
         # 文本缺字诊断+防御（④）：拦截 Bitmap#draw_text / draw_text_ex。
         # 诊断：记录字节数 vs 可见字符数并打出上游调用栈，定位 Essentials
@@ -297,6 +302,30 @@ def __mkxp_public_has_follower
   end
 end
 
+# ---- Battle::AI#calculate_entry_hazard_damage 改 public ----
+# 真机 NoMethodError：private method 'calculate_entry_hazard_damage' called for
+# Battle::AI (Gen 9 Pack Battle_AI.rb:647 在 block 里显式接收者调用，由
+# Deluxe Battle Kit Command Menu Refactor.rb:442 pbDefaultChooseEnemyCommand 触发
+# -> pbChooseToSwitchOut -> should_switch?)。与 Game_Player#has_follower 同根：
+# 私有方法+显式接收者 -> Ruby 3.3 报错。PC 旧 Ruby 不报（同一游戏 PC 正常）。
+# 引擎侧放开该方法可见性绕过（game project untouched）。
+# 方法在游戏脚本定义（ios_hook 运行时还不存在），故惰性修复：在 method_added
+# 捕获其定义时、以及 draw_text 包裹（战斗绘制文本必触发）首次调用时改 public。
+$__mkxp_aih_fixed = false
+def __mkxp_public_ai_hazard
+  return if $__mkxp_aih_fixed
+  return unless defined?(::Battle) && defined?(::Battle::AI)
+  begin
+    if ::Battle::AI.method_defined?(:calculate_entry_hazard_damage)
+      ::Battle::AI.send(:public, :calculate_entry_hazard_damage)
+      $__mkxp_aih_fixed = true
+      $stderr.puts "[mkxp-ios] Battle::AI#calculate_entry_hazard_damage -> public (Gen9Pack/DBK private-call fix)"
+    end
+  rescue StandardError
+    # 方法尚未定义（NameError）等：下次再试
+  end
+end
+
 # ---- 文本缺字诊断+防御（④） ----
 # 拦截 Bitmap#draw_text / draw_text_ex：记录字节 vs 可见字符并打上游调用栈，
 # 定位 Essentials 按字节切片多字节字符的脚本方法；并对不完整 UTF-8 尾部做安全
@@ -309,6 +338,7 @@ def __mkxp_wrap_text_method(name)
   ::Bitmap.send(:alias_method, orig, name)
   ::Bitmap.send(:define_method, name) do |*args, &blk|
     __mkxp_public_has_follower
+    __mkxp_public_ai_hazard
     ai = args.index { |a| a.is_a?(String) }
     if ai
       s = args[ai]
