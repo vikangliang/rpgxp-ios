@@ -1,4 +1,33 @@
 $__mkxp_main = self
+# ---- 根治：iOS MRI 3.x 的 private 方法显式接收者调用 NoMethodError ----
+# RPG Maker XP / Essentials 21.1 生态（Gen 9 Pack、Deluxe Battle Kit、
+# Following Pokemon EX 等）大量"显式接收者调用 private 方法"，PC 上老 RGSS
+# Ruby 不报（同一游戏 PC 正常），但 iOS mkxp-z 的 Ruby 3.x 严格禁止 ->
+# NoMethodError -> execute_script rescue 包成 EventScriptError 弹窗。
+# 已逐个修过 has_follower / calculate_entry_hazard_damage，但这类 private 调用
+# 散落各插件，逐个打补丁不可持续。根治：游戏脚本加载前把 Module#private /
+# Module#private_class_method 变 no-op —— 所有方法保持 public，所有显式接收者
+# 调用都合法。private 仅是访问控制，不改变任何逻辑；Ruby stdlib 与 MKXP C++ 绑定
+# 已在 ios_hook 注入前加载完，不受此重定义影响。保留 has_follower / ai_hazard
+# 定向补丁作为双保险（公开已是 public 的方法等于 no-op）。
+unless defined?($__mkxp_private_neutered) && $__mkxp_private_neutered
+  $__mkxp_private_neutered = true
+  begin
+    class Module
+      alias_method :__mkxp_orig_private, :private
+      def private(*args, &blk)
+        # no-op：def 保持 public，显式接收者调用合法（根治 iOS private-call）
+      end
+      alias_method :__mkxp_orig_private_class_method, :private_class_method
+      def private_class_method(*args, &blk)
+        # no-op
+      end
+    end
+    $stderr.puts "[mkxp-ios] Module#private neutered (iOS Ruby 3.x private-call compat; has_follower/ai_hazard now redundant but kept)"
+  rescue StandardError => e
+    $stderr.puts "[mkxp-ios] private neuter failed: #{e.class}: #{e.message}"
+  end
+end
 $__mkxp_rcache = {}
 $__mkxp_miss = {}
 $__mkxp_probe = 0
