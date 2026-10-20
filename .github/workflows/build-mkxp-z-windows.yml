@@ -1,0 +1,69 @@
+name: build-mkxp-z-windows
+
+# 手动触发：编一个 Windows x64 版 mkxp-z（dev 分支源码，
+# 包含 2026-06 的 "Use 32 bit pixman regions when necessary" 修复，
+# 用于根治 "pixman_region_union_rect: Invalid rectangle passed" 报错+卡顿）
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build-windows-msys2:
+    name: Windows MSYS2 x64
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Get short SHA
+        id: short-sha
+        uses: benjlevesque/short-sha@v4.0
+        with:
+          length: 7
+
+      - name: Install dependencies (MSYS2 mingw64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: false
+          install: >-
+            bison
+            mingw-w64-x86_64-ccache
+            mingw-w64-x86_64-cmake
+            diffutils
+            mingw-w64-x86_64-git
+            make
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-ruby
+            mingw-w64-x86_64-gcc
+
+      - name: Checkout mkxp-z (dev branch)
+        uses: actions/checkout@v4
+        with:
+          repository: mkxp-z/mkxp-z
+          ref: dev
+
+      - name: Configure
+        run: |
+          meson setup --prefix "$(pwd)/build/artifact" --buildtype release -Dstrip=true -Db_lto=true build
+
+      - name: Build
+        id: build
+        run: |
+          exit_code=0
+          ninja -C build -v || exit_code=$?
+          echo "exit-code=$exit_code" >> "$GITHUB_OUTPUT"
+
+      - name: Check build status
+        run: exit ${{ steps.build.outputs.exit-code }}
+
+      - name: Prepare artifact
+        run: |
+          meson install -C build --no-rebuild --tags mkxp-z
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mkxp-z.windows.msys2.x86_64.dev-${{ steps.short-sha.outputs.sha }}
+          path: build/artifact

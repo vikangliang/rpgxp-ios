@@ -757,6 +757,145 @@ else:
     print("bitmap.cpp: drawText clip anchor missing")
 PYEOF
 
+# ---------- 3a-1.6b. BGM 继续播放：meWatchFun MePlaying state 覆盖 + pauseStream/resumeStream preemptPause race ----------
+# 症状：获得物品后 BGM 音量卡 0；mkxp.log `bgm heal attempt 1 alstate=4116` 反复出现。
+# 根因（与 framework 自带 checkStopped 心跳无关，纯 pristine mkxp-z bug）：
+#   (1) audio.cpp:218  `meWatch.state = MeNotPlaying` 写在 for(auto track : bgmTracks) 循环体内，
+#       每轮 track 都把上面的 `meWatch.state = BgmFadingIn`（line 208）覆盖成 MeNotPlaying。
+#       ME 结束后 BGM 永远走不到 BgmFadingIn 分支做音量 fade-in（音量被 BgmFadingOut 设为 0 后
+#       永远回不来 → 用户听到 BGM 完全静默，但 AL 源状态 PLAYING 所以 BGM "看似活着"）。
+#   (2) alstream.cpp pauseStream 把 `preemptPause = true` 当 AL 源非 PLAYING 时设置，
+#       resumeStream 见 true 就跳 play() → 如果 pause 命中的瞬间 AL 源 STOPPED，
+#       resume 啥都不做，AL 源永远停在 STOPPED。
+# 修法（一次打齐，零死角）：
+#   - audio.cpp MePlaying case：把 meWatch.state = MeNotPlaying 移到 for 循环外，
+#     仅在 meWatch.state != BgmFadingIn 时设置（保留任何被设的 FadeIn 转移）。
+#   - alstream.cpp pauseStream：去掉 preemptPause=true 分歧（已非 PLAYING 时不再 memo）；
+#     resumeStream 无条件 AL::Source::play(alSrc) — alSourcePlay 对已 PLAYING 源是 OpenAL 规
+#     范允许的 no-op，对 PAUSED 源是 resume，对 STOPPED 源重启动，从根上消除 race。
+python3 - "$MKXP_SRC/src/audio/audio.cpp" "$MKXP_SRC/src/audio/alstream.cpp" <<'PYEOF'
+import sys
+import re
+
+# ---- Bug 1: audio.cpp MePlaying case 末尾 meWatch.state = MeNotPlaying 移到循环外 ----
+audio = sys.argv[1]
+s = open(audio, encoding='utf-8').read()
+old1 = (
+"                        if (sState == ALStream::Paused) {\n"
+"                            /* BGM is paused. -> FadeInBGM */\n"
+"                            track->stream.play();\n"
+"                            meWatch.state = BgmFadingIn;\n"
+"                        }\n"
+"                        else {\n"
+"                            /* BGM is stopped. -> MeNotPlaying */\n"
+"                            track->setVolume(AudioStream::External, 1.0f);\n"
+"                            \n"
+"                            if (!track->noResumeStop)\n"
+"                                track->stream.play();\n"
+"                        }\n"
+"                        \n"
+"                        meWatch.state = MeNotPlaying;\n"
+"                        \n"
+"                        track->unlockStream();\n"
+"                    }\n")
+new1 = (
+"                        if (sState == ALStream::Paused) {\n"
+"                            /* BGM is paused. -> FadeInBGM */\n"
+"                            track->stream.play();\n"
+"                            meWatch.state = BgmFadingIn;\n"
+"                        }\n"
+"                        else {\n"
+"                            /* BGM is stopped. -> MeNotPlaying */\n"
+"                            track->setVolume(AudioStream::External, 1.0f);\n"
+"                            \n"
+"                            if (!track->noResumeStop)\n"
+"                                track->stream.play();\n"
+"                        }\n"
+"                        \n"
+"                        track->unlockStream();\n"
+"                    }\n"
+"                    \n"
+"                    /* iOS fix: BgmFadingIn must NOT be overridden per-track.\n"
+"                     * meWatch.state was set inside the if above for FadeIn; here we\n"
+"                     * only fall back to MeNotPlaying if no track promoted the state.\n"
+"                     * Previously `meWatch.state = MeNotPlaying` lived INSIDE the loop\n"
+"                     * (per-track), which killed the BgmFadingIn transition and stuck\n"
+"                     * BGM volume at 0 after ME ended (the audible 'BGM dead' symptom). */\n"
+"                    if (meWatch.state != BgmFadingIn)\n"
+"                        meWatch.state = MeNotPlaying;\n")
+hit1 = old1 in s
+if hit1:
+    s = s.replace(old1, new1, 1)
+    open(audio, 'w', encoding='utf-8').write(s)
+    print("patched audio.cpp: meWatchFun MePlaying state override fixed (BGM volume recovers)")
+else:
+    print("audio.cpp: MePlaying anchor missing")
+
+# ---- Bug 2: alstream.cpp pauseStream/resumeStream preemptPause race ----
+als = sys.argv[2]
+s2 = open(als, encoding='utf-8').read()
+old2 = (
+"void ALStream::pauseStream()\n"
+"{\n"
+"\tSDL_LockMutex(pauseMut);\n"
+"\n"
+"\tif (AL::Source::getState(alSrc) != AL_PLAYING)\n"
+"\t\tpreemptPause = true;\n"
+"\telse\n"
+"\t\tAL::Source::pause(alSrc);\n"
+"\n"
+"\tSDL_UnlockMutex(pauseMut);\n"
+"}\n"
+"\n"
+"void ALStream::resumeStream()\n"
+"{\n"
+"\tSDL_LockMutex(pauseMut);\n"
+"\n"
+"\tif (preemptPause)\n"
+"\t\tpreemptPause = false;\n"
+"\telse\n"
+"\t\tAL::Source::play(alSrc);\n"
+"\n"
+"\tSDL_UnlockMutex(pauseMut);\n"
+"}\n")
+new2 = (
+"void ALStream::pauseStream()\n"
+"{\n"
+"\tSDL_LockMutex(pauseMut);\n"
+"\n"
+"\t/* iOS fix: stop memo-ing 'preemptPause' when AL source isn't PLAYING.\n"
+"\t * Previously a brief AL_STOPPED state at pause time set preemptPause=true,\n"
+"\t * which made resumeStream skip alSourcePlay() and leave BGM dead silent.\n"
+"\t * Only call pause(alSrc) if AL is actually playing; otherwise leave the\n"
+"\t * source in whatever state it's in so resumeStream can revive it. */\n"
+"\tif (AL::Source::getState(alSrc) == AL_PLAYING)\n"
+"\t\tAL::Source::pause(alSrc);\n"
+"\n"
+"\tSDL_UnlockMutex(pauseMut);\n"
+"}\n"
+"\n"
+"void ALStream::resumeStream()\n"
+"{\n"
+"\tSDL_LockMutex(pauseMut);\n"
+"\n"
+"\t/* iOS fix: always kick the AL source on resume. alSourcePlay on a\n"
+"\t * PLAYING source is a no-op per OpenAL spec (it does NOT restart),\n"
+"\t * on a PAUSED source it resumes, on a STOPPED source it starts\n"
+"\t * playing whatever buffers are queued. The previous preemptPause\n"
+"\t * branch left the source STOPPED forever in the race condition. */\n"
+"\tAL::Source::play(alSrc);\n"
+"\n"
+"\tSDL_UnlockMutex(pauseMut);\n"
+"}\n")
+hit2 = old2 in s2
+if hit2:
+    s2 = s2.replace(old2, new2, 1)
+    open(als, 'w', encoding='utf-8').write(s2)
+    print("patched alstream.cpp: pauseStream/resumeStream preemptPause race fixed (BGM resumes after ME)")
+else:
+    print("alstream.cpp: pause/resume anchor missing")
+PYEOF
+
 # ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
 # framework-entry.patch（git diff，LF 行尾）：
 #   1. src/main.cpp: int main() -> extern "C" int mkxp_z_main()
@@ -777,7 +916,7 @@ if [ -f "$MKXP_SRC/.git/config" ]; then
 
   # 零死角校验：确认关键补丁 hunk 真的落进源码（避免 patch -f 静默丢弃）。
   # 任何签名缺失 = 对应修复没生效 = 构建直接失败，绝不让“试探包”流到真机。
-  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/" "swapInterval=" "mkxp: bitmap missing" "rgss: ruby exception (suppressed dialog)"; do
+  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/" "swapInterval=" "mkxp: bitmap missing" "rgss: ruby exception (suppressed dialog)" "BgmFadingIn must NOT be overridden"; do
     if ! grep -rqF "$sig" "$MKXP_SRC"; then
       echo "FATAL: 关键补丁签名缺失: $sig （hunk 可能被丢弃，修复未生效）"; exit 1
     fi
