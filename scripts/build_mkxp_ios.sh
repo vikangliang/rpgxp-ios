@@ -974,6 +974,7 @@ if old_destroy in s:
     print("patched main.cpp: SDL_DestroyWindow dispatched to iOS main thread (signal=5 exit crash fix)")
 else:
     print("main.cpp: destroy anchor missing")
+PYEOF
 
   # ---------- 3a-1.6d. 字体查找诊断：iOS 消息框少字定位 ----------
   # 症状：游戏消息框偶尔少 1-2 字（用户报告）；m3 已有 mkxp-text/mkxp-dtp 钩子证明
