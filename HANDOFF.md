@@ -286,8 +286,8 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
 
 ## 下一步该做什么（2026-10-20 更新）
 
-M2 已全部完成；M3 真机调通 + 六运行时修复（①BGM **已根治（f33e34b）**、③加载 已修，EventScriptError 已根治、**⑤退出闪退已根治（7e1e20b）**、**⑥运行中闪退 OOM jetsam 已根治（8548a7c）**）；②撕裂已加 glFinish
-修复（待真机验证）、④文本待定位上游、**byte order 撤回（c7e2f27）**。构建冲突已修通；当前最新 `a93647d`（CI 已绿，artifact 待发布）。剩余真实待办：
+M2 已全部完成；M3 真机调通 + 七运行时修复（①BGM **已根治（f33e34b）**、③加载 已修，EventScriptError 已根治、**⑤退出闪退已根治（7e1e20b）**、**⑥运行中闪退 OOM jetsam 已根治（8548a7c）**、**⑦菜单光标不更新已根治（5e251a9）**）；②撕裂已加 glFinish
+修复（待真机验证）、④文本待定位上游、**byte order 撤回（c7e2f27）**。构建冲突已修通；当前最新 `5e251a9`（CI 双绿，artifact 已发布）。剩余真实待办：
 
 1. **② 撕裂修复真机验证**：`d55c23d` 已在 ios_embed.mm 软呈现读回前加 glFinish()（强制整帧画完再读回，消除
    Metal 异步读回半帧）。侧载后到室外大地图跑几分钟验证；若仍裂，下一步给 UIImageView 上屏加 CADisplayLink
@@ -361,7 +361,46 @@ static const int64_t CAP_BYTES = 96LL * 1024 * 1024;  // 192MB → 96MB
 
 **关键诊断手段**：iOS 引擎端**直接读 task_info**——`ios_embed.mm:317` 的 `mkxp_logMemoryFootprint` 是无 Mac 调试 iOS OOM 的核心代偿。看 mem@present#N 序列定位峰值 + 跌幅（OOM kill 标志）+ 涨速（泄漏率）。
 
-**附记**：日志里 82 次 `pixman_region_union_rect Invalid rectangle passed` 是**独立症状**（Cairo/pixman 警告，不是 crash），跟 OOM 没有时序关联（最近 BUG 距最近 crash 至少 21 行），已在 `bitmap.cpp tainted-region rect guards` 打过补丁但仍触发——可能是另一处调用路径没拦到，下一轮查。
+**附记**：日志里 82 次 `pixman_region_union_rect Invalid rectangle passed` 已**根治于 5e251a9**——是 iOS 菜单光标不更新真因，详见下一条目。
+
+### M3 修复：菜单光标不更新（iOS 独有，PC 正常）（`5e251a9`，2026-10-20 待真机验）
+
+**症状**：菜单上下键移动，光标视觉不更新（▶ 仍停在第一行），但按 C 实际命中不同选项——Ruby 端 `@index` 已移，**Sprite 视觉没跟**。**PC 跑同一游戏无此问题**。
+
+**根因**（由 `mkxp_2026-10-20T19-52-41.401223.log` 实锤，82 次 `*** BUG *** Invalid rectangle passed`）：
+
+mkxp-z iOS 软呈现路径：`Bitmap::addTaintedArea` → `pixman_region_union_rect` → GL sub-upload → `glReadPixels` → `CGImageCreate` → `UIImageView`。pristine mkxp-z v2.4.2 的 `addTaintedArea` 只做 `normalizedRect`（处理 w/h 负数），**不 clamp 到 bitmap 真实边界**。当 sprite 光标或其他 blit 触发的 destRect 出现 `x<0` / `y<0` / `x+w>bmpW` / `y+h>bmpH`：
+
+1. pixman 报 `Invalid rectangle passed` BUG
+2. tainted region 状态被污染
+3. 后续 GL sub-upload 用错的 tainted rect → Sprite 内容没真上传到 GL 纹理
+4. 软呈现 `glReadPixels` 拿到旧像素 → UIImage 不动 → 光标冻结
+
+PC 端 GL framebuffer 直接渲染到 SDL 窗口，tainted region 只用于 fast-path 优化（`if (opacity == 255 && !touchesTaintedArea) GLMeta::blitBegin`），错了也只是性能损失，**不影响显示**。
+
+**修法**（`scripts/build_mkxp_ios.sh:651` 3a-2 段，apply 在 pristine 上、`framework-entry.patch` 之前）：
+
+```cpp
+void addTaintedArea(const IntRect &rect) {
+    IntRect norm = normalizedRect(rect);
+    int bmpW = self->width();   // 考虑 megaSurface / animation
+    int bmpH = self->height();
+    if (norm.x < 0) { norm.w += norm.x; norm.x = 0; }
+    if (norm.y < 0) { norm.h += norm.y; norm.y = 0; }
+    if (norm.x >= bmpW || norm.y >= bmpH) { /* skip + log oob */ return; }
+    if (norm.x + norm.w > bmpW) norm.w = bmpW - norm.x;
+    if (norm.y + norm.h > bmpH) norm.h = bmpH - norm.y;
+    if (norm.w <= 0 || norm.h <= 0) { /* skip + log */ return; }
+    pixman_region_union_rect(&tainted, &tainted, norm.x, norm.y, norm.w, norm.h);
+}
+```
+
+**真机验**（待用户装 `5e251a9` 后）：
+1. 任意 Window_Command 菜单按上下键：视觉光标应**同步移动**
+2. mkxp.log 应**不出现**新 `rgss: tainted oob` 行（说明光标走的是合法坐标路径）
+3. `*** BUG *** Invalid rectangle passed` 在新包应从 82 次降到个位数（剩余的可能是真正的越界 cursor y）
+
+**附记**：`substractTaintedArea` 现有守护只防 `w<=0 / h<=0`，**没守越界**——同样需要 `self->width()/height()` clamp。下一轮补（5e251a9 暂未包含）。
 
 ### M3 修复：退出闪退 `signal=5` 根治（`7e1e20b`，2026-10-20 真机验过）
 
