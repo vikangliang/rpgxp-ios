@@ -157,6 +157,11 @@ static void mkxp_softPresent()
     GLint prevFbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    /* 撕裂根治：iOS(Metal 后端)下 glReadPixels 不保证等 GPU 画完，高负载时会读回
+     * 半渲染帧 → UIImageView 呈现半帧 → 横向撕裂（PC 的 SDL swap 由驱动保证原子
+     * +VSync，无此问题）。glFinish() 强制本帧 GL 命令全部完成后再读回，确保读到
+     * 完整一整帧。代价是每帧多等一次 GPU，换取不裂。 */
+    glFinish();
     glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE, g_softBuf);
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 
