@@ -896,6 +896,169 @@ else:
     print("alstream.cpp: pause/resume anchor missing")
 PYEOF
 
+# ---------- 3a-1.6c. 退出闪退根治：SDL_DestroyWindow 必须在 iOS 主线程调 ----------
+# 症状：用户在游戏内退出/切后台 → 引擎清路径走 SDL_DestroyWindow → SDL_HideWindow →
+#       UIKit_HideWindow → iOS 程序按 UIKit 强制约束（必须主线程）→ SIGTRAP(signal=5)
+#       杀进程。Backtrace 显示崩在 RGSS 后台线程的 __thread_proxy 上。
+# 修法：SDL_DestroyWindow / SDL_GL_DeleteContext 用 dispatch_async 推到主线程。
+# 注意：该路径在 mkxp_z_main 末尾，mkxp_z_main 是 SDL_CreateThread 启动的 pthread，
+#       不是 iOS 主线程。dispatch_get_main_queue() 把任务放到 UIKit 主队列，下次
+#       主线程循环就执行。主线程退出前会完成最后的销毁。
+# 文件注意：main.cpp 是 CRLF + 4 空格缩进（不是 \t）。Python 内统一 LF 比较。
+python3 - "$MKXP_SRC/src/main.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+with open(p, 'rb') as f:
+    raw = f.read()
+s = raw.decode('utf-8').replace('\r\n', '\n')
+
+old_destroy = (
+"    alcCloseDevice(alcDev);\n"
+"    SDL_DestroyWindow(win);\n")
+new_destroy = (
+"#if defined(__APPLE__)\n"
+"    /* iOS fix (2026-10-20): SDL_DestroyWindow -> UIKit_HideWindow must run\n"
+"     * on the iOS main thread; otherwise UIKit asserts -> SIGTRAP(5) and\n"
+"     * the process is killed (backtrace: __thread_proxy -> SDL_DestroyWindow\n"
+"     * -> UIKit_HideWindow). Dispatch the destroy on the main queue. */\n"
+"    __block SDL_Window *winToDestroy = win;\n"
+"    dispatch_async(dispatch_get_main_queue(), ^{\n"
+"        if (winToDestroy) SDL_DestroyWindow(winToDestroy);\n"
+"    });\n"
+"#else\n"
+"    alcCloseDevice(alcDev);\n"
+"    SDL_DestroyWindow(win);\n"
+"#endif\n")
+
+if old_destroy in s:
+    s = s.replace(old_destroy, new_destroy, 1)
+    # Ensure dispatch/dispatch.h is included (only on Apple platforms)
+    if "#include <dispatch/dispatch.h>" not in s and "#include " in s:
+        # insert after last #include line
+        last_inc_end = 0
+        i = 0
+        while True:
+            j = s.find("#include ", i)
+            if j < 0: break
+            k = s.find("\n", j)
+            last_inc_end = k
+            i = k
+        s = s[:last_inc_end] + "\n#if defined(__APPLE__)\n#include <dispatch/dispatch.h>\n#endif" + s[last_inc_end:]
+    # write back as CRLF (preserve original style)
+    raw = s.replace('\n', '\r\n').encode('utf-8')
+    with open(p, 'wb') as f:
+        f.write(raw)
+    print("patched main.cpp: SDL_DestroyWindow dispatched to iOS main thread (signal=5 exit crash fix)")
+else:
+    print("main.cpp: destroy anchor missing")
+PYEOF
+
+# ---------- 3a-1.6d. 字体查找诊断：iOS 消息框少字定位 ----------
+# 症状：游戏消息框偶尔少 1-2 字（用户报告）；m3 已有 mkxp-text/mkxp-dtp 钩子证明
+#       draw_text 入参字符数完整、字体名 FusionPixelMonoPatched 解析成功；
+#       INCOMPLETE UTF-8 / rgss: text clipped / mkxp-fs miss 全 0。说明引擎侧对
+#       字符串处理没问题，问题在渲染或字体查找。
+# 本节加 2 个 C++ 侧诊断签名（必须与 mkxp-framework/ios_hook.rb 的钩子区分）：
+#   (1) initFontSetCB：每个 .ttf 扫描后打 family+path（看清 TTF_FontFaceFamilyName
+#       在 iOS SDL2_ttf 下究竟返回什么——是否带空格、是否空）。
+#   (2) pickExistingFontName：所有候选 family 都不在 sets 时打 fallback 日志
+#       （看清游戏要的 "Fusion Pixel 12px Monospaced zh_hans" 是否落进 p->sets）。
+# 文件注意：font.cpp 是 CRLF + \t 缩进。Python 内统一 LF 比较。
+python3 - "$MKXP_SRC/src/display/font.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+with open(p, 'rb') as f:
+    raw = f.read()
+s = raw.decode('utf-8').replace('\r\n', '\n')
+
+# Patch (1): initFontSetCB — log every scanned .ttf
+old1 = (
+"\tFontSet &set = p->sets[family];\n"
+"\n"
+"\tif (style == \"Regular\")\n"
+"\t\tset.regular = filename;\n"
+"\telse\n"
+"\t\tset.other = filename;\n"
+"}\n")
+new1 = (
+"\tFontSet &set = p->sets[family];\n"
+"\n"
+"\tstatic int _scanned = 0;\n"
+"\tif (_scanned < 40)\n"
+"\t{\n"
+"\t\tfprintf(stderr, \"mkxp-font: scanned path='%s' family='%s' style='%s'%s\\n\",\n"
+"\t\t\tfilename.c_str(), family.c_str(), style.c_str(),\n"
+"\t\t\tfamily.empty() ? \" [EMPTY FAMILY]\" : \"\");\n"
+"\t\t++_scanned;\n"
+"\t}\n"
+"\n"
+"\tif (style == \"Regular\")\n"
+"\t\tset.regular = filename;\n"
+"\telse\n"
+"\t\tset.other = filename;\n"
+"}\n")
+
+if old1 in s:
+    s = s.replace(old1, new1, 1)
+    print("patched font.cpp: initFontSetCB scan log")
+else:
+    print("font.cpp: initFontSetCB anchor missing")
+
+# Patch (2): pickExistingFontName — log when fallback to '' happens
+old2 = (
+"\tfor (size_t i = 0; i < names.size(); ++i)\n"
+"\t{\n"
+"\t\tif (sfs.fontPresent(names[i]))\n"
+"\t\t{\n"
+"\t\t\tout = names[i];\n"
+"\t\t\treturn;\n"
+"\t\t}\n"
+"\t}\n"
+"\n"
+"\tout = \"\";\n"
+"}\n")
+new2 = (
+"\tfor (size_t i = 0; i < names.size(); ++i)\n"
+"\t{\n"
+"\t\tif (sfs.fontPresent(names[i]))\n"
+"\t\t{\n"
+"\t\t\tout = names[i];\n"
+"\t\t\treturn;\n"
+"\t\t}\n"
+"\t}\n"
+"\n"
+"\tstatic int _miss = 0;\n"
+"\tif (_miss < 20)\n"
+"\t{\n"
+"\t\tfprintf(stderr, \"mkxp-font: FALLBACK requested=[\");\n"
+"\t\tfor (size_t i = 0; i < names.size(); ++i)\n"
+"\t\t{\n"
+"\t\t\tif (i) fprintf(stderr, \", \");\n"
+"\t\t\tfprintf(stderr, \"%s\", names[i].c_str());\n"
+"\t\t}\n"
+"\t\tfprintf(stderr, \"] -> out=''\\n\");\n"
+"\t\t++_miss;\n"
+"\t}\n"
+"\n"
+"\tout = \"\";\n"
+"}\n")
+
+if old2 in s:
+    s = s.replace(old2, new2, 1)
+    print("patched font.cpp: pickExistingFontName fallback log")
+else:
+    print("font.cpp: pickExistingFontName anchor missing")
+
+# Need stdio for fprintf
+if "#include <stdio.h>" not in s:
+    s = "#include <stdio.h>\n" + s
+
+# Write back as CRLF (preserve original style)
+raw = s.replace('\n', '\r\n').encode('utf-8')
+with open(p, 'wb') as f:
+    f.write(raw)
+PYEOF
+
 # ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
 # framework-entry.patch（git diff，LF 行尾）：
 #   1. src/main.cpp: int main() -> extern "C" int mkxp_z_main()
@@ -916,7 +1079,7 @@ if [ -f "$MKXP_SRC/.git/config" ]; then
 
   # 零死角校验：确认关键补丁 hunk 真的落进源码（避免 patch -f 静默丢弃）。
   # 任何签名缺失 = 对应修复没生效 = 构建直接失败，绝不让“试探包”流到真机。
-  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/" "swapInterval=" "mkxp: bitmap missing" "rgss: ruby exception (suppressed dialog)" "BgmFadingIn must NOT be overridden"; do
+  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/" "swapInterval=" "mkxp: bitmap missing" "rgss: ruby exception (suppressed dialog)" "BgmFadingIn must NOT be overridden" "SDL_DestroyWindow -> UIKit_HideWindow must run" "mkxp-font: scanned path=" "mkxp-font: FALLBACK requested=" "kCGBitmapByteOrder32Little"; do
     if ! grep -rqF "$sig" "$MKXP_SRC"; then
       echo "FATAL: 关键补丁签名缺失: $sig （hunk 可能被丢弃，修复未生效）"; exit 1
     fi
