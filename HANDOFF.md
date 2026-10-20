@@ -2,7 +2,7 @@
 
 > 本文件专门写给「接手继续云编译」的会话/人。AI 记忆**不随仓库走**，所以把接力上下文写在这里。
 
-## 当前状态（2026-10-20，更新于 `32918a4`）
+## 当前状态（2026-10-20，更新于 `d55c23d`）
 
 > 里程碑盘点：
 
@@ -14,7 +14,7 @@
 | M2 阶段一（导入+启动链路） | ✅ | 文件选择器/ZIP 导入/游戏库/启动·删除/日志对话框/透明浮层就位 |
 | M2 阶段二（触摸浮层/设置/日志/详情页） | ✅ 已完成 | 原生 `MkxpTouchOverlay`（圆环摇杆+2×2 键直调 mkxp_key）、五页 UI、游戏详情页、退出菜单 |
 | **M2 关键 Bug：启动后无画面** | ✅ 已修已验 | 点启动卡「正在启动」/无画面 → `15ab649`+`baa3646` 循环甩后台线程；真机已出画面（M3 在其上继续调） |
-| M3 真机调通 + 四运行时修复 | 🔧 基本完成 | ①BGM自愈 ③解码缓存 已修；EventScriptError(has_follower)已根治；②撕裂仅 VSync 减轻、未根治(软呈现缺帧同步，待修)；④消息框少字定位中(上游脚本切片)。当前 `32918a4` CI 双绿 |
+| M3 真机调通 + 四运行时修复 | 🔧 基本完成 | ①BGM自愈 ③解码缓存 已修；EventScriptError(has_follower)已根治；②撕裂 glFinish 修复已实现、待真机验证(d55c23d)；④消息框少字定位中(上游脚本切片)。当前 `d55c23d` CI 双绿 |
 
 - 最新提交：`32918a4`（M3：has_follower 改 public，根治 EventScriptError 弹窗）。M3 真机调通 + 四运行时修复（BGM/撕裂/加载/文本）均已完成、构建冲突已修通；完整细节见文末「CI 链复盘 + 全项目根因总表」。自 `8eac281` 起进入 M3 真机调通：黑屏无声三连修、
   UIKit 崩溃根治（`MKXPZ_IOS_EMBED` 守卫）、GL 上下文回主线程、zlib LoadError 根治、sdl2-image JPEG、
@@ -286,17 +286,19 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
 
 ## 下一步该做什么（2026-10-20 更新）
 
-M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM ②撕裂 ③加载 ④文本）已完成，EventScriptError 已根治，
-构建冲突已修通；当前最新 `32918a4`（CI 双绿，IPA 可装）。剩余真实待办：
+M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM、③加载 已修，EventScriptError 已根治）；②撕裂已加 glFinish
+修复（待真机验证）、④文本待定位上游。构建冲突已修通；当前最新 `d55c23d`（CI 双绿，IPA 可装）。剩余真实待办：
 
-1. **④ 消息框少字定位+根治**（唯一未完成项）：已锤定「引擎不丢字、是上游脚本按字节/宽度切片丢整字」。
-   需用**低开销**方式定位上游排版方法（勿在 draw_text/pbDrawTextPositions 热路径加 caller/inspect 重日志
-   ——两度引发红线/撕裂回归），或用户提供 `Scripts.rxdata` 直接读消息框排版源码；定位后用 `ios_hook.rb`
-   重定义该方法（码点安全版）修掉。
-2. **退出崩溃（间歇性，近期未复现）**：退出时 `signal=5` 崩在 SDL_DestroyWindow/UIKit_HideWindow——修复
+1. **② 撕裂修复真机验证**：`d55c23d` 已在 ios_embed.mm 软呈现读回前加 glFinish()（强制整帧画完再读回，消除
+   Metal 异步读回半帧）。侧载后到室外大地图跑几分钟验证；若仍裂，下一步给 UIImageView 上屏加 CADisplayLink
+   对齐 vblank；若感觉掉帧，把 glFinish 换成更轻的 glFenceSync 精准同步。
+2. **④ 消息框少字定位+根治**：已锤定「引擎不丢字、是上游脚本按字节/宽度切片丢整字」。需用**低开销**方式定位
+   上游排版方法（勿在 draw_text/pbDrawTextPositions 热路径加 caller/inspect 重日志——两度引发红线/撕裂回归），
+   或用户提供 `Scripts.rxdata` 直接读消息框排版源码；定位后用 `ios_hook.rb` 重定义该方法（码点安全版）修掉。
+3. **退出崩溃（间歇性，近期未复现）**：退出时 `signal=5` 崩在 SDL_DestroyWindow/UIKit_HideWindow——修复
    has_follower 后（RGSS 线程能干净退出）近期没再崩，但根因（后台线程销毁窗口碰 UIKit 断言）未根治，待观察；
    若复现需把退出时窗口销毁挪主线程。
-3. **可选打磨**：开 `UIFileSharingEnabled`；触感反馈；`mkxp.log` 实时刷新。
+4. **可选打磨**：开 `UIFileSharingEnabled`；触感反馈；`mkxp.log` 实时刷新。
 
 ## M1 后续必做（`libmkxp.a` 编通后，A/B/C 均已实现，仅作决策留档）
 
@@ -452,7 +454,7 @@ M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM ②撕裂 ③
 |---|---|---|
 | ★ ① BGM 间歇停 | 解码错(ov_read<0/OV_HOLE/seek 失败)或 iOS 设备失效无自愈 | vorbissource 有限重试 + alstream checkStopped 自愈 + meWatchFun 每帧心跳 + ios_embed AVAudioSession 中断/路由；**自愈必须 gate(state==Playing && !sourceExhausted)**，否则误重启 SE/ME(实测 124 次) |
 | ★ ② 室外撕裂(基础) | VSync 默认关 | main.cpp 强制 SDL_GL_SetSwapInterval(1) |
-| ◇ ② 撕裂复发(未根治) | **真因（2026-10-20 查明）：iOS 走软呈现**（swz_presentRenderbuffer → mkxp_softPresent：glReadPixels 读回帧→UIImage→主线程 UIImageView 上屏，盖在 GL 视图上）；**VSync 只作用 EAGL swap，管不到软呈现的读回+UIImageView 上屏**；高负载下读回/上屏与渲染不同步→半帧呈现→撕裂（间歇/负载相关/与 commit 无关，实测没改代码也复现）。**旧"L599 导致复发"归因已否定** | 待做软呈现帧同步：读回前 glFinish() 确保整帧画完；或 UIImageView 上屏对齐 CADisplayLink vblank |
+| ◇ ② 撕裂复发 | **真因（2026-10-20 查明）：iOS 走软呈现**（swz_presentRenderbuffer → mkxp_softPresent：glReadPixels 读回帧→UIImage→主线程 UIImageView 上屏，盖在 GL 视图上）；**VSync 只作用 EAGL swap，管不到软呈现的读回+UIImageView 上屏**；高负载下 Metal 异步读回半渲染帧→半帧呈现→撕裂（间歇/负载相关/与 commit 无关，实测没改代码也复现）。**旧"L599 导致复发"归因已否定** | **已实现待真机验证（d55c23d）**：ios_embed.mm 读回前加 glFinish() 强制整帧画完再读回；若未根治再上 CADisplayLink 对齐 vblank |
 | ★ ③ 加载慢 | Bitmap 构造同步解码无缓存 | 解码像素 LRU 缓存(key 归一化、直接上传像素、勿整份 surface 拷贝、勿重复) |
 | ★ ④ 消息框少 1-2 字 | **非引擎**：drawText 用 squeeze 压缩不裁切不丢字，传入字符串都合法完整；少字是**上游脚本按字节/宽度切片丢整字** | 须定位上游排版方法再用 ios_hook.rb 重定义(码点安全版)；引擎无法还原已丢字符 |
 | ★ EventScriptError 弹窗 | [Following Pokemon EX] 显式接收者调 Game_Player 私有 has_follower → Ruby3.3 严禁"私有 + 显式接收者" → NoMethodError → rescue 包成 EventScriptError → SDL 弹窗 | ios_hook.rb 惰性 Game_Player.send(:public,:has_follower) + showExc 落日志不弹框 |
@@ -461,7 +463,7 @@ M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM ②撕裂 ③
 pbDrawTextPositions 与 Bitmap#draw_text 都是每帧热路径。在上面加日志必须：**(a) 硬节流(~40 次即停) (b) 不用 caller(caller[N] 每帧生成栈回溯很贵) (c) 不用大 inspect**。
 - 反例(都已 revert)：8beee82 pbDrawTextPositions 无节流 + caller[0..7] + texts.inspect → 标题红线；485ea9b draw_text caller[0..12] + str + 节流 300 → 撕裂。
 - 正例(32918a4 安全在跑)：pbDrawTextPositions 节流 40 + 无 caller；draw_text caller[0..3] + 节流 120。
-- **撕裂真因是软呈现缺帧同步（见 B⑨），不是渲染被拖慢**：VSync 只减轻（管 EAGL swap），管不到软呈现的读回+UIImageView 上屏；高负载下半帧呈现→裂。根治待做软呈现帧同步。热路径铁律防的是另一类"拖慢渲染的 artifact"，两者别混。
+- **撕裂真因是软呈现缺帧同步（见 B⑨），不是渲染被拖慢**：VSync 只减轻（管 EAGL swap），管不到软呈现的读回+UIImageView 上屏；高负载下半帧呈现→裂。**已实现修复（d55c23d，待真机验证）：读回前 glFinish() 强制整帧画完**。热路径铁律防的是另一类"拖慢渲染的 artifact"，两者别混。
 
 ### D. 构建/CI 铁律
 
