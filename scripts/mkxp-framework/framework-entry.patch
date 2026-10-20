@@ -2,7 +2,7 @@ diff --git a/binding/audio-binding.cpp b/binding/audio-binding.cpp
 index cee5c86..4b00374 100644
 --- a/binding/audio-binding.cpp
 +++ b/binding/audio-binding.cpp
-@@ -24,6 +24,18 @@
+@@ -24,6 +24,18 @@ @@
  #include "binding-util.h"
  #include "exception.h"
  
@@ -21,7 +21,7 @@ index cee5c86..4b00374 100644
  #define DEF_PLAY_STOP_POS(entity) \
  	RB_METHOD(audio_##entity##Play) \
  	{ \
-@@ -32,7 +44,9 @@
+@@ -32,7 +44,9 @@ @@
  		int volume = 100; \
  		int pitch = 100; \
  		double pos = 0.0; \
@@ -32,7 +32,7 @@ index cee5c86..4b00374 100644
  		GUARD_EXC( shState->audio().entity##Play(filename, volume, pitch, pos); ) \
  		return Qnil; \
  	} \
-@@ -55,7 +69,9 @@
+@@ -55,7 +69,9 @@ @@
  		const char *filename; \
  		int volume = 100; \
  		int pitch = 100; \
@@ -43,7 +43,7 @@ index cee5c86..4b00374 100644
  		GUARD_EXC( shState->audio().entity##Play(filename, volume, pitch); ) \
  		return Qnil; \
  	} \
-@@ -71,7 +87,9 @@ RB_METHOD(audio_##entity##Fade) \
+@@ -71,7 +87,9 @@ @@
  { \
  	RB_UNUSED_PARAM; \
  	int time; \
@@ -54,7 +54,7 @@ index cee5c86..4b00374 100644
  	shState->audio().entity##Fade(time); \
  	return Qnil; \
  }
-@@ -93,7 +111,9 @@ RB_METHOD(audio_bgmPlay)
+@@ -93,7 +111,9 @@ @@
      int pitch = 100;
      double pos = 0.0;
      int track = -127;
@@ -65,7 +65,7 @@ index cee5c86..4b00374 100644
      GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )
      return Qnil;
  }
-@@ -102,7 +122,9 @@ RB_METHOD(audio_bgmStop)
+@@ -102,7 +122,9 @@ @@
  {
      RB_UNUSED_PARAM;
      int track = -127;
@@ -76,7 +76,7 @@ index cee5c86..4b00374 100644
      shState->audio().bgmStop(track);
      return Qnil;
  }
-@@ -111,7 +133,9 @@ RB_METHOD(audio_bgmPos)
+@@ -111,7 +133,9 @@ @@
  {
      RB_UNUSED_PARAM;
      int track = 0;
@@ -87,7 +87,7 @@ index cee5c86..4b00374 100644
      return rb_float_new(shState->audio().bgmPos(track));
  }
  
-@@ -119,7 +143,9 @@ RB_METHOD(audio_bgmGetVolume)
+@@ -119,7 +143,9 @@ @@
  {
      RB_UNUSED_PARAM;
      int track = -127;
@@ -98,7 +98,7 @@ index cee5c86..4b00374 100644
      int ret = 0;
      GUARD_EXC( ret = shState->audio().bgmGetVolume(track); )
      return rb_fix_new(ret);
-@@ -130,7 +156,9 @@ RB_METHOD(audio_bgmSetVolume)
+@@ -130,7 +156,9 @@ @@
      RB_UNUSED_PARAM;
      int volume;
      int track = -127;
@@ -109,7 +109,7 @@ index cee5c86..4b00374 100644
      GUARD_EXC( shState->audio().bgmSetVolume(volume, track); )
      return Qnil;
  }
-@@ -145,7 +173,9 @@ RB_METHOD(audio_bgmFade)
+@@ -145,7 +173,9 @@ @@
      RB_UNUSED_PARAM;
      int time;
      int track = -127;
@@ -124,7 +124,7 @@ diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
 index f7f293a..2e09e80 100644
 --- a/binding/binding-mri.cpp
 +++ b/binding/binding-mri.cpp
-@@ -57,6 +57,9 @@ extern "C" {
+@@ -57,6 +57,9 @@ @@
  #include <assert.h>
  #include <string>
  #include <zlib.h>
@@ -134,7 +134,7 @@ index f7f293a..2e09e80 100644
  
  #include <SDL_cpuinfo.h>
  #include <SDL_filesystem.h>
-@@ -270,6 +273,49 @@ static void mriBindingInit() {
+@@ -270,6 +273,49 @@ @@
      rb_str_freeze(vers);
      rb_define_const(mod, "VERSION", vers);
      
@@ -184,7 +184,7 @@ index f7f293a..2e09e80 100644
      // Automatically load zlib if it's present -- the correct way this time
      int state;
      rb_eval_string_protect("require('zlib') if !Kernel.const_defined?(:Zlib)", &state);
-@@ -865,6 +911,12 @@ bool evalScript(VALUE string, const char *filename)
+@@ -865,6 +911,12 @@ @@
  
  #define SCRIPT_SECTION_FMT (rgssVer >= 3 ? "{%04ld}" : "Section%03ld")
  
@@ -197,7 +197,7 @@ index f7f293a..2e09e80 100644
  static void runRMXPScripts(BacktraceData &btData) {
      const Config &conf = shState->rtData().config;
      const std::string &scriptPack = conf.game.scripts;
-@@ -898,6 +950,7 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -898,6 +950,7 @@ @@
      rb_gv_set("$RGSS_SCRIPTS", scriptArray);
      
      long scriptCount = RARRAY_LEN(scriptArray);
@@ -205,7 +205,7 @@ index f7f293a..2e09e80 100644
      
      std::string decodeBuffer;
      decodeBuffer.resize(0x1000);
-@@ -943,8 +996,11 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -943,8 +996,11 @@ @@
              break;
          }
          
@@ -217,7 +217,7 @@ index f7f293a..2e09e80 100644
      
      /* Execute preloaded scripts */
      for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
-@@ -957,6 +1013,8 @@ static void runRMXPScripts(BacktraceData &btData) {
+@@ -957,6 +1013,8 @@ @@
      
      while (true) {
          for (long i = 0; i < scriptCount; ++i) {
@@ -230,7 +230,7 @@ diff --git a/src/audio/alstream.cpp b/src/audio/alstream.cpp
 index 73dfe41..7745e71 100644
 --- a/src/audio/alstream.cpp
 +++ b/src/audio/alstream.cpp
-@@ -42,7 +42,7 @@ ALStream::ALStream(LoopMode loopMode,
+@@ -42,7 +42,7 @@ @@
  	  source(0),
  	  thread(0),
  	  preemptPause(false),
@@ -239,7 +239,7 @@ index 73dfe41..7745e71 100644
  {
  	alSrc = AL::Source::gen();
  
-@@ -344,17 +344,62 @@ void ALStream::checkStopped()
+@@ -344,17 +344,62 @@ @@
  	if (!streamInited)
  		return;
  
@@ -312,7 +312,7 @@ diff --git a/src/audio/alstream.h b/src/audio/alstream.h
 index e8c1606..c111a1f 100644
 --- a/src/audio/alstream.h
 +++ b/src/audio/alstream.h
-@@ -61,6 +61,12 @@ struct ALStream
+@@ -61,6 +61,12 @@ @@
  	AtomicFlag streamInited;
  	AtomicFlag sourceExhausted;
  
@@ -329,7 +329,7 @@ diff --git a/src/audio/audio.cpp b/src/audio/audio.cpp
 index 6e42182..22a058e 100644
 --- a/src/audio/audio.cpp
 +++ b/src/audio/audio.cpp
-@@ -30,6 +30,7 @@
+@@ -30,6 +30,7 @@ @@
  #include "exception.h"
  
  #include <string>
@@ -337,7 +337,7 @@ index 6e42182..22a058e 100644
  #include <vector>
  
  #include <SDL_thread.h>
-@@ -113,6 +114,18 @@ struct AudioPrivate
+@@ -113,6 +114,18 @@ @@
  			if (meWatch.termReq)
  				return;
  
@@ -360,7 +360,7 @@ diff --git a/src/audio/vorbissource.cpp b/src/audio/vorbissource.cpp
 index 7716a69..cb91502 100644
 --- a/src/audio/vorbissource.cpp
 +++ b/src/audio/vorbissource.cpp
-@@ -185,6 +185,7 @@ struct VorbisSource : ALDataSource
+@@ -185,6 +185,7 @@ @@
  		Status retStatus = ALDataSource::NoError;
  
  		bool readAgain = false;
@@ -368,7 +368,7 @@ index 7716a69..cb91502 100644
  
  		if (loop.valid)
  		{
-@@ -200,9 +201,17 @@ struct VorbisSource : ALDataSource
+@@ -200,9 +201,17 @@ @@
  
  			if (res < 0)
  			{
@@ -392,7 +392,7 @@ diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
 index 4b43123..0177841 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
-@@ -22,6 +22,10 @@
+@@ -22,6 +22,10 @@ @@
  #include "bitmap.h"
  
  #include <SDL.h>
@@ -403,7 +403,7 @@ index 4b43123..0177841 100644
  #include <SDL_image.h>
  #include <SDL_ttf.h>
  #include <SDL_rect.h>
-@@ -466,18 +470,173 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
+@@ -466,18 +470,172 @@ @@
      }
  };
  
@@ -469,17 +469,17 @@ index 4b43123..0177841 100644
 +        while (totalBytes + add > CAP_BYTES && lru.size() > 0)
 +        {
 +            std::string oldk = lru.back();
-+            /* iOS fix (2026-10-20): drop tileset pin. Real-world mem sample
-+             * (mkxp_2026-10-20T19-52-41.401223.log) showed phys_footprint
-+             * stable at 1100-1310MB across 1500+ frames before jetsam kill;
-+             * even with CAP=192MB, the pinned tilesets (Outside=38MB +
-+             * Exterior1-7 ~7MB each) plus active LRU content pushed
-+             * working set past 800MB and combined with engine/Ruby/iOS
-+             * framework allocations into OOM territory. Dropping pin lets
-+             * genuine LRU pressure shed the giant tilesets when mem gets
-+             * tight; the 150ms re-decode cost on next map entry is much
-+             * cheaper than an OOM jetsam kill (silent process death +
-+             * full state loss). */
++            /* iOS fix (2026-10-20): drop tileset pin. Real-world mem
++             * sample (mkxp_2026-10-20T19-52-41.401223.log) showed
++             * phys_footprint stable at 1100-1310MB across 1500+ frames
++             * before jetsam kill; even with CAP=192MB, the pinned
++             * tilesets (Outside=38MB + Exterior1-7 ~7MB each) plus
++             * active LRU content pushed working set past 800MB and
++             * combined with engine/Ruby/iOS framework allocations into
++             * OOM territory. Dropping pin lets genuine LRU pressure
++             * shed the giant tilesets when mem gets tight; the 150ms
++             * re-decode cost on next map entry is much cheaper than an
++             * OOM jetsam kill (silent process death + full state loss). */
 +            auto oit = map.find(oldk);
 +            if (oit == map.end()) { lru.pop_back(); continue; }
 +            totalBytes -= (int64_t)oit->second.px.size();
@@ -580,7 +580,7 @@ index 4b43123..0177841 100644
      }
      
      if (handler.gif) {
-@@ -578,7 +736,18 @@ Bitmap::Bitmap(const char *filename)
+@@ -578,7 +736,18 @@ @@
      
      
      p->ensureFormat(imgSurf, SDL_PIXELFORMAT_ABGR8888);
@@ -604,7 +604,7 @@ diff --git a/src/eventthread.cpp b/src/eventthread.cpp
 index 355b698..56ea0fc 100644
 --- a/src/eventthread.cpp
 +++ b/src/eventthread.cpp
-@@ -465,20 +464,47 @@ void EventThread::process(RGSSThreadData &rtData)
+@@ -465,20 +464,47 @@ @@
                  switch(event.type - usrIdStart)
                  {
                      case REQUEST_SETFULLSCREEN :
@@ -652,7 +652,7 @@ index 355b698..56ea0fc 100644
                          rc = SDL_GetDesktopDisplayMode(SDL_GetWindowDisplayIndex(win), &dm);
                          if (!rc)
                              SDL_SetWindowPosition(win,
-@@ -486,10 +512,13 @@ void EventThread::process(RGSSThreadData &rtData)
+@@ -486,10 +512,13 @@ @@
                                                    (dm.h / 2) - (winH / 2));
                          rtData.rqWindowAdjust.clear();
                          break;
@@ -666,7 +666,7 @@ index 355b698..56ea0fc 100644
                          break;
                          
                      case REQUEST_TEXTMODE :
-@@ -566,7 +595,9 @@ void EventThread::process(RGSSThreadData &rtData)
+@@ -566,7 +595,9 @@ @@
                              break;
                          }
                          
@@ -676,7 +676,7 @@ index 355b698..56ea0fc 100644
                          break;
                          
                      case UPDATE_SCREEN_RECT :
-@@ -649,6 +680,27 @@ int EventThread::eventFilter(void *data, SDL_Event *event)
+@@ -649,6 +680,27 @@ @@
      return 1;
  }
  
@@ -708,7 +708,7 @@ diff --git a/src/input/input.cpp b/src/input/input.cpp
 index 67c7799..83126e1 100644
 --- a/src/input/input.cpp
 +++ b/src/input/input.cpp
-@@ -35,9 +34,16 @@
+@@ -35,9 +34,16 @@ @@
  #include <vector>
  #include <cmath>
  #include <unordered_map>
@@ -725,7 +725,7 @@ index 67c7799..83126e1 100644
  #define BUTTON_CODE_COUNT 26
  
  #define m(vk,sc) { vk, SDL_SCANCODE_##sc }
-@@ -965,6 +971,14 @@ struct InputPrivate
+@@ -965,6 +971,14 @@ @@
          appendBindings(kbBindings);
          appendBindings(ctrlABindings);
          appendBindings(ctrlBBindings);
@@ -744,7 +744,7 @@ diff --git a/src/main.cpp b/src/main.cpp
 index 4779221..d7e0394 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -30,11 +29,14 @@
+@@ -30,11 +29,14 @@ @@
  #include <SDL_sound.h>
  #include <SDL_ttf.h>
  
@@ -759,7 +759,7 @@ index 4779221..d7e0394 100644
  
  #include "binding.h"
  #include "sharedstate.h"
-@@ -201,7 +203,11 @@ static void setupWindowIcon(const Config &conf, SDL_Window *win) {
+@@ -201,7 +203,11 @@ @@
    }
  }
  
@@ -772,7 +772,7 @@ index 4779221..d7e0394 100644
      SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
      SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
  
-@@ -351,7 +357,17 @@ int main(int argc, char *argv[]) {
+@@ -351,7 +357,17 @@ @@
  #endif
        return 0;
      }
@@ -791,7 +791,7 @@ index 4779221..d7e0394 100644
  #ifdef MKXPZ_BUILD_XCODE
      {
          std::string downloadsPath = "/Users/" + mkxp_sys::getUserName() + "/Downloads";
-@@ -414,7 +430,12 @@ int main(int argc, char *argv[]) {
+@@ -414,7 +430,12 @@ @@
      if (!mode.refresh_rate)
        conf.syncToRefreshrate = false;
  
@@ -805,7 +805,7 @@ index 4779221..d7e0394 100644
  
  #ifndef MKXPZ_INIT_GL_LATER
      SDL_GLContext glCtx = initGL(win, conf, 0);
-@@ -422,84 +443,93 @@ int main(int argc, char *argv[]) {
+@@ -422,84 +443,93 @@ @@
      SDL_GLContext glCtx = NULL;
  #endif
  
@@ -950,7 +950,7 @@ index 4779221..d7e0394 100644
  
      return 0;
  }
-@@ -544,7 +574,13 @@ static SDL_GLContext initGL(SDL_Window *win, Config &conf,
+@@ -544,7 +574,13 @@ @@
    printGLInfo();
  
    bool vsync = conf.vsync || conf.syncToRefreshrate;
