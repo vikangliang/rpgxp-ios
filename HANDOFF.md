@@ -293,8 +293,9 @@ M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM ②撕裂 ③
    需用**低开销**方式定位上游排版方法（勿在 draw_text/pbDrawTextPositions 热路径加 caller/inspect 重日志
    ——两度引发红线/撕裂回归），或用户提供 `Scripts.rxdata` 直接读消息框排版源码；定位后用 `ios_hook.rb`
    重定义该方法（码点安全版）修掉。
-2. **退出崩溃**：退出时 `signal=5` 崩在 SDL_DestroyWindow/UIKit_HideWindow（每次退出都崩，既有问题，
-   与上述无关）——待把窗口销毁挪主线程。
+2. **退出崩溃（间歇性，近期未复现）**：退出时 `signal=5` 崩在 SDL_DestroyWindow/UIKit_HideWindow——修复
+   has_follower 后（RGSS 线程能干净退出）近期没再崩，但根因（后台线程销毁窗口碰 UIKit 断言）未根治，待观察；
+   若复现需把退出时窗口销毁挪主线程。
 3. **可选打磨**：开 `UIFileSharingEnabled`；触感反馈；`mkxp.log` 实时刷新。
 
 ## M1 后续必做（`libmkxp.a` 编通后，A/B/C 均已实现，仅作决策留档）
@@ -472,4 +473,4 @@ pbDrawTextPositions 与 Bitmap#draw_text 都是每帧热路径。在上面加日
 | 没 IPA 可装 | 只有 CI conclusion=success 才出 artifact | 装前先查 Actions conclusion |
 
 ### E. 未修
-- 退出时 signal=5 崩 SDL_DestroyWindow/UIKit_HideWindow（每次退出都崩，与上述无关；待把窗口销毁挪主线程）。
+- 退出时 signal=5 崩 SDL_DestroyWindow/UIKit_HideWindow：**间歇性**；修复 has_follower 后（RGSS 线程能干净退出）近期未复现，但根因（后台线程销毁窗口碰 UIKit 断言）未根治，待观察；若复现需把退出时窗口销毁挪主线程。
