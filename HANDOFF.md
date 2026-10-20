@@ -404,3 +404,71 @@ M3 真机调通进行中（zlib/GL/UIKit/黑屏无声/JPEG/GC 已连环修，最
   hook 版本升至 v9。
 - 真机验证：日志 `mkxp-text` 若出现 `INCOMPLETE UTF-8` 或 `draw_text bytes=...` 即定位到上游方法；
   文本尾部不再因不完整 UTF-8 乱码。
+
+## CI 链复盘 + 全项目根因总表（2026-10-20 终版，接手先读）
+
+### A. CI 链复盘（10-19～10-20，16 次：11 成功 / 5 失败）
+
+| 时间(CST) | commit | 构建 | 真机表现 | 阶段/教训 |
+|---|---|---|---|---|
+| 12:18 | ffbbc26 | 成功 | 撕裂修好，其余待验 | 四修复首版 |
+| 13:41 | cbf64c5 | 成功 | — | BGM 每帧自愈 + 缓存 key 归一化 |
+| 14:05 | 8beee82 | 成功 | **标题红线** | 诊断回归①：pbDrawTextPositions 无节流 + caller 重日志 |
+| 14:21 | 282ef3e | 成功 | 恢复 | revert 红线 |
+| 14:43 | 485ea9b | 成功 | **撕裂复发** | 诊断回归②：draw_text caller[0..12] + str + 节流 300 |
+| 17:43 | 29764ab | 成功 | 恢复 | revert 撕裂 |
+| 20:41 | f91a992 | 成功 | 室外裂 | 另一 session：BGM gate + tileset 缓存 + 文本 trace |
+| 21:43 | c6147a2 | 失败 | — | 构建失败 |
+| 22:04 | 8f899b1 | 失败 | — | text-clip 锚点缩进错 → 签名 FATAL |
+| 22:16 | 6bc3691 | 失败 | — | fprintf 格式串 \n 未闭合 |
+| 22:22 | ccc340d | 成功 | 室外裂 | 修 fprintf |
+| 23:06 | 297dedc | 成功 | 室外裂 | Bitmap 缺文件 → 1×1 fallback |
+| 23:35 | e3deb9f | 失败 | — | showExc 签名在 binding/，校验只 grep src/ → 假 FATAL |
+| 09:22(+1) | c59d575 | 失败 | — | bitmap.cpp 构造函数三处补丁冲突 → 丢 hunk → FATAL |
+| 09:40(+1) | 4c3af4a | 成功 | 恢复正常 | 签名校验 grep 整棵树 → 首次出包 |
+| 10:05(+1) | 32918a4 | 成功 | 正常（当前版） | has_follower 改 public → EventScriptError 根治 |
+
+**链条规律**：① 两次真机回归都是"诊断代码"造成（热路径重日志）；② 5 次构建失败全是补丁/构建脚本问题（锚点/转义/grep 路径/冲突），非业务代码；③ 另一 session 的 C++ 改动因构建卡在签名校验，**从未被编译过**，直到 4c3af4a 才第一次真正编译。
+
+### B. 全项目 Bug 根因总表（★已锤定 ◇疑似未验证）
+
+**启动/画面（早期）**
+
+| 现象 | 根因 | 修复 |
+|---|---|---|
+| 点启动闪退 | 引擎跑后台线程，SDL iOS 后端(UIWindow/CAEAGLLayer/UIKit)只认主线程 | dispatch_async 回主线程(625cbd5) |
+| 无画面/卡启动 | EventThread.process() 占死主线程 run loop → CA 无法上屏 | 阻塞循环挪后台 thread、mkxp_z_main 立即返回(15ab649/baa3646) |
+| zlib LoadError | 静态 Ruby zlib 扩展没初始化 | Init_zlib + rb_provide_feature(f41c059) |
+| Encoding::* 缺失 | 静态 Ruby 没定义常量 | 常量守卫 |
+| JPEG | sdl2-image | — |
+| ★ ?-sprite | 解析器缓存**字符串所有权**：游戏 gsub! 原地改缓存共享对象 → 污染 → 解析失败 | 缓存/返回一律 dup(21e9c0e) |
+| UIKit 崩溃 | — | MKXPZ_IOS_EMBED 守卫 |
+
+**M3 运行时（10-19/20）**
+
+| 现象 | 根因 | 修复 |
+|---|---|---|
+| ★ ① BGM 间歇停 | 解码错(ov_read<0/OV_HOLE/seek 失败)或 iOS 设备失效无自愈 | vorbissource 有限重试 + alstream checkStopped 自愈 + meWatchFun 每帧心跳 + ios_embed AVAudioSession 中断/路由；**自愈必须 gate(state==Playing && !sourceExhausted)**，否则误重启 SE/ME(实测 124 次) |
+| ★ ② 室外撕裂(基础) | VSync 默认关 | main.cpp 强制 SDL_GL_SetSwapInterval(1) |
+| ◇ ② 撕裂复发 | 疑似旧构建脚本缓存 L599（整份 SDL_DuplicateSurface 拷贝 / 或与 framework-entry.patch 双缓存）拖慢渲染线程；**未性能实测 / 未隔离单因** | c59d575 删 L599、缓存统一改 framework-entry.patch 直接 TEX::uploadImage 上传像素 |
+| ★ ③ 加载慢 | Bitmap 构造同步解码无缓存 | 解码像素 LRU 缓存(key 归一化、直接上传像素、勿整份 surface 拷贝、勿重复) |
+| ★ ④ 消息框少 1-2 字 | **非引擎**：drawText 用 squeeze 压缩不裁切不丢字，传入字符串都合法完整；少字是**上游脚本按字节/宽度切片丢整字** | 须定位上游排版方法再用 ios_hook.rb 重定义(码点安全版)；引擎无法还原已丢字符 |
+| ★ EventScriptError 弹窗 | [Following Pokemon EX] 显式接收者调 Game_Player 私有 has_follower → Ruby3.3 严禁"私有 + 显式接收者" → NoMethodError → rescue 包成 EventScriptError → SDL 弹窗 | ios_hook.rb 惰性 Game_Player.send(:public,:has_follower) + showExc 落日志不弹框 |
+
+### C. 渲染热路径铁律（红线 + 撕裂同一根因，已锤定）
+pbDrawTextPositions 与 Bitmap#draw_text 都是每帧热路径。在上面加日志必须：**(a) 硬节流(~40 次即停) (b) 不用 caller(caller[N] 每帧生成栈回溯很贵) (c) 不用大 inspect**。
+- 反例(都已 revert)：8beee82 pbDrawTextPositions 无节流 + caller[0..7] + texts.inspect → 标题红线；485ea9b draw_text caller[0..12] + str + 节流 300 → 撕裂。
+- 正例(32918a4 安全在跑)：pbDrawTextPositions 节流 40 + 无 caller；draw_text caller[0..3] + 节流 120。
+- VSync 是撕裂基础修复，但渲染线程一被拖慢仍会裂。防复发 = 渲染路径恒轻量。
+
+### D. 构建/CI 铁律
+
+| 现象 | 根因 | 修复 |
+|---|---|---|
+| FATAL(bitmap.cpp) | 构建脚本补丁(L599/L712)与 framework-entry.patch 都改 Bitmap 构造函数 → 冲突 → patch -f 静默丢 hunk → 签名缺失 | 删 L599/L712，缓存 + fallback 并入 framework-entry.patch 独管构造函数 |
+| 假 FATAL(showExc) | 签名校验 grep 只搜 src/，签名在 binding/binding-mri.cpp | grep 改整棵 $MKXP_SRC |
+| CI git apply 失败 | framework-entry.patch 带 CRLF | 必须 open(...,newline="n") 写 LF |
+| 没 IPA 可装 | 只有 CI conclusion=success 才出 artifact | 装前先查 Actions conclusion |
+
+### E. 未修
+- 退出时 signal=5 崩 SDL_DestroyWindow/UIKit_HideWindow（每次退出都崩，与上述无关；待把窗口销毁挪主线程）。
