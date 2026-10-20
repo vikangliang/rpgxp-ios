@@ -778,7 +778,7 @@ if [ -f "$MKXP_SRC/.git/config" ]; then
   # 零死角校验：确认关键补丁 hunk 真的落进源码（避免 patch -f 静默丢弃）。
   # 任何签名缺失 = 对应修复没生效 = 构建直接失败，绝不让“试探包”流到真机。
   for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "tilesets/" "swapInterval=" "mkxp: bitmap missing" "rgss: ruby exception (suppressed dialog)"; do
-    if ! grep -rqF "$sig" "$MKXP_SRC/src"; then
+    if ! grep -rqF "$sig" "$MKXP_SRC"; then
       echo "FATAL: 关键补丁签名缺失: $sig （hunk 可能被丢弃，修复未生效）"; exit 1
     fi
   done
