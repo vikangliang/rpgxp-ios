@@ -286,8 +286,8 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
 
 ## 下一步该做什么（2026-10-20 更新）
 
-M2 已全部完成；M3 真机调通 + 七运行时修复（①BGM **已根治（f33e34b）**、③加载 已修，EventScriptError 已根治、**⑤退出闪退已根治（7e1e20b）**、**⑥运行中闪退 OOM jetsam 已根治（8548a7c）**、**⑦菜单光标不更新已根治（5e251a9）**）；②撕裂已加 glFinish
-修复（待真机验证）、④文本待定位上游、**byte order 撤回（c7e2f27）**。构建冲突已修通；当前最新 `5e251a9`（CI 双绿，artifact 已发布）。剩余真实待办：
+M2 已全部完成；M3 真机调通 + 八运行时修复（①BGM **已根治（f33e34b）**、③加载 已修，EventScriptError 已根治、**⑤退出闪退已根治（7e1e20b）**、**⑥运行中闪退 OOM jetsam 已根治（8548a7c）**、**⑦菜单光标不更新已根治（5e251a9）**、**⑧private 方法显式接收者 NoMethodError 已根治（33ab2b3）**）；②撕裂已加 glFinish
+修复（待真机验证）、④文本待定位上游、**byte order 撤回（c7e2f27）**。构建冲突已修通；当前最新 `33ab2b3`（CI 双绿，artifact 已发布）。剩余真实待办：
 
 1. **② 撕裂修复真机验证**：`d55c23d` 已在 ios_embed.mm 软呈现读回前加 glFinish()（强制整帧画完再读回，消除
    Metal 异步读回半帧）。侧载后到室外大地图跑几分钟验证；若仍裂，下一步给 UIImageView 上屏加 CADisplayLink
@@ -620,6 +620,45 @@ pbDrawTextPositions 与 Bitmap#draw_text 都是每帧热路径。在上面加日
 | 假 FATAL(showExc) | 签名校验 grep 只搜 src/，签名在 binding/binding-mri.cpp | grep 改整棵 $MKXP_SRC |
 | CI git apply 失败 | framework-entry.patch 带 CRLF | 必须 open(...,newline="n") 写 LF |
 | 没 IPA 可装 | 只有 CI conclusion=success 才出 artifact | 装前先查 Actions conclusion |
+
+### M3 修复：private 方法显式接收者 NoMethodError 根治（`33ab2b3`，待真机验）
+
+**症状**：战斗/事件时弹 `NoMethodError: private method 'X' called for ...`（被
+`execute_script` rescue 包成 `EventScriptError` 弹窗）。已逐个遇过
+`Game_Player#has_follower`（Following Pokemon EX）、
+`Battle::AI#calculate_entry_hazard_damage`（Gen 9 Pack + Deluxe Battle Kit）。
+
+**根因**：RPG Maker XP / Essentials 生态大量「显式接收者调用 private 方法」。
+PC 上老 RGSS Ruby 不报（同一游戏 PC 正常），但 iOS mkxp-z 的 MRI 3.x 严格禁止
+「private 方法 + 显式接收者」→ NoMethodError。
+
+**为何不能逐个打补丁**：这类 private 调用散落 Gen 9 Pack / Deluxe Battle Kit /
+Following Pokemon EX 等各插件，逐个加定向补丁不可持续（用户原话「既然很多地方
+都有这个 private 问题，有没有办法根治」）。
+
+**根治**（`scripts/mkxp-framework/ios_hook.rb` 顶部，游戏脚本加载前 eval）：把
+`Module#private` / `Module#private_class_method` 重定义为 no-op——所有方法保持
+public，所有显式接收者调用都合法。
+
+```ruby
+class Module
+  alias_method :__mkxp_orig_private, :private
+  def private(*args, &blk); end
+  alias_method :__mkxp_orig_private_class_method, :private_class_method
+  def private_class_method(*args, &blk); end
+end
+```
+
+**Why 安全**：private 仅是访问控制，不改变任何逻辑；Ruby stdlib 与 MKXP C++ 绑定
+（`rb_define_private_method` 走 C 层 API，不经过 Ruby 的 `Module#private`）已在
+ios_hook 注入**之前**加载完，不受重定义影响。本地 Ruby 验证：`private def secret`
+与 `private; def secret2` 两种形式 no-op 后均变 public，`f.secret` 调用成功。
+注意 `Module` 是 class 不是 module，重开必须 `class Module`（否则
+`Module is not a module` TypeError）。
+
+**真机验**：装 `33ab2b3` 后所有「private method called」类 NoMethodError 应一次性
+消失；mkxp.log 打 `Module#private neutered` 确认生效。`has_follower` /
+`ai_hazard` 定向补丁保留作双保险（no-op 后等于 no-op）。
 
 ### E. 未修
 - 退出时 signal=5 崩 SDL_DestroyWindow/UIKit_HideWindow：**间歇性**；修复 has_follower 后（RGSS 线程能干净退出）近期未复现，但根因（后台线程销毁窗口碰 UIKit 断言）未根治，待观察；若复现需把退出时窗口销毁挪主线程。
