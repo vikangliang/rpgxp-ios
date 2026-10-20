@@ -63,7 +63,7 @@
   （解决 SDL 全屏窗吞触摸，不依赖 Flutter 主线程）；
 - 游戏内退出菜单、真实图标、游玩时长、`SDL_HINT_ORIENTATIONS` 横屏 hint。
 
-## M3 进度（2026-10-16 起，真机调通中 🔧）
+## M3 进度（2026-10-16 起，真机调通 ✅ + 四运行时修复 ✅；④消息框少字定位中 🔧）
 
 M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修复（提交均带 `m3` 前缀）：
 
@@ -284,17 +284,18 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
    not registered`）——若真机日志出 WARNING，说明构建缺 `enc` 对象，下一步要去 `build_mkxp_ios.sh`
    手工编 enc/encdb.c、enc/us_ascii.c、enc/utf_8.c 等合进静态库（同 zlib_ext.o 方案）。
 
-## 下一步该做什么（2026-10-17 更新）
+## 下一步该做什么（2026-10-20 更新）
 
-M2 已全部完成（UI 五页 + 原生触摸浮层 + 详情页 + 退出菜单），引擎可启动、画面可上屏、触摸可注入。
-M3 真机调通进行中（zlib/GL/UIKit/黑屏无声/JPEG/GC 已连环修，最新 `cee6bd0`）。当前真实待办：
+M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM ②撕裂 ③加载 ④文本）已完成，EventScriptError 已根治，
+构建冲突已修通；当前最新 `32918a4`（CI 双绿，IPA 可装）。剩余真实待办：
 
-1. **M3 收尾真机验证**：侧载最新 IPA → 导入 Essentials → 点开始游戏，确认标题画面出现、可用虚拟键
-   操作菜单、不崩、`mkxp.log` 无 LoadError/异常栈。若崩取 `rpgxpLoader-*.ips`，对照
-   `framework-entry.patch`（`MKXPZ_IOS_EMBED`/GL 主线程）与 `mkxp_framework.cpp`（zlib 锚点/GC/日志）。
-2. **M3 剩余**：确认 Essentials 完整进游戏（标题→新游戏→地图）不卡脚本加载（打点区分慢/卡死）；
-   GC 调优后启动时长是否可接受。
-3. **可选打磨**：开 `UIFileSharingEnabled` 让游戏文件经 Finder 共享进沙盒；触感反馈；`mkxp.log` 实时刷新。
+1. **④ 消息框少字定位+根治**（唯一未完成项）：已锤定「引擎不丢字、是上游脚本按字节/宽度切片丢整字」。
+   需用**低开销**方式定位上游排版方法（勿在 draw_text/pbDrawTextPositions 热路径加 caller/inspect 重日志
+   ——两度引发红线/撕裂回归），或用户提供 `Scripts.rxdata` 直接读消息框排版源码；定位后用 `ios_hook.rb`
+   重定义该方法（码点安全版）修掉。
+2. **退出崩溃**：退出时 `signal=5` 崩在 SDL_DestroyWindow/UIKit_HideWindow（每次退出都崩，既有问题，
+   与上述无关）——待把窗口销毁挪主线程。
+3. **可选打磨**：开 `UIFileSharingEnabled`；触感反馈；`mkxp.log` 实时刷新。
 
 ## M1 后续必做（`libmkxp.a` 编通后，A/B/C 均已实现，仅作决策留档）
 
