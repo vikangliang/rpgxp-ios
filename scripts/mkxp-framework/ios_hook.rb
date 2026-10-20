@@ -29,6 +29,16 @@ unless defined?($__mkxp_private_neutered) && $__mkxp_private_neutered
   end
 end
 $__mkxp_rcache = {}
+
+# ---- 诊断总开关（性能关键） ----
+# 默认关：生产版不包装 draw_text / draw_text_ex / pbDrawTextPositions 等每帧热路径。
+# 这些包装当初为查"文本缺字/？精灵"而加，每帧几百次 draw_text 调用都执行
+# args.index + String#dup + force_encoding + valid_encoding?，在 iPhone 上累积成
+# 显著 CPU 开销 -> 卡顿 -> 内存压力 -> iOS jetsam 闪退；App 卡死后日志页也打不开。
+# 非诊断期务必关。需重新诊断文本/精灵问题时把本常量改 true 并重 CI（iOS 沙盒取
+# 不到自定义 env，故用编译期常量而非 MKXP_DIAG env）。？精灵/BGM 等功能修复（非
+# 每帧）不受本开关影响，始终生效。
+$__mkxp_diag = false
 $__mkxp_miss = {}
 $__mkxp_probe = 0
 $__mkxp_logs = Hash.new(0)
@@ -264,26 +274,30 @@ class << Object
         # drawTextEx/Window_Message 都汇到这里）。记录每条文本行实际收到的字符序列：
         # 若用户看到缺字而本日志字符齐全 → 字被"绘制裁剪"（宽度测量/视口问题）；
         # 本日志里就缺 → 上游切片丢字。二者一锤定音。
-        origP = ::Object.instance_method(:pbDrawTextPositions)
-        ::Object.send(:define_method, :pbDrawTextPositions) do |bitmap, textpos|
-          begin
-            $__mkxp_logs["dtp"] += 1
-            if $__mkxp_logs["dtp"] <= 40
-              chars = textpos.map { |e| e[0].to_s }.join
-              u = chars.dup.force_encoding(Encoding::UTF_8)
-              fn = begin
-                bitmap.font.name
-              rescue StandardError
-                "?"
+        # 仅 $__mkxp_diag 时包装（每帧 textpos.map.join + force_encoding 在 iOS 上卡）；
+        # 否则保持原 MKXP 实现，零 Ruby 开销。
+        if $__mkxp_diag
+          origP = ::Object.instance_method(:pbDrawTextPositions)
+          ::Object.send(:define_method, :pbDrawTextPositions) do |bitmap, textpos|
+            begin
+              $__mkxp_logs["dtp"] += 1
+              if $__mkxp_logs["dtp"] <= 40
+                chars = textpos.map { |e| e[0].to_s }.join
+                u = chars.dup.force_encoding(Encoding::UTF_8)
+                fn = begin
+                  bitmap.font.name
+                rescue StandardError
+                  "?"
+                end
+                $stderr.puts "[mkxp-dtp]##{$__mkxp_logs['dtp']} entries=#{textpos.size} " \
+                             "bytes=#{u.bytesize} chars=#{u.length} valid=#{u.valid_encoding?} " \
+                             "font=#{fn.inspect} text=#{chars.inspect[0, 120]}"
               end
-              $stderr.puts "[mkxp-dtp]##{$__mkxp_logs['dtp']} entries=#{textpos.size} " \
-                           "bytes=#{u.bytesize} chars=#{u.length} valid=#{u.valid_encoding?} " \
-                           "font=#{fn.inspect} text=#{chars.inspect[0, 120]}"
+            rescue StandardError
+              # 日志永不影响绘制
             end
-          rescue StandardError
-            # 日志永不影响绘制
+            origP.bind(self).call(bitmap, textpos)
           end
-          origP.bind(self).call(bitmap, textpos)
         end
       elsif m == :calculate_entry_hazard_damage
         # Battle::AI 私有方法被显式接收者调用（Gen 9 Pack + Deluxe Battle Kit 冲突）。
@@ -360,6 +374,7 @@ end
 # 定位 Essentials 按字节切片多字节字符的脚本方法；并对不完整 UTF-8 尾部做安全
 # 剥离（合法 UTF-8 不受影响）。
 def __mkxp_wrap_text_method(name)
+  return unless $__mkxp_diag          # 非诊断期不包装每帧热路径，零 Ruby 开销
   return unless defined?(::Bitmap)
   return unless ::Bitmap.method_defined?(name)
   orig = :"__mkxp_orig_#{name}"
