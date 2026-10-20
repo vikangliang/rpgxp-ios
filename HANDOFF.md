@@ -286,8 +286,8 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
 
 ## 下一步该做什么（2026-10-20 更新）
 
-M2 已全部完成；M3 真机调通 + 八运行时修复（①BGM **已根治（f33e34b）**、③加载 已修，EventScriptError 已根治、**⑤退出闪退已根治（7e1e20b）**、**⑥运行中闪退 OOM jetsam 已根治（8548a7c）**、**⑦菜单光标不更新已根治（5e251a9）**、**⑧private 方法显式接收者 NoMethodError 已根治（33ab2b3）**）；②撕裂已加 glFinish
-修复（待真机验证）、④文本待定位上游、**byte order 撤回（c7e2f27）**。构建冲突已修通；当前最新 `33ab2b3`（CI 双绿，artifact 已发布）。剩余真实待办：
+M2 已全部完成；M3 真机调通 + 九运行时修复（①BGM **已根治（f33e34b）**、③加载 已修，EventScriptError 已根治、**⑤退出闪退已根治（7e1e20b）**、**⑥运行中闪退 OOM jetsam 已根治（8548a7c）**、**⑦菜单光标不更新已根治（5e251a9）**、**⑧private 方法显式接收者 NoMethodError 已根治（33ab2b3）**、**⑨诊断包装每帧开销卡顿闪退已根治（934fdc0）**）；②撕裂已加 glFinish
+修复（待真机验证）、④文本待定位上游、**byte order 撤回（c7e2f27）**。构建冲突已修通；当前最新 `934fdc0`（CI 双绿，artifact 已发布）。剩余真实待办：
 
 1. **② 撕裂修复真机验证**：`d55c23d` 已在 ios_embed.mm 软呈现读回前加 glFinish()（强制整帧画完再读回，消除
    Metal 异步读回半帧）。侧载后到室外大地图跑几分钟验证；若仍裂，下一步给 UIImageView 上屏加 CADisplayLink
@@ -659,6 +659,37 @@ ios_hook 注入**之前**加载完，不受重定义影响。本地 Ruby 验证�
 **真机验**：装 `33ab2b3` 后所有「private method called」类 NoMethodError 应一次性
 消失；mkxp.log 打 `Module#private neutered` 确认生效。`has_follower` /
 `ai_hazard` 定向补丁保留作双保险（no-op 后等于 no-op）。
+
+### M3 修复：诊断包装每帧开销导致卡顿+闪退（`934fdc0`，2026-10-20 待真机验）
+
+**症状**：装 `33ab2b3` 后「app 很卡 + 运行日志打不开 + 闪退」。
+
+**根因**（代码审查定位，非日志）：`scripts/mkxp-framework/ios_hook.rb` 为查
+「文本缺字/？精灵」包装了三个**每帧热路径**方法——
+`Bitmap#draw_text` / `draw_text_ex`（`__mkxp_wrap_text_method`）、
+`Object#pbDrawTextPositions`（`method_added` 分支）。游戏每帧渲染 `draw_text`
+几百次，每次包装都执行 `args.index` + `String#dup` + `force_encoding(UTF_8)` +
+`valid_encoding?`（`pbDrawTextPositions` 还有 `textpos.map{...}.join` +
+`force_encoding`）。在 iPhone 上累积成显著 CPU 开销 → 卡顿 → 每帧临时字符串分配
+推高 GC + 软呈现 `glReadPixels` 大纹理 → 内存压力 → **iOS jetsam 闪退**；App 卡死
+后日志页也打不开。
+
+注意：诊断**日志**本身有流控（dtp ≤40 / text ≤120），但**包装逻辑每帧执行**，
+日志限流掩盖不了 CPU 开销——与 OOM（8548a7c）是不同类性能根因。
+
+**修法**（`ios_hook.rb` 顶部加编译期常量 `$__mkxp_diag = false`）：
+- 非诊断期 `pbDrawTextPositions` 分支不重定义 → 走原 MKXP 实现（零 Ruby 开销）
+- `__mkxp_wrap_text_method` 开头 `return unless $__mkxp_diag` → draw_text/draw_text_ex 不包装
+- ？精灵/BGM 等**功能性修复**（`pbGetFileChar`/`pbTryString`/`pbResolveBitmap`/
+  `ow_sprite_filename`/`getPlayTime`，非每帧）**不受开关影响**，始终生效
+- `private` no-op 根治（33ab2b3）已让 `has_follower`/`ai_hazard` 是 public，定向补丁
+  冗余，非诊断期去掉其热路径触发无副作用
+
+**Why 编译期常量而非 env**：iOS 沙盒进程取不到自定义 `MKXP_DIAG` env（需原生侧
+`setenv`）。需重新诊断文本/精灵时把 `$__mkxp_diag` 改 `true` 重 CI。
+
+**真机验**：装 `934fdc0` 后应明显流畅、不再闪退、日志页可正常打开。若仍闪退 →
+查 mkxp.log 的 `mem@present#N` 峰值是否 OOM 回归（8548a7c 类），或仍有新每帧包装。
 
 ### E. 未修
 - 退出时 signal=5 崩 SDL_DestroyWindow/UIKit_HideWindow：**间歇性**；修复 has_follower 后（RGSS 线程能干净退出）近期未复现，但根因（后台线程销毁窗口碰 UIKit 断言）未根治，待观察；若复现需把退出时窗口销毁挪主线程。
