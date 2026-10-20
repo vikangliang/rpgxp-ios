@@ -187,7 +187,7 @@ static void mkxp_softPresent()
         if (dp) {
             CGColorSpaceRef c = CGColorSpaceCreateDeviceRGB();
             dumpImg = CGImageCreate(sw, sh, 8, 32, stride, c,
-                                    kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipLast,
+                                    kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast,
                                     dp, NULL, false, kCGRenderingIntentDefault);
             CGColorSpaceRelease(c);
             CGDataProviderRelease(dp);
@@ -236,17 +236,17 @@ static void mkxp_softPresent()
     if (!provider) { atomic_store(&g_softPending, 0); return; }
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGImageRef cg = CGImageCreate(sw, sh, 8, 32, (size_t)sw * 4, cs,
-                                  /* iOS fix (2026-10-20): byte order must be LITTLE on
-                                   * little-endian ARM host; previously 32Big reversed
-                                   * each 32-bit pixel so CGImage saw BGRA instead of
-                                   * RGBA — last byte (alpha=0xFF for opaque text) was
-                                   * being misinterpreted as the red channel, making
-                                   * text with low-R pixels (shadows / outline / colored
-                                   * outlines) render as the wrong colour or alpha=0,
-                                   * i.e. "missing 1-2 chars" at the right edge of lines.
-                                   * kCGImageAlphaNoneSkipLast = skip the LAST byte and
-                                   * treat bytes 0/1/2 as R/G/B in order. */
-                                  kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipLast,
+                                  /* 2026-10-20 reverted: byte order flag should be 32Big
+                                   * on iOS Metal; previous Little fix caused all scenes
+                                   * to render uniformly red (was speccing wrong). The
+                                   * SkipLast + 32Big combo is the historic pre-fix state
+                                   * and matches what the scene-dump PNGs (saved via the
+                                   * same flag at line ~190) were using successfully.
+                                   * 2026-10-20 still unconfirmed whether actual root
+                                   * cause is byte order or glReadPixels returning BGRA
+                                   * bytes on Metal (would need PremultipliedFirst +
+                                   * 32Little for that). For now revert. */
+                                  kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast,
                                   provider, NULL, false, kCGRenderingIntentDefault);
     CGColorSpaceRelease(cs);
     CGDataProviderRelease(provider);   // cg 仍持有 g_softDisp（provider 用 NULL 释放回调，不会 free 它）

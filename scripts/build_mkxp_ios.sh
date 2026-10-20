@@ -1092,7 +1092,7 @@ with open(p, 'wb') as f:
 PYEOF
 
   # 二次零死角校验：post-framework-entry patch 的签名（main/font/embed）
-  for sig2 in "SDL_DestroyWindow -> UIKit_HideWindow must run" "mkxp-font: scanned path=" "mkxp-font: FALLBACK requested=" "kCGBitmapByteOrder32Little"; do
+  for sig2 in "SDL_DestroyWindow -> UIKit_HideWindow must run" "mkxp-font: scanned path=" "mkxp-font: FALLBACK requested=" "kCGBitmapByteOrder32Big"; do
     if ! grep -rqF "$sig2" "$MKXP_SRC" "$ROOT/scripts/mkxp-framework/ios_embed.mm"; then
       echo "FATAL: post-framework patch 签名缺失: $sig2"; exit 1
     fi
