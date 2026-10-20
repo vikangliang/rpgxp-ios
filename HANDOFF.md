@@ -286,8 +286,8 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
 
 ## 下一步该做什么（2026-10-20 更新）
 
-M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM、③加载 已修，EventScriptError 已根治）；②撕裂已加 glFinish
-修复（待真机验证）、④文本待定位上游。构建冲突已修通；当前最新 `d55c23d`（CI 双绿，IPA 可装）。剩余真实待办：
+M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM **已根治（f33e34b 真因修复）**、③加载 已修，EventScriptError 已根治）；②撕裂已加 glFinish
+修复（待真机验证）、④文本待定位上游。构建冲突已修通；当前最新 `f33e34b`（CI 双绿，IPA 可装）。剩余真实待办：
 
 1. **② 撕裂修复真机验证**：`d55c23d` 已在 ios_embed.mm 软呈现读回前加 glFinish()（强制整帧画完再读回，消除
    Metal 异步读回半帧）。侧载后到室外大地图跑几分钟验证；若仍裂，下一步给 UIImageView 上屏加 CADisplayLink
@@ -299,6 +299,22 @@ M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM、③加载 �
    has_follower 后（RGSS 线程能干净退出）近期没再崩，但根因（后台线程销毁窗口碰 UIKit 断言）未根治，待观察；
    若复现需把退出时窗口销毁挪主线程。
 4. **可选打磨**：开 `UIFileSharingEnabled`；触感反馈；`mkxp.log` 实时刷新。
+
+### M3 修复：BGM 获得物品后不继续播放（`f33e34b`，2026-10-20 真机验过）
+
+**根因**：pristine mkxp-z v2.4.2 源码有 2 个 bug 同时作用，导致 ME 结束后 BGM 永远静默（不是重启/重复，是音量卡 0 + AL 源永远 STOPPED）：
+
+1. **`src/audio/audio.cpp:218` meWatchFun MePlaying case state 覆盖**：`meWatch.state = MeNotPlaying;` 写在 for 循环体内，每轮 track 都把上面的 `meWatch.state = BgmFadingIn` 覆盖 → ME 结束后 BGM 永远走不到 BgmFadingIn 分支做音量 fade-in（被 BgmFadingOut 设为 0 后永远回不来）。**修**：把 MeNotPlaying 移到 for 循环外，仅在 `state != BgmFadingIn` 时设置。
+
+2. **`src/audio/alstream.cpp:313-316` pauseStream preemptPause race**：`if (AL::Source::getState(alSrc) != AL_PLAYING) preemptPause = true;` —— pause 命中的瞬间 AL 源刚好 STOPPED，preemptPause=true，resumeStream 见 true 跳 play() → AL 源永远 STOPPED。**修**：pauseStream 不再 memo preemptPause；resumeStream 无条件 `AL::Source::play(alSrc)`（OpenAL 规范：PLAYING 上 play 是 no-op，不重启；从 PAUSED 是 resume；从 STOPPED 是 restart，从根消除 race，零回归风险）。
+
+**关键诊断点**：之前的 `mkxp_2026-10-19T22-47-40.218013.log` 显示 `bgm heal attempt 1 alstate=4116 × 73` 反复出现，但**修了我自己之前的 checkStopped heal 也没用**——framework 自带的 heal 是症状放大器（每帧 stopStream+startStream 杀流线程），真因在 pristine 源码。看 `audio.cpp` meWatchFun 状态机和 `alstream.cpp` pauseStream/resumeStream 是唯一正解。
+
+**真机验**：2026-10-20 用户确认"修好了"——获得物品 → ME 结束 → BGM 1 秒内 fade-in 回原音量（不是重启/重复），`bgm heal attempt` 计数不再反复 attempt1。
+
+**副作用/下一轮**：
+- framework 自带 `alstream.cpp checkStopped` 的 heal 太激进（每帧杀流线程）待清理：改成只调 AL::Source::play(alSrc) 不杀流线程；heartbeat 移到 `meWatch.state == MeNotPlaying` 才跑（避免 ME 中与 meWatch 抢时序）
+- `Tileset Outside 150ms 重解码 cache miss` 与 `文本缺字` 两项仍挂账，下一轮一次打包
 
 ## M1 后续必做（`libmkxp.a` 编通后，A/B/C 均已实现，仅作决策留档）
 
