@@ -580,7 +580,7 @@ index 4b43123..0177841 100644
      }
      
      if (handler.gif) {
-@@ -578,7 +737,18 @@ Bitmap::Bitmap(const char *filename)
+@@ -578,7 +736,18 @@ Bitmap::Bitmap(const char *filename)
      
      
      p->ensureFormat(imgSurf, SDL_PIXELFORMAT_ABGR8888);
@@ -604,7 +604,7 @@ diff --git a/src/eventthread.cpp b/src/eventthread.cpp
 index 355b698..56ea0fc 100644
 --- a/src/eventthread.cpp
 +++ b/src/eventthread.cpp
-@@ -465,20 +465,47 @@ void EventThread::process(RGSSThreadData &rtData)
+@@ -465,20 +464,47 @@ void EventThread::process(RGSSThreadData &rtData)
                  switch(event.type - usrIdStart)
                  {
                      case REQUEST_SETFULLSCREEN :
@@ -652,7 +652,7 @@ index 355b698..56ea0fc 100644
                          rc = SDL_GetDesktopDisplayMode(SDL_GetWindowDisplayIndex(win), &dm);
                          if (!rc)
                              SDL_SetWindowPosition(win,
-@@ -486,10 +513,13 @@ void EventThread::process(RGSSThreadData &rtData)
+@@ -486,10 +512,13 @@ void EventThread::process(RGSSThreadData &rtData)
                                                    (dm.h / 2) - (winH / 2));
                          rtData.rqWindowAdjust.clear();
                          break;
@@ -666,7 +666,7 @@ index 355b698..56ea0fc 100644
                          break;
                          
                      case REQUEST_TEXTMODE :
-@@ -566,7 +596,9 @@ void EventThread::process(RGSSThreadData &rtData)
+@@ -566,7 +595,9 @@ void EventThread::process(RGSSThreadData &rtData)
                              break;
                          }
                          
@@ -676,7 +676,7 @@ index 355b698..56ea0fc 100644
                          break;
                          
                      case UPDATE_SCREEN_RECT :
-@@ -649,6 +681,27 @@ int EventThread::eventFilter(void *data, SDL_Event *event)
+@@ -649,6 +680,27 @@ int EventThread::eventFilter(void *data, SDL_Event *event)
      return 1;
  }
  
@@ -708,7 +708,7 @@ diff --git a/src/input/input.cpp b/src/input/input.cpp
 index 67c7799..83126e1 100644
 --- a/src/input/input.cpp
 +++ b/src/input/input.cpp
-@@ -35,9 +35,16 @@
+@@ -35,9 +34,16 @@
  #include <vector>
  #include <cmath>
  #include <unordered_map>
@@ -725,7 +725,7 @@ index 67c7799..83126e1 100644
  #define BUTTON_CODE_COUNT 26
  
  #define m(vk,sc) { vk, SDL_SCANCODE_##sc }
-@@ -965,6 +972,14 @@ struct InputPrivate
+@@ -965,6 +971,14 @@ struct InputPrivate
          appendBindings(kbBindings);
          appendBindings(ctrlABindings);
          appendBindings(ctrlBBindings);
@@ -744,7 +744,7 @@ diff --git a/src/main.cpp b/src/main.cpp
 index 4779221..d7e0394 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -30,11 +30,14 @@
+@@ -30,11 +29,14 @@
  #include <SDL_sound.h>
  #include <SDL_ttf.h>
  
@@ -759,7 +759,7 @@ index 4779221..d7e0394 100644
  
  #include "binding.h"
  #include "sharedstate.h"
-@@ -201,7 +204,11 @@ static void setupWindowIcon(const Config &conf, SDL_Window *win) {
+@@ -201,7 +203,11 @@ static void setupWindowIcon(const Config &conf, SDL_Window *win) {
    }
  }
  
@@ -772,7 +772,7 @@ index 4779221..d7e0394 100644
      SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
      SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
  
-@@ -351,7 +358,17 @@ int main(int argc, char *argv[]) {
+@@ -351,7 +357,17 @@ int main(int argc, char *argv[]) {
  #endif
        return 0;
      }
@@ -791,7 +791,7 @@ index 4779221..d7e0394 100644
  #ifdef MKXPZ_BUILD_XCODE
      {
          std::string downloadsPath = "/Users/" + mkxp_sys::getUserName() + "/Downloads";
-@@ -414,7 +431,12 @@ int main(int argc, char *argv[]) {
+@@ -414,7 +430,12 @@ int main(int argc, char *argv[]) {
      if (!mode.refresh_rate)
        conf.syncToRefreshrate = false;
  
@@ -805,7 +805,7 @@ index 4779221..d7e0394 100644
  
  #ifndef MKXPZ_INIT_GL_LATER
      SDL_GLContext glCtx = initGL(win, conf, 0);
-@@ -422,84 +444,93 @@ int main(int argc, char *argv[]) {
+@@ -422,84 +443,93 @@ int main(int argc, char *argv[]) {
      SDL_GLContext glCtx = NULL;
  #endif
  
@@ -950,7 +950,7 @@ index 4779221..d7e0394 100644
  
      return 0;
  }
-@@ -544,7 +575,13 @@ static SDL_GLContext initGL(SDL_Window *win, Config &conf,
+@@ -544,7 +574,13 @@ static SDL_GLContext initGL(SDL_Window *win, Config &conf,
    printGLInfo();
  
    bool vsync = conf.vsync || conf.syncToRefreshrate;
