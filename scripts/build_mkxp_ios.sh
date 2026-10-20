@@ -959,23 +959,28 @@ new_destroy = (
 if old_destroy in s:
     s = s.replace(old_destroy, new_destroy, 1)
     if "#include <dispatch/dispatch.h>" not in s:
-        # Insert dispatch.h include AFTER the last standard #include (line 31
-        # in pristine mkxp-z v2.4.2 main.cpp is the last include: <SDL_ttf.h>).
-        # We use s.rfind("#include ") + s.find("\n", that) to land at the end
-        # of the last include line. If for some reason the last include has no
-        # trailing newline, fall back to appending at end of file.
-        marker = "#include <dispatch/dispatch.h>"
-        anchor = s.rfind("#include ")
-        if anchor >= 0:
-            nl = s.find("\n", anchor)
+        # Insert dispatch.h include right after `#include <SDL_ttf.h>` (line 31
+        # in pristine mkxp-z v2.4.2 main.cpp), which is in the UNCONDITIONAL
+        # include section (BEFORE any `#ifdef MKXPZ_BUILD_XCODE` / `#if defined(__WIN32__)`).
+        # Conditional must be `#if MKXPZ_IOS_EMBED`, NOT `#ifdef MKXPZ_BUILD_XCODE`
+        # (the Xcode build path is NOT used by our CMake-iOS build — it sets
+        # MKXPZ_IOS_EMBED instead. dc5dba4 wrong-guard caused dispatch.h to be
+        # inside a #ifdef that is never defined, hence `undeclared identifier
+        # dispatch_get_main_queue`).
+        sdl_ttf_anchor = "#include <SDL_ttf.h>"
+        anchor_pos = s.find(sdl_ttf_anchor)
+        if anchor_pos >= 0:
+            nl = s.find("\n", anchor_pos)
             if nl >= 0:
-                inj_pos = nl + 1  # after the newline
+                inj_pos = nl + 1
+                marker = "#include <dispatch/dispatch.h>"
+                inject_str = "\n#if MKXPZ_IOS_EMBED\n%s\n#endif\n" % marker
+                s = s[:inj_pos] + inject_str + s[inj_pos:]
+                print("dispatch.h injected after SDL_ttf.h at offset", inj_pos)
             else:
-                inj_pos = len(s)
+                print("dispatch.h: no newline after SDL_ttf.h anchor")
         else:
-            inj_pos = len(s)
-        inject_str = "\n#if defined(__APPLE__)\n%s\n#endif\n" % marker
-        s = s[:inj_pos] + inject_str + s[inj_pos:]
+            print("dispatch.h: SDL_ttf.h anchor missing (main.cpp format changed?)")
     raw = s.replace('\n', '\r\n').encode('utf-8')
     with open(p, 'wb') as f:
         f.write(raw)
