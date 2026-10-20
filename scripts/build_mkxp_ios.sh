@@ -958,16 +958,24 @@ new_destroy = (
 
 if old_destroy in s:
     s = s.replace(old_destroy, new_destroy, 1)
-    if "#include <dispatch/dispatch.h>" not in s and "#include " in s:
-        last_inc_end = 0
-        i = 0
-        while True:
-            j = s.find("#include ", i)
-            if j < 0: break
-            k = s.find("\n", j)
-            last_inc_end = k
-            i = k
-        s = s[:last_inc_end] + "\n#if defined(__APPLE__)\n#include <dispatch/dispatch.h>\n#endif" + s[last_inc_end:]
+    if "#include <dispatch/dispatch.h>" not in s:
+        # Insert dispatch.h include AFTER the last standard #include (line 31
+        # in pristine mkxp-z v2.4.2 main.cpp is the last include: <SDL_ttf.h>).
+        # We use s.rfind("#include ") + s.find("\n", that) to land at the end
+        # of the last include line. If for some reason the last include has no
+        # trailing newline, fall back to appending at end of file.
+        marker = "#include <dispatch/dispatch.h>"
+        anchor = s.rfind("#include ")
+        if anchor >= 0:
+            nl = s.find("\n", anchor)
+            if nl >= 0:
+                inj_pos = nl + 1  # after the newline
+            else:
+                inj_pos = len(s)
+        else:
+            inj_pos = len(s)
+        inject_str = "\n#if defined(__APPLE__)\n%s\n#endif\n" % marker
+        s = s[:inj_pos] + inject_str + s[inj_pos:]
     raw = s.replace('\n', '\r\n').encode('utf-8')
     with open(p, 'wb') as f:
         f.write(raw)
