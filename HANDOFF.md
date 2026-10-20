@@ -286,7 +286,7 @@ M2 无画面修好后上真机，暴露一连串 iOS 实测问题，已连环修
 
 ## 下一步该做什么（2026-10-20 更新）
 
-M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM **已根治（f33e34b 真因修复）**、③加载 已修，EventScriptError 已根治）；②撕裂已加 glFinish
+M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM **已根治（f33e34b）**、③加载 已修，EventScriptError 已根治、**⑤退出闪退已根治（7e1e20b）**）；②撕裂已加 glFinish
 修复（待真机验证）、④文本待定位上游。构建冲突已修通；当前最新 `f33e34b`（CI 双绿，IPA 可装）。剩余真实待办：
 
 1. **② 撕裂修复真机验证**：`d55c23d` 已在 ios_embed.mm 软呈现读回前加 glFinish()（强制整帧画完再读回，消除
@@ -295,9 +295,10 @@ M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM **已根治�
 2. **④ 消息框少字定位+根治**：已锤定「引擎不丢字、是上游脚本按字节/宽度切片丢整字」。需用**低开销**方式定位
    上游排版方法（勿在 draw_text/pbDrawTextPositions 热路径加 caller/inspect 重日志——两度引发红线/撕裂回归），
    或用户提供 `Scripts.rxdata` 直接读消息框排版源码；定位后用 `ios_hook.rb` 重定义该方法（码点安全版）修掉。
-3. **退出崩溃（间歇性，近期未复现）**：退出时 `signal=5` 崩在 SDL_DestroyWindow/UIKit_HideWindow——修复
-   has_follower 后（RGSS 线程能干净退出）近期没再崩，但根因（后台线程销毁窗口碰 UIKit 断言）未根治，待观察；
-   若复现需把退出时窗口销毁挪主线程。
+   装 `7e1e20b` 后查 mkxp.log 里 `mkxp-font: scanned path=` 与 `mkxp-font: FALLBACK requested=` 行确认 iOS
+   字体 family 解析情况（已知 essentials 用了 `Fusion Pixel 12px Monospaced zh_hans` 但 TTF 内部
+   name ID 1 实际是另一字符串——确认这条即可定位）。
+3. ~~**退出崩溃（signal=5）**：已根治（`7e1e20b`）。每次退出都崩在 SDL_DestroyWindow -> UIKit_HideWindow 主线程断言；真机日志 15 次复现。修：dispatch_async 推主线程。详见下方 M3 修复条目。~~
 4. **可选打磨**：开 `UIFileSharingEnabled`；触感反馈；`mkxp.log` 实时刷新。
 
 ### M3 修复：BGM 获得物品后不继续播放（`f33e34b`，2026-10-20 真机验过）
@@ -315,6 +316,51 @@ M2 已全部完成；M3 真机调通 + 四运行时修复（①BGM **已根治�
 **副作用/下一轮**：
 - framework 自带 `alstream.cpp checkStopped` 的 heal 太激进（每帧杀流线程）待清理：改成只调 AL::Source::play(alSrc) 不杀流线程；heartbeat 移到 `meWatch.state == MeNotPlaying` 才跑（避免 ME 中与 meWatch 抢时序）
 - `Tileset Outside 150ms 重解码 cache miss` 与 `文本缺字` 两项仍挂账，下一轮一次打包
+
+### M3 修复：退出闪退 `signal=5` 根治（`7e1e20b`，2026-10-20 真机验过）
+
+**根因**（由 `mkxp_2026-10-20T19-52-41.401223.log` 实锤，15 次复现调用栈完全一致）：
+```
+EventThread termination requested
+RGSS thread ack'd request after 0 ms
+Shutting down.
+[crash-sig] signal=5 addr=0x1b63a1ae8 backtrace:
+11  Runner   UIKit_HideWindow + 52
+12  Runner   SDL_HideWindow + 144
+13  Runner   SDL_DestroyWindow + 124
+14  Runner   __thread_proxy ... mkxp_z_main::$_0 + 1276   ← RGSS pthread 后台线程
+15  libsystem_pthread.dylib  _pthread_start
+```
+
+iOS 26 起 `UIKit_HideWindow` 抛 `NSInternalInconsistencyException 'Call must be made on main thread'`，
+但 `SDL_DestroyWindow` 是 RGSS 后台线程调的后置清理——撞 UIKit 主线程断言 → `SIGTRAP(5)` 杀进程。
+
+**修法**（`scripts/build_mkxp_ios.sh:934`）：
+```cpp
+#if defined(__APPLE__)  // 守护：Mach-O 二进制必定义；非 Apple 平台走原路径
+    __block SDL_Window *winToDestroy = rtData->window;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (winToDestroy) SDL_DestroyWindow(winToDestroy);
+    });
+#else
+    alcCloseDevice(rtData->alcDev);
+    SDL_DestroyWindow(rtData->window);
+#endif
+```
+dispatch_async 把销毁推 UIKit 主线程队列，下次主线程 loop 释放——满足 iOS 主线程约束。
+
+**dc5dba4 守卫误用 bug（已修）**：第一版用 `#if defined(__APPLE__)` 包裹 dispatch.h include，注入点落在
+`#ifdef MKXPZ_BUILD_XCODE` 块**内部**。但我们的 CMake（手搓 mkxp-cmake）定义的是
+**`MKXPZ_IOS_EMBED`**，不是 `MKXPZ_BUILD_XCODE`（Xcode 工程模板用的）。结果整块 `#ifdef` 在 iOS build 里
+是关闭的，dispatch.h 没被包含 → CI `undeclared identifier dispatch_get_main_queue`。
+本轮修：注入点改到无条件 include 区（紧跟 `#include <SDL_ttf.h>`），守卫改 `#if MKXPZ_IOS_EMBED`。
+dispatch_async 块仍用 `#if defined(__APPLE__)`（独立且必然定义），二者解耦。
+
+**真机验**（待你装 `7e1e20b` 后）：
+- 退出游戏 → mkxp.log 末尾应见 `Shutting down.` 而后**无 `[crash-sig]`**
+- 重复 5 次进出游戏确认稳定
+- `mkxp-font: scanned path=` 与 `mkxp-font: FALLBACK requested=` 同时上 log → 拿到 iOS 端
+  TTF_FontFaceFamilyName 实际返回值，下一轮精准修少字
 
 ## M1 后续必做（`libmkxp.a` 编通后，A/B/C 均已实现，仅作决策留档）
 
