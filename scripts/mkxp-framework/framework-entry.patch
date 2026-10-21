@@ -389,7 +389,7 @@ index 7716a69..cb91502 100644
  			}
  
 diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
-index 4b43123..5f8d192 100644
+index 4b43123..508c81b 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
 @@ -22,6 +22,10 @@
@@ -475,7 +475,7 @@ index 4b43123..5f8d192 100644
  struct BitmapOpenHandler : FileSystem::OpenHandler
  {
      // Non-GIF
-@@ -460,24 +517,220 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
+@@ -460,24 +517,260 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
                  return false;
              }
          } else {
@@ -532,12 +532,21 @@ index 4b43123..5f8d192 100644
 +    std::unordered_map<std::string, Entry> map;
 +    std::list<std::string> lru; // front = most recent
 +    int64_t totalBytes;
++    /* Pinned tilesets (mega-surfaces): never evicted by LRU pressure, so map
++     * re-entry never re-decodes the giant tileset (no 150ms hitch). Bounded by
++     * count (PINNED_MAX) to avoid the old OOM: pinning many tilesets + full LRU
++     * pushed the working set past 800MB. We keep only the few tilesets actually
++     * in play (~<=160MB) - safe, and kills the recurring re-decode stall. */
++    std::unordered_map<std::string, Entry> pinned;
++    std::list<std::string> pinnedLru; // FIFO for pinned
++    int64_t pinnedBytes;
 +    int64_t hits, miss, ops;
 +    static const int64_t CAP_BYTES = 96LL * 1024 * 1024;
++    static const size_t PINNED_MAX = 4;
 +    SDL_mutex *mut;
 +
 +    DecodedPixelCache()
-+        : totalBytes(0), hits(0), miss(0), ops(0)
++        : totalBytes(0), pinnedBytes(0), hits(0), miss(0), ops(0)
 +    { mut = SDL_CreateMutex(); }
 +
 +    static std::string normalizeKey(const std::string &k)
@@ -553,8 +562,17 @@ index 4b43123..5f8d192 100644
 +    {
 +        std::string key = normalizeKey(keyIn);
 +        SDL_LockMutex(mut);
-+        auto it = map.find(key);
-+        bool hit = (it != map.end());
++        auto it = pinned.find(key);
++        bool hit = (it != pinned.end());
++        if (hit)
++        {
++            w = it->second.w; h = it->second.h; out = it->second.px;
++            hits++;
++            SDL_UnlockMutex(mut);
++            return true;
++        }
++        it = map.find(key);
++        hit = (it != map.end());
 +        if (hit)
 +        {
 +            w = it->second.w; h = it->second.h; out = it->second.px;
@@ -565,26 +583,45 @@ index 4b43123..5f8d192 100644
 +        return hit;
 +    }
 +
-+    void put(const std::string &keyIn, int w, int h, const uint8_t *p, size_t n)
++    void put(const std::string &keyIn, int w, int h, const uint8_t *p, size_t n, bool isMega = false)
 +    {
 +        std::string key = normalizeKey(keyIn);
 +        SDL_LockMutex(mut);
 +        int64_t add = (int64_t)n;
++        if (isMega)
++        {
++            /* Pin the giant tileset: never evicted by LRU pressure, so map
++             * re-entry never re-decodes it (no 150ms hitch). Bounded by
++             * PINNED_MAX count to keep memory safe (a few tilesets in play). */
++            auto eit = pinned.find(key);
++            if (eit != pinned.end())
++            {
++                pinnedBytes -= (int64_t)eit->second.px.size();
++                pinned.erase(eit); pinnedLru.remove(key);
++            }
++            Entry e; e.w = w; e.h = h; e.px.assign(p, p + n);
++            pinned[key] = e;
++            pinnedLru.remove(key); pinnedLru.push_front(key);
++            pinnedBytes += add;
++            while (pinned.size() > PINNED_MAX)
++            {
++                std::string oldk = pinnedLru.back();
++                auto oit = pinned.find(oldk);
++                if (oit == pinned.end()) { pinnedLru.pop_back(); continue; }
++                pinnedBytes -= (int64_t)oit->second.px.size();
++                pinned.erase(oit); pinnedLru.pop_back();
++            }
++            miss++; ops++;
++            if (ops % 32 == 0)
++                fprintf(stderr, "rgss: decode-cache hits=%lld miss=%lld (pinned=%zu)\n",
++                        (long long)hits, (long long)miss, pinned.size());
++            SDL_UnlockMutex(mut);
++            return;
++        }
 +        if (add > CAP_BYTES) { miss++; ops++; SDL_UnlockMutex(mut); return; }
 +        while (totalBytes + add > CAP_BYTES && lru.size() > 0)
 +        {
 +            std::string oldk = lru.back();
-+            /* iOS fix (2026-10-20): drop tileset pin. Real-world mem
-+             * sample (mkxp_2026-10-20T19-52-41.401223.log) showed
-+             * phys_footprint stable at 1100-1310MB across 1500+ frames
-+             * before jetsam kill; even with CAP=192MB, the pinned
-+             * tilesets (Outside=38MB + Exterior1-7 ~7MB each) plus
-+             * active LRU content pushed working set past 800MB and
-+             * combined with engine/Ruby/iOS framework allocations into
-+             * OOM territory. Dropping pin lets genuine LRU pressure
-+             * shed the giant tilesets when mem gets tight; the 150ms
-+             * re-decode cost on next map entry is much cheaper than an
-+             * OOM jetsam kill (silent process death + full state loss). */
 +            auto oit = map.find(oldk);
 +            if (oit == map.end()) { lru.pop_back(); continue; }
 +            totalBytes -= (int64_t)oit->second.px.size();
@@ -608,6 +645,9 @@ index 4b43123..5f8d192 100644
 +        map.clear();
 +        lru.clear();
 +        totalBytes = 0;
++        pinned.clear();
++        pinnedLru.clear();
++        pinnedBytes = 0;
 +        SDL_UnlockMutex(mut);
 +    }
 +};
@@ -701,7 +741,7 @@ index 4b43123..5f8d192 100644
      }
      
      if (handler.gif) {
-@@ -578,7 +831,18 @@ Bitmap::Bitmap(const char *filename)
+@@ -578,7 +871,20 @@ Bitmap::Bitmap(const char *filename)
      
      
      p->ensureFormat(imgSurf, SDL_PIXELFORMAT_ABGR8888);
@@ -714,9 +754,11 @@ index 4b43123..5f8d192 100644
 +        if (_dt > 30)
 +            fprintf(stderr, "rgss: slow decode %s t=%ums\n", filename, _dt);
 +    }
++    bool _isMega = (imgSurf->w > glState.caps.maxTexSize ||
++                    imgSurf->h > glState.caps.maxTexSize);
 +    g_decodedPixelCache.put(filename, imgSurf->w, imgSurf->h,
 +        (const uint8_t*)imgSurf->pixels,
-+        (size_t)imgSurf->w * imgSurf->h * 4);
++        (size_t)imgSurf->w * imgSurf->h * 4, _isMega);
 +
      if (imgSurf->w > glState.caps.maxTexSize || imgSurf->h > glState.caps.maxTexSize)
      {
