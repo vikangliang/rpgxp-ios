@@ -1094,11 +1094,15 @@ if _fprintf_marker in s:
     _m = _pat.search(s)
     if not _m:
         raise AssertionError("buildAtlas fprintf present but closing-brace pattern not found")
-    repl = (_m.group(1) + 'fprintf(stderr, "rgss: buildAtlas t=%ums blits=%zu atlas=%dx%d\\n",\n'
-            + _m.group(2) + 'SDL_GetTicks() - _baT0, blits.size(), atlas.size.x, atlas.size.y);\n'
-            + store_block
-            + _m.group(3) + '}\n')
-    s = _pat.sub(repl, s, 1)
+    def _buildAtlas_store_repl(m):
+        # 用 callable 作替换：re.sub 不会对返回值做转义二次解析。
+        # 否则 fprintf 格式串里的 \\n 会被当成换行转义、生成真实换行，
+        # 导致 C 字符串没闭合、tilemap.cpp:693 编译失败。
+        return (m.group(1) + 'fprintf(stderr, "rgss: buildAtlas t=%ums blits=%zu atlas=%dx%d\\n",\n'
+                + m.group(2) + 'SDL_GetTicks() - _baT0, blits.size(), atlas.size.x, atlas.size.y);\n'
+                + store_block
+                + m.group(3) + '}\n')
+    s = _pat.sub(_buildAtlas_store_repl, s, 1)
 elif store_anchor_pristine in s:
     s = s.replace(store_anchor_pristine, "\t\t\tGLMeta::blitEnd();\n\t\t}\n" + store_block + "\t}\n", 1)
 else:
