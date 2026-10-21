@@ -2,7 +2,28 @@
 
 > 本文件专门写给「接手继续云编译」的会话/人。AI 记忆**不随仓库走**，所以把接力上下文写在这里。
 
-## 当前状态（2026-10-20，更新于 `d55c23d`）
+## 当前状态（2026-10-21，更新于 `2882aad`）
+
+> 今天主题：**spng 视觉回归彻底关停 + tileset 切图卡顿用「安全 pin」修复**。视觉 bug 闭环，切图卡顿大幅缓解，收尾待办见下。
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| spng 视觉 bug（裂痕/黑白块/全黑地图） | ✅ 已修已验 | 根因=今早新加的 libspng 路径把巨型 tileset（256×38660）解成黑/乱图，且 spng「假成功」不回退 libpng。`a571d23` 起 spng 默认关，真机确认块/黑图消失 |
+| 昨晚的裂痕（另一病根） | ✅ 已修 | 昨晚裂痕是 **tileset 钉死→OOM/内存压力**所致，`8548a7c` 取消 pin 已解决；**与 spng 无关**，两次视觉问题根因不同，别混 |
+| 室内↔室外切图重解卡顿 | ✅ 已修已验 | `17c2faf`+`2882aad`：`bitmap.cpp` 的 `DecodedPixelCache` 加**独立 `pinned` 表**（`PINNED_MAX=4`），mega-surface(tileset) 钉住、不受 96MB LRU 淘汰。真机日志 `tileset pinned:` 钉住 interior1+outside，每会话仅首进解 1 次、回退零重解；内存稳 ~468MB（安全） |
+| 首进图一次性卡顿 | ⏳ 未决（可选优化） | 每次重开 App 首进室外仍 ~143ms / 室内 ~74ms（同步解码，一次性）。要彻底消除需「后台预热」或「黑屏期解码」，未定，见下 |
+
+- **当前稳定构建 = `2882aad`**（spng 默认关 + tileset 安全 pin + `tileset pinned:` 日志标记）。CI 双绿、已装机验证：裂痕正常、来回切图 0ms、每帧 hook avg ~5ms、内存稳。
+- **改动位置**：
+  - `scripts/mkxp-framework/ios_embed.mm`：spng 开关（`mkxp_ios_spng_disabled()` 默认返回 1）+ 三指手势（**手势在用户环境不触发，已无关紧要，可删**）。
+  - `scripts/mkxp-framework/framework-entry.patch`：`bitmap.cpp` 的 `DecodedPixelCache` 加 pinned 表 + `put(isMega)` + `clear()`、`tryRead` 改调 `mkxp_ios_spng_disabled()`、`tileset pinned:` 日志。
+- **spng 休眠未删**：`mkxp_spng_decode_abgr` 路径仍在 patch 内但默认关；**勿再启用**（净负收益：对 40MB 图仅省 ~10ms 却搞出黑图）。是否清理死代码待定。
+- **下一步候选（未承诺，需用户拍板）**：
+  1. **后台预热 tileset**（彻底消掉首进 143ms）：标题画面就绪后起纯 C++ 后台线程，明文 `fopen`（本游戏 `rgssad=no`）读 PNG→libpng 解码→`put` 进 pinned 缓存。**必须守住的纪律**：不碰 GL/Metal（仅主线程）、不碰 Ruby VM、复用与主线程完全相同的 libpng+ABGR8888 解码路径（**防缓存污染把黑图带回来**）、普通优先级、只预热室外+室内两张。bug 风险主要在并发，见会话内分析。
+  2. **黑屏期同步解码**（零线程风险）：把 tileset 解码安排在切图淡入淡出的黑屏那一下做，143ms 藏进黑屏；改动小、不引入多线程。
+- **关键教训**：spng 是 2026-10-21 **早上**才引入的回归；昨晚（10-20）的裂痕病根是 tileset pin/OOM（`8548a7c` 已修）。两次视觉问题根因不同。
+
+## 历史状态（2026-10-20，更新于 `d55c23d`）
 
 > 里程碑盘点：
 
