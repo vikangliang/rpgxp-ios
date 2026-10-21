@@ -2,25 +2,49 @@
 
 > 本文件专门写给「接手继续云编译」的会话/人。AI 记忆**不随仓库走**，所以把接力上下文写在这里。
 
-## 当前状态（2026-10-21，更新于 `2882aad`）
+## 当前状态（2026-10-21，更新于 `3010f5b`）
 
-> 今天主题：**spng 视觉回归彻底关停 + tileset 切图卡顿用「安全 pin」修复**。视觉 bug 闭环，切图卡顿大幅缓解，收尾待办见下。
+> 今天两条线：① spng 视觉回归关停 + tileset 像素安全 pin（✅ 已完成验证）；② **室内→室外 ~10s 卡顿真凶已定位 = Tilemap 图集重建（`Spriteset_Map#init` ~7.4s）**，修复方向明确、待实施。**⚠️ 143ms tileset 解码不是瓶颈，别再追它、别再想做「异步/后台解码 tileset」（已作废）。**
+
+### 🔴 当前主攻：室内→室外 ~10s 卡顿（真凶已定位，待修）
+
+**诊断手段**：`3010f5b` 在 `ios_hook.rb` 加建图阶段计时（lazy 安装、纯日志、`$__mkxp_timing` 开关 + rescue，不影响功能）；首次精灵解析时安装，此后每次进图打 `[map-timing]` 各阶段 ms。
+
+**真机日志结论**（进一次室外可见）：
+| 阶段 | 耗时 | 判定 |
+|---|---|---|
+| `Game_Map#setup` | 3–57ms | 忽略 |
+| **`Spriteset_Map#init`** | **~7400ms** | **就是它（每次进室外都 7.4s）** |
+| 后续小 `Spriteset_Map#init` | 47–182ms | 快的重 init |
+
+- **7.4s 是沉默 C++**（期间无任何解码/加载日志）→ 即 Tilemap 的 **`buildAtlas()`**（`src/display/tilemap.cpp`）：把 autotiles + 整个 40MB 巨型 tileset（256×38660）blit 进一个 GL 纹理图集（FBO blit + 上传）。
+- **不是解码**：tileset 已 pinned 缓存（`17c2faf`），7.4s 窗口内无 `slow decode`。
+- **为何每次进都 7.4s**：每进图新建 Tilemap → tileset 一赋值即 `atlasDirty` → `buildAtlas` 重建+重传整个图集；而**同一套 Outside tileset 的图集是同一个**，反复白重建（此前的像素 pin 没覆盖到 GL 图集这一层）。
+- **红鲱鱼排除**：日志里那批 Metal `"Insufficient Permission (to submit GPU work from background)"` 紧挨 `willEnterForeground`——是**下载日志时 App 切后台**所致，非卡顿主因。
+- **误导纠正**：一直追的 143ms tileset 解码仅占 10s 的 1.4%，不是瓶颈。
+
+**修复方向（C++ 改动，待用户拍板）**：
+1. **主推：按 tileset 缓存 GL 图集纹理**——同一套 tileset 的图集解一次留着（在 shState 层按 tileset 键缓存 TexFBO），之后进任何用它的图直接复用 → 回退重进室外从 7.4s → ~0。与像素 pin 一脉相承，但缓存的是 GL 图集而非 CPU 像素。
+2. **先确认再改**：`tilemap.cpp` 的 `buildAtlas` + 地图数据绑定处各加 `+Nms` timing，一版诊断包坐实 7.4s 确在图集重建（而非地图数据处理），再上修复。
+3. 次选：优化巨型 tileset 图集构建本身。
+
+**已完成项（今天上午，✅ 已验证）：**
 
 | 项 | 状态 | 说明 |
 |---|---|---|
 | spng 视觉 bug（裂痕/黑白块/全黑地图） | ✅ 已修已验 | 根因=今早新加的 libspng 路径把巨型 tileset（256×38660）解成黑/乱图，且 spng「假成功」不回退 libpng。`a571d23` 起 spng 默认关，真机确认块/黑图消失 |
 | 昨晚的裂痕（另一病根） | ✅ 已修 | 昨晚裂痕是 **tileset 钉死→OOM/内存压力**所致，`8548a7c` 取消 pin 已解决；**与 spng 无关**，两次视觉问题根因不同，别混 |
 | 室内↔室外切图重解卡顿 | ✅ 已修已验 | `17c2faf`+`2882aad`：`bitmap.cpp` 的 `DecodedPixelCache` 加**独立 `pinned` 表**（`PINNED_MAX=4`），mega-surface(tileset) 钉住、不受 96MB LRU 淘汰。真机日志 `tileset pinned:` 钉住 interior1+outside，每会话仅首进解 1 次、回退零重解；内存稳 ~468MB（安全） |
-| 首进图一次性卡顿 | ⏳ 未决（可选优化） | 每次重开 App 首进室外仍 ~143ms / 室内 ~74ms（同步解码，一次性）。要彻底消除需「后台预热」或「黑屏期解码」，未定，见下 |
+| ~~首进图一次性卡顿（143ms）~~ | ❌ 误导，已排除 | 143ms tileset 解码仅占 10s 的 1.4%，**不是瓶颈**；真凶是上方 🔴 的 Tilemap 图集重建（`buildAtlas` ~7.4s）。「后台预热/黑屏期解码 tileset」方案作废 |
 
 - **当前稳定构建 = `2882aad`**（spng 默认关 + tileset 安全 pin + `tileset pinned:` 日志标记）。CI 双绿、已装机验证：裂痕正常、来回切图 0ms、每帧 hook avg ~5ms、内存稳。
 - **改动位置**：
   - `scripts/mkxp-framework/ios_embed.mm`：spng 开关（`mkxp_ios_spng_disabled()` 默认返回 1）+ 三指手势（**手势在用户环境不触发，已无关紧要，可删**）。
   - `scripts/mkxp-framework/framework-entry.patch`：`bitmap.cpp` 的 `DecodedPixelCache` 加 pinned 表 + `put(isMega)` + `clear()`、`tryRead` 改调 `mkxp_ios_spng_disabled()`、`tileset pinned:` 日志。
 - **spng 休眠未删**：`mkxp_spng_decode_abgr` 路径仍在 patch 内但默认关；**勿再启用**（净负收益：对 40MB 图仅省 ~10ms 却搞出黑图）。是否清理死代码待定。
-- **下一步候选（未承诺，需用户拍板）**：
-  1. **后台预热 tileset**（彻底消掉首进 143ms）：标题画面就绪后起纯 C++ 后台线程，明文 `fopen`（本游戏 `rgssad=no`）读 PNG→libpng 解码→`put` 进 pinned 缓存。**必须守住的纪律**：不碰 GL/Metal（仅主线程）、不碰 Ruby VM、复用与主线程完全相同的 libpng+ABGR8888 解码路径（**防缓存污染把黑图带回来**）、普通优先级、只预热室外+室内两张。bug 风险主要在并发，见会话内分析。
-  2. **黑屏期同步解码**（零线程风险）：把 tileset 解码安排在切图淡入淡出的黑屏那一下做，143ms 藏进黑屏；改动小、不引入多线程。
+- **下一步候选（⚠️ 已作废：下面 1/2 都针对 143ms tileset 解码，而它并非瓶颈；真正待办见上方 🔴 的「按 tileset 缓存 GL 图集」）**：
+  1. ~~后台预热 tileset~~（作废）：目标 143ms 非瓶颈，做了也几乎无感。
+  2. ~~黑屏期同步解码~~（作废）：同理，目标 143ms 非瓶颈。
 - **关键教训**：spng 是 2026-10-21 **早上**才引入的回归；昨晚（10-20）的裂痕病根是 tileset pin/OOM（`8548a7c` 已修）。两次视觉问题根因不同。
 
 ## 历史状态（2026-10-20，更新于 `d55c23d`）
