@@ -943,6 +943,143 @@ if [ -f "$MKXP_SRC/.git/config" ]; then
   done
   echo "verified: framework-entry.patch signatures present"
 
+  # ---------- 3b-1. Tilemap atlas 缓存：按 tileset 缓存 GL 图集纹理，消除进图 7.4s 重建 ----------
+  # 真机 map-timing 实锤：进室外时 Tilemap#buildAtlas 把 40MB mega-surface tileset
+  # 循环 subRectImageUpload 到 atlas GL texture，一次性卡 ~7.4s；回退重进同一室外又卡。
+  # 修复：按 tileset 路径（Bitmap::filename）缓存 atlas GL 纹理（TEXFBO），命中则跳过
+  # 整个 buildAtlas（不清空/不重传），回退重进室外 7.4s -> ~0。
+  # 缓存由 SharedState 统一管理（跨 Tilemap 实例共享；releaseAtlasTex 跳过缓存 tex 不释放）。
+  python3 - "$MKXP_SRC" <<'PYEOF'
+import sys
+ROOT = sys.argv[1]
+
+# ---- bitmap.h: filename() 内联声明 + m_filename_ 成员 + <string> ----
+p = ROOT + "/src/display/bitmap.h"
+s = open(p, encoding='utf-8').read()
+assert "const char* filename() const" not in s, "bitmap.h already patched"
+s = s.replace('#include "sigslot/signal.hpp"\n', '#include "sigslot/signal.hpp"\n\n#include <string>\n', 1)
+s = s.replace("\tBitmapPrivate *p;\n", "\tBitmapPrivate *p;\n\tstd::string m_filename_;\n", 1)
+s = s.replace("\tvoid hueChange(int hue);\n",
+              "\tvoid hueChange(int hue);\n\n"
+              "\t// mkxp-ios: expose loaded filename (atlas-cache key)\n"
+              "\tconst char* filename() const { return m_filename_.empty() ? 0 : m_filename_.c_str(); }\n", 1)
+open(p, 'w', encoding='utf-8').write(s)
+
+# ---- bitmap.cpp: 构造时存 m_filename_ ----
+p = ROOT + "/src/display/bitmap.cpp"
+s = open(p, encoding='utf-8').read()
+assert "m_filename_ = filename" not in s, "bitmap.cpp already patched"
+s = s.replace("Bitmap::Bitmap(const char *filename)\n{\n",
+              "Bitmap::Bitmap(const char *filename)\n{\n\tm_filename_ = filename ? filename : \"\";\n", 1)
+open(p, 'w', encoding='utf-8').write(s)
+
+# ---- sharedstate.h: atlas 缓存方法声明 + <string>/<unordered_map> ----
+p = ROOT + "/src/sharedstate.h"
+s = open(p, encoding='utf-8').read()
+assert "atlasCacheLookup" not in s, "sharedstate.h already patched"
+s = s.replace('#include "sigslot/signal.hpp"\n',
+              '#include "sigslot/signal.hpp"\n\n#include <string>\n#include <unordered_map>\n', 1)
+s = s.replace("\tvoid releaseAtlasTex(TEXFBO &tex);\n",
+              "\tvoid releaseAtlasTex(TEXFBO &tex);\n\n"
+              "\t// mkxp-ios: per-tileset atlas GL texture cache (avoids 7.4s rebuild on map re-entry)\n"
+              "\tbool atlasCacheLookup(const std::string &key, int w, int h, TEXFBO &out);\n"
+              "\tvoid atlasCacheStore(const std::string &key, const TEXFBO &tex, int w, int h);\n"
+              "\tbool atlasCacheOwns(TEXFBO &tex) const;\n", 1)
+open(p, 'w', encoding='utf-8').write(s)
+
+# ---- sharedstate.cpp: 成员 + releaseAtlasTex 跳过缓存 + 方法实现 ----
+p = ROOT + "/src/sharedstate.cpp"
+s = open(p, encoding='utf-8').read()
+assert "atlasCacheGl" not in s, "sharedstate.cpp already patched"
+s = s.replace("#include <string>\n", "#include <string>\n#include <unordered_map>\n#include <utility>\n", 1)
+s = s.replace("\tTEX::ID globalTex;\n",
+              "\tTEX::ID globalTex;\n\n"
+              "\t// mkxp-ios: atlas cache (key = tileset path)\n"
+              "\tstd::unordered_map<std::string, TEXFBO> atlasCacheGl;\n"
+              "\tstd::unordered_map<std::string, std::pair<int,int>> atlasCacheSize;\n", 1)
+s = s.replace("\tTEXFBO::fini(p->atlasTex);\n\n\tp->atlasTex = tex;\n",
+              "\t// mkxp-ios: cached atlas textures are owned by atlasCacheGl; never free them\n"
+              "\tif (atlasCacheOwns(tex)) {\n\t\ttex = TEXFBO();\n\t\treturn;\n\t}\n"
+              "\tTEXFBO::fini(p->atlasTex);\n\tp->atlasTex = tex;\n", 1)
+old_impl = ("void SharedState::releaseAtlasTex(TEXFBO &tex)\n"
+            "{\n")
+new_impl = (old_impl +
+            "\n"
+            "bool SharedState::atlasCacheLookup(const std::string &key, int w, int h, TEXFBO &out)\n"
+            "{\n"
+            "\tauto it = p->atlasCacheGl.find(key);\n"
+            "\tif (it == p->atlasCacheGl.end())\n\t\treturn false;\n"
+            "\tauto sit = p->atlasCacheSize.find(key);\n"
+            "\tif (sit == p->atlasCacheSize.end())\n\t\treturn false;\n"
+            "\tif (sit->second.first != w || sit->second.second != h)\n\t\treturn false;\n"
+            "\tout = it->second;\n"
+            "\treturn true;\n"
+            "}\n\n"
+            "void SharedState::atlasCacheStore(const std::string &key, const TEXFBO &tex, int w, int h)\n"
+            "{\n"
+            "\tp->atlasCacheGl[key] = tex;\n"
+            "\tp->atlasCacheSize[key] = std::make_pair(w, h);\n"
+            "}\n\n"
+            "bool SharedState::atlasCacheOwns(TEXFBO &tex) const\n"
+            "{\n"
+            "\tfor (const auto &kv : p->atlasCacheGl)\n"
+            "\t\tif (kv.second.tex == tex.tex)\n\t\t\treturn true;\n"
+            "\treturn false;\n"
+            "}\n\n")
+s = s.replace(old_impl, new_impl, 1)
+open(p, 'w', encoding='utf-8').write(s)
+
+# ---- tilemap.cpp: include <string> + allocateAtlas/buildAtlas 缓存逻辑 ----
+p = ROOT + "/src/display/tilemap.cpp"
+s = open(p, encoding='utf-8').read()
+assert "atlasCacheLookup" not in s, "tilemap.cpp already patched"
+s = s.replace("#include <string.h>\n", "#include <string.h>\n#include <string>\n", 1)
+s = s.replace("\tvoid allocateAtlas()\n\t{\n\t\tupdateAtlasInfo();\n",
+              "\tvoid allocateAtlas()\n\t{\n\t\tupdateAtlasInfo();\n\n"
+              "\t\t// mkxp-ios: per-tileset atlas cache\n"
+              "\t\t{\n"
+              "\t\t\tstd::string _key = tileset ? (tileset->filename() ? tileset->filename() : \"\") : \"\";\n"
+              "\t\t\tTEXFBO _cached;\n"
+              "\t\t\tif (!_key.empty() && shState->atlasCacheLookup(_key, atlas.size.x, atlas.size.y, _cached)) {\n"
+              "\t\t\t\tatlas.gl = _cached;\n"
+              "\t\t\t\tatlasDirty = true;\n"
+              "\t\t\t\treturn;\n"
+              "\t\t\t}\n"
+              "\t\t}\n", 1)
+s = s.replace("        updateAutotileInfo();\n        tileset->ensureNonAnimated();\n",
+              "        // mkxp-ios: atlas cache hit -> skip full rebuild (saves ~7.4s on map re-entry)\n"
+              "        {\n"
+              "            std::string _key = tileset ? (tileset->filename() ? tileset->filename() : \"\") : \"\";\n"
+              "            TEXFBO _cached;\n"
+              "            if (!_key.empty() && shState->atlasCacheLookup(_key, atlas.size.x, atlas.size.y, _cached)) {\n"
+              "                atlas.gl = _cached;\n"
+              "                atlasDirty = false;\n"
+              "                return;\n"
+              "            }\n"
+              "        }\n"
+              "        updateAutotileInfo();\n        tileset->ensureNonAnimated();\n", 1)
+old_f = ('\t\tfprintf(stderr, "rgss: buildAtlas t=%ums blits=%zu atlas=%dx%d\\n",\n'
+         '\t\t\tSDL_GetTicks() - _baT0, blits.size(), atlas.size.x, atlas.size.y);\n')
+new_f = (old_f +
+         '\n'
+         '\t\t// mkxp-ios: store built atlas into cache for reuse\n'
+         '\t\t{\n'
+         '\t\t\tstd::string _key = tileset ? (tileset->filename() ? tileset->filename() : "") : "";\n'
+         '\t\t\tif (!_key.empty())\n'
+         '\t\t\t\tshState->atlasCacheStore(_key, atlas.gl, atlas.size.x, atlas.size.y);\n'
+         '\t\t}\n')
+s = s.replace(old_f, new_f, 1)
+open(p, 'w', encoding='utf-8').write(s)
+print("patched atlas cache into mkxp-z sources")
+PYEOF
+  # 零死角校验：确认 atlas 缓存 hunk 真的落进源码
+  for sig in "atlasCacheLookup" "atlasCacheStore" "atlasCacheOwns" "mkxp-ios: per-tileset atlas cache"; do
+    if ! grep -rqF "$sig" "$MKXP_SRC"; then
+      echo "FATAL: atlas-cache 补丁签名缺失: $sig"; exit 1
+    fi
+  done
+  echo "verified: atlas-cache patches signed in"
+
   # ---------- 3a-1.6c. 退出闪退根治：SDL_DestroyWindow 必须在 iOS 主线程调 ----------
   # 症状：用户在游戏内退出/切后台 → 引擎清路径走 SDL_DestroyWindow → SDL_HideWindow →
   #       UIKit_HideWindow → iOS 程序按 UIKit 强制约束（必须主线程）→ SIGTRAP(signal=5)
