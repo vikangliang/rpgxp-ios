@@ -73,10 +73,10 @@ extern "C" void mkxp_ios_audioInterruptBegin(void);
 extern "C" void mkxp_ios_audioInterruptEnd(void);
 
 /* ---- spng A/B 开关（无需文件共享）----
- *   游戏画面上【三指轻点】实时切换 spng 快速路径开/关，用于真机归因
- *   “颜色块闪烁”是 spng 解码还是软呈现读回。切换会清空解码缓存，
- *   后续 bitmap 用新设置重新解码；观察颜色块是否随切换变化即可。
- *   默认仍支持 Documents/disable_spng 文件（存在=关），与手势二选一。 */
+ *   默认【关闭】spng（走旧 libpng 路径 = 控制组）；游戏画面上【三指轻点】
+ *   实时开启 spng 快速路径。用于真机归因“颜色块闪烁”是 spng 解码还是
+ *   软呈现读回。切换会清空解码缓存，后续 bitmap 用新设置重新解码；
+ *   观察颜色块是否随切换变化即可。 */
 static void mkxp_toggleSpng(void);
 extern "C" void mkxp_ios_clear_decoded_cache(void);
 @interface MkxpSpngToggle : NSObject
@@ -88,18 +88,12 @@ extern "C" void mkxp_ios_clear_decoded_cache(void);
 }
 @end
 
-static volatile int g_spngOverride = -1;   /* -1=未手动切换, 0=开, 1=关 */
-static int mkxp_readDisableFlagFile(void) {
-    const char *home = getenv("HOME");
-    char p[512];
-    snprintf(p, sizeof(p), "%s/Documents/disable_spng", home ? home : "");
-    FILE *f = fopen(p, "rb");
-    if (f) { fclose(f); return 1; }
-    return 0;
-}
+static volatile int g_spngOverride = -1;   /* -1=未手动切换(默认关), 0=开, 1=关 */
 extern "C" int mkxp_ios_spng_disabled(void) {
+    /* 默认关闭 spng（走旧 libpng 路径 = 控制组），三指轻点再开启做 A/B。
+     * 这样无需文件共享即可真机归因“颜色块闪烁”是 spng 还是软呈现。 */
     if (g_spngOverride != -1) return g_spngOverride;
-    return mkxp_readDisableFlagFile();
+    return 1;
 }
 extern "C" void mkxp_ios_clear_decoded_cache(void);  /* 实现于 bitmap.cpp */
 static void mkxp_toggleSpng(void) {
