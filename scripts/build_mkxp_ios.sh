@@ -1056,6 +1056,13 @@ s = s.replace("        updateAutotileInfo();\n        tileset->ensureNonAnimated
               "            }\n"
               "        }\n"
               "        updateAutotileInfo();\n        tileset->ensureNonAnimated();\n", 1)
+# mkxp-ios: mega-surface tileset -> 单次 glTexImage2D + GPU blit
+# (iOS A13 Metal: glTexSubImage2D 极慢，每调用整块拷贝 ~42MB atlas；改整块上传+GPU blit)
+old_mega = ("\t\t\telse\n\t\t\t{\n\t\t\t\t/* Clean implementation */\n\t\t\t\tTEX::bind(atlas.gl.tex);\n\n\t\t\t\tfor (size_t i = 0; i < blits.size(); ++i)\n\t\t\t\t{\n\t\t\t\t\tconst TileAtlas::Blit &blitOp = blits[i];\n\n\t\t\t\t\tGLMeta::subRectImageUpload(tsSurf->w, blitOp.src.x, blitOp.src.y,\n\t\t\t\t\t                           blitOp.dst.x, blitOp.dst.y, tsLaneW, blitOp.h, tsSurf, GL_RGBA);\n\t\t\t\t}\n\n\t\t\t\tGLMeta::subRectImageEnd();\n\t\t\t}\n")
+new_mega = ("\t\t\telse\n\t\t\t{\n\t\t\t\t/* iOS (Apple A13, OpenGL ES 2.0 Metal): glTexSubImage2D is\n\t\t\t\t * pathologically slow - the Metal backend has no native sub-image\n\t\t\t\t * update, so every call copies the ENTIRE atlas texture (~42MB) on\n\t\t\t\t * the CPU. ~3 lanes -> buildAtlas stalled ~7.4s on map entry.\n\t\t\t\t * Fix: upload the whole tileset ONCE via glTexImage2D (fast on\n\t\t\t\t * Metal: a fresh texture, no existing-texture copy) into a temp\n\t\t\t\t * TEXFBO, then blit its lanes into the atlas via GPU (blitRectangle). */\n\t\t\t\tTEXFBO tsTex;\n\t\t\t\tTEXFBO::init(tsTex);\n\t\t\t\tTEX::bind(tsTex.tex);\n\t\t\t\tTEX::uploadImage(tsSurf->w, tsSurf->h, tsSurf->pixels, GL_RGBA);\n\n\t\t\t\tGLMeta::blitBegin(atlas.gl);\n\t\t\t\tGLMeta::blitSource(tsTex);\n\n\t\t\t\tfor (size_t i = 0; i < blits.size(); ++i)\n\t\t\t\t{\n\t\t\t\t\tconst TileAtlas::Blit &blitOp = blits[i];\n\t\t\t\t\tGLMeta::blitRectangle(IntRect(blitOp.src.x, blitOp.src.y, tsLaneW, blitOp.h),\n\t\t\t\t\t                      blitOp.dst);\n\t\t\t\t}\n\n\t\t\t\tGLMeta::blitEnd();\n\t\t\t\tTEXFBO::fini(tsTex);\n\t\t\t}\n")
+assert old_mega in s, "mega-surface clean-else anchor missing"
+s = s.replace(old_mega, new_mega, 1)
+
 # mkxp-ios: store built atlas into cache for reuse.
 # 锚定 buildAtlas 结尾：regular 分支的 GLMeta::blitEnd(); 之后、buildAtlas 函数收尾 } 之前
 # （"\t\t}\n\t}" —— 2 层 }，唯一；mega 分支结尾是 "}\n\telse" 不匹配）。
