@@ -389,7 +389,7 @@ index 7716a69..cb91502 100644
  			}
  
 diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
-index 4b43123..508c81b 100644
+index 4b43123..ad5d535 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
 @@ -22,6 +22,10 @@
@@ -475,7 +475,7 @@ index 4b43123..508c81b 100644
  struct BitmapOpenHandler : FileSystem::OpenHandler
  {
      // Non-GIF
-@@ -460,24 +517,260 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
+@@ -460,24 +517,262 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
                  return false;
              }
          } else {
@@ -603,6 +603,8 @@ index 4b43123..508c81b 100644
 +            pinned[key] = e;
 +            pinnedLru.remove(key); pinnedLru.push_front(key);
 +            pinnedBytes += add;
++            fprintf(stderr, "rgss: tileset pinned: %s (%dx%d, pinned=%zu)\n",
++                    key.c_str(), w, h, pinned.size());
 +            while (pinned.size() > PINNED_MAX)
 +            {
 +                std::string oldk = pinnedLru.back();
@@ -741,7 +743,7 @@ index 4b43123..508c81b 100644
      }
      
      if (handler.gif) {
-@@ -578,7 +871,20 @@ Bitmap::Bitmap(const char *filename)
+@@ -578,7 +873,20 @@ Bitmap::Bitmap(const char *filename)
      
      
      p->ensureFormat(imgSurf, SDL_PIXELFORMAT_ABGR8888);
