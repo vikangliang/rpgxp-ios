@@ -6,6 +6,37 @@
 
 > 今天两条线：① spng 视觉回归关停 + tileset 像素安全 pin（✅ 已完成验证）；② **室内→室外 ~10s 卡顿真凶已定位 = Tilemap 图集重建（`Spriteset_Map#init` ~7.4s）**，修复方向明确、待实施。**⚠️ 143ms tileset 解码不是瓶颈，别再追它、别再想做「异步/后台解码 tileset」（已作废）。**
 
+### ⚠️ 2026-10-21 23:29 真机日志判别：7.4s 未消 ≠ 修复无效，是**包里根本没有**
+
+**铁证**：`framework-entry.patch` 自 `1b354e6`（10-21 17:51）起，在 `tilemap.cpp` 的 `buildAtlas()` 末尾注入了
+`rgss: buildAtlas t=%ums blits=%zu atlas=%dx%d`。每次进图必走 `atlasDirty → buildAtlas()`（`tilemap.cpp:1016-1020`），
+**必打印一次**。而 23:29 那份日志 1~1921 行**一次都没有** → 该二进制早于 `1b354e6`，必然也早于 `f9d5763`。
+
+**别用 hook banner 判版本**：日志里的 `compat hooks v10` 来自 `f91a992`（**10-19 20:40**，两天前），
+早于全部 atlas 改动，**不能证明包是新的**。
+
+| 提交 | 时间 | 内容 |
+|---|---|---|
+| `f91a992` | 10-19 20:40 | hook banner v10 ← 日志里看到的版本标记 |
+| `1b354e6` | 10-21 17:51 | patch 给 `buildAtlas` 加计时 |
+| `96ae059` | 10-21 20:16 | atlas 缓存（**手改 deps，不进 CI，白改**） |
+| `f9d5763` | 10-21 21:59 | GPU blit + atlas 缓存写进 `build_mkxp_ios.sh`（CI 真正生效源） |
+| `e7c25cc` | 10-21 22:39 | CI #254 崩溃修复 |
+| `319e181` | 10-21 23:04 | 编译失败修复（re.sub 替换串二次转义） |
+| 日志 | 10-21 23:29:33 | **距最后一个构建修复仅 25 分钟**，iOS 云编译一轮远超此时长 |
+
+**顺带查出并已修一个「白装机」漏洞**（`scripts/build_mkxp_ios.sh`）：
+1. `git apply` 失败会静默回退 `patch -p1 -f`，后者**逐 hunk 丢弃不匹配项**。
+2. 第 939 行的 9 个签名校验**没有一个属于 `tilemap.cpp`** → tilemap hunk 被丢，构建照样绿、照样出包。
+3. 已把 `"rgss: buildAtlas t="` 加进校验列表 → tilemap 缺失立即 FATAL，绝不再出「以为修了其实没修」的包。
+4. 已给 atlas 缓存注入 `rgss: atlas-cache HIT/MISS key='...'` 日志：
+   - `HIT` → 缓存生效，重进同图应 ~0ms；
+   - `MISS key=''`（空） → `tileset->filename()` 为空（tileset 没走 `Bitmap(const char*)` 构造），缓存永不命中、
+     7.4s 依旧；届时须换 key（如 tileset 对象地址 + 尺寸），**不要**再改文件名字面。
+
+**下一步**：推上去出下一版包再测。新包日志判据（缺任一 = 白装一轮）：
+`rgss: buildAtlas t=` ＋ 首次 `rgss: atlas-cache MISS` ＋ 重进同图 `rgss: atlas-cache HIT`。
+
 ### 🔴 当前主攻：室内→室外 ~10s 卡顿（真凶已定位，待修）
 
 **诊断手段**：`3010f5b` 在 `ios_hook.rb` 加建图阶段计时（lazy 安装、纯日志、`$__mkxp_timing` 开关 + rescue，不影响功能）；首次精灵解析时安装，此后每次进图打 `[map-timing]` 各阶段 ms。

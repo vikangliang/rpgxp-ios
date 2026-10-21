@@ -936,7 +936,10 @@ if [ -f "$MKXP_SRC/.git/config" ]; then
 
   # 零死角校验：确认关键补丁 hunk 真的落进源码（避免 patch -f 静默丢弃）。
   # 任何签名缺失 = 对应修复没生效 = 构建直接失败，绝不让“试探包”流到真机。
-  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "swapInterval=" "mkxp: bitmap missing" "rgss: ruby exception (suppressed dialog)" "BgmFadingIn must NOT be overridden"; do
+  # 「rgss: buildAtlas t=」必须在此：patch -p1 -f 回退时 tilemap.cpp hunk 可被静默丢弃
+  # （2026-10-21 教训：漏此签名 -> buildAtlas 计时+缓存都没进包，真机 7.4s 依旧，而日志
+  #  因无计时完全看不出来，白装一轮 IPA）。现在 tilemap 缺失 = 直接 FATAL，不许出包。
+  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "swapInterval=" "mkxp: bitmap missing" "rgss: ruby exception (suppressed dialog)" "BgmFadingIn must NOT be overridden" "rgss: buildAtlas t="; do
     if ! grep -rqF "$sig" "$MKXP_SRC"; then
       echo "FATAL: 关键补丁签名缺失: $sig （hunk 可能被丢弃，修复未生效）"; exit 1
     fi
@@ -1050,10 +1053,14 @@ s = s.replace("        updateAutotileInfo();\n        tileset->ensureNonAnimated
               "            std::string _key = tileset ? (tileset->filename() ? tileset->filename() : \"\") : \"\";\n"
               "            TEXFBO _cached;\n"
               "            if (!_key.empty() && shState->atlasCacheLookup(_key, atlas.size.x, atlas.size.y, _cached)) {\n"
+              "                fprintf(stderr, \"rgss: atlas-cache HIT %s (%dx%d)\\n\", _key.c_str(), atlas.size.x, atlas.size.y);\n"
               "                atlas.gl = _cached;\n"
               "                atlasDirty = false;\n"
               "                return;\n"
               "            }\n"
+              "            /* key 为空 = tileset 无 filename（mega-surface 动态生成），缓存永不命中，\n"
+              "             * 进图仍会全量重建 atlas -> 7.4s 依旧。此日志是唯一的现场判据。 */\n"
+              "            fprintf(stderr, \"rgss: atlas-cache MISS key='%s' (%dx%d)\\n\", _key.c_str(), atlas.size.x, atlas.size.y);\n"
               "        }\n"
               "        updateAutotileInfo();\n        tileset->ensureNonAnimated();\n", 1)
 # mkxp-ios: mega-surface tileset -> 单次 glTexImage2D + GPU blit
