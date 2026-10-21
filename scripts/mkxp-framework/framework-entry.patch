@@ -765,6 +765,27 @@ index 4b43123..ad5d535 100644
      if (imgSurf->w > glState.caps.maxTexSize || imgSurf->h > glState.caps.maxTexSize)
      {
          /* Mega surface */
+diff --git a/src/display/tilemap.cpp b/src/display/tilemap.cpp
+index 475fdea..5ff0acb 100644
+--- a/src/display/tilemap.cpp
++++ b/src/display/tilemap.cpp
+@@ -521,6 +521,7 @@ struct TilemapPrivate
+ 	/* Assembles atlas from tileset and autotile bitmaps */
+ 	void buildAtlas()
+ 	{
++        uint32_t _baT0 = SDL_GetTicks();
+         updateAutotileInfo();
+         tileset->ensureNonAnimated();
+ 
+@@ -653,6 +654,8 @@ struct TilemapPrivate
+ 
+ 			GLMeta::blitEnd();
+ 		}
++        fprintf(stderr, "rgss: buildAtlas t=%ums blits=%zu atlas=%dx%d\n",
++                SDL_GetTicks() - _baT0, blits.size(), atlas.size.x, atlas.size.y);
+ 	}
+ 
+ 	int samplePriority(int tileInd)
 diff --git a/src/eventthread.cpp b/src/eventthread.cpp
 index 355b698..56ea0fc 100644
 --- a/src/eventthread.cpp
