@@ -389,7 +389,7 @@ index 7716a69..cb91502 100644
  			}
  
 diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
-index 4b43123..cbe45ed 100644
+index 4b43123..5f8d192 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
 @@ -22,6 +22,10 @@
@@ -403,7 +403,7 @@ index 4b43123..cbe45ed 100644
  #include <SDL_image.h>
  #include <SDL_ttf.h>
  #include <SDL_rect.h>
-@@ -53,6 +57,8 @@
+@@ -53,11 +57,16 @@
  
  #include <math.h>
  #include <algorithm>
@@ -412,7 +412,15 @@ index 4b43123..cbe45ed 100644
  
  extern "C" {
  #include "libnsgif/libnsgif.h"
-@@ -399,6 +405,54 @@ struct BitmapPrivate
+ }
+ 
++/* 由 ios_embed.mm 提供：spng 快速路径是否应被绕过（用于真机 A/B 归因） */
++extern "C" int mkxp_ios_spng_disabled(void);
++
+ #define GUARD_MEGA \
+ { \
+ if (p->megaSurface) \
+@@ -399,6 +408,54 @@ struct BitmapPrivate
      }
  };
  
@@ -467,25 +475,13 @@ index 4b43123..cbe45ed 100644
  struct BitmapOpenHandler : FileSystem::OpenHandler
  {
      // Non-GIF
-@@ -460,24 +514,216 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
+@@ -460,24 +517,220 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
                  return false;
              }
          } else {
 -            surface = IMG_LoadTyped_RW(&ops, 1, ext);
-+            static int s_spngOk = 0, s_spngFail = 0, s_spngDisabled = -1;
-+            /* A/B 开关：沙盒 Documents 下放一个空的 disable_spng 文件即完全
-+             * 绕过 spng 快速路径（用于真机归因排查），重启生效。 */
-+            if (s_spngDisabled < 0) {
-+                const char *home = getenv("HOME");
-+                char _p[512];
-+                snprintf(_p, sizeof(_p), "%s/Documents/disable_spng",
-+                         home ? home : "");
-+                FILE *_f = fopen(_p, "rb");
-+                if (_f) { fclose(_f); s_spngDisabled = 1;
-+                    fprintf(stderr, "rgss: spng DISABLED by flag file\n"); }
-+                else s_spngDisabled = 0;
-+            }
-+            if (s_spngDisabled) {
++            static int s_spngOk = 0, s_spngFail = 0;
++            if (mkxp_ios_spng_disabled()) {
 +                surface = IMG_LoadTyped_RW(&ops, 1, ext);
 +                return (surface || gif);
 +            }
@@ -604,9 +600,25 @@ index 4b43123..cbe45ed 100644
 +            fprintf(stderr, "rgss: decode-cache hits=%lld miss=%lld\n", (long long)hits, (long long)miss);
 +        SDL_UnlockMutex(mut);
 +    }
++
++    /* A/B 开关切换 spng 时清空缓存：确保后续 bitmap 用新设置重新解码 */
++    void clear()
++    {
++        SDL_LockMutex(mut);
++        map.clear();
++        lru.clear();
++        totalBytes = 0;
++        SDL_UnlockMutex(mut);
++    }
 +};
 +
 +DecodedPixelCache g_decodedPixelCache;
++
++extern "C" void mkxp_ios_clear_decoded_cache()
++{
++    g_decodedPixelCache.clear();
++    fprintf(stderr, "rgss: decoded pixel cache cleared (spng toggle)\n");
++}
 +
 +} // namespace
 +
@@ -689,7 +701,7 @@ index 4b43123..cbe45ed 100644
      }
      
      if (handler.gif) {
-@@ -578,7 +824,18 @@ Bitmap::Bitmap(const char *filename)
+@@ -578,7 +831,18 @@ Bitmap::Bitmap(const char *filename)
      
      
      p->ensureFormat(imgSurf, SDL_PIXELFORMAT_ABGR8888);

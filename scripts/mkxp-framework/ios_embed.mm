@@ -72,6 +72,45 @@ extern "C" int mkxp_ios_firstFrameShown(void) { return atomic_load(&g_firstFrame
 extern "C" void mkxp_ios_audioInterruptBegin(void);
 extern "C" void mkxp_ios_audioInterruptEnd(void);
 
+/* ---- spng A/B 开关（无需文件共享）----
+ *   游戏画面上【三指轻点】实时切换 spng 快速路径开/关，用于真机归因
+ *   “颜色块闪烁”是 spng 解码还是软呈现读回。切换会清空解码缓存，
+ *   后续 bitmap 用新设置重新解码；观察颜色块是否随切换变化即可。
+ *   默认仍支持 Documents/disable_spng 文件（存在=关），与手势二选一。 */
+static void mkxp_toggleSpng(void);
+extern "C" void mkxp_ios_clear_decoded_cache(void);
+@interface MkxpSpngToggle : NSObject
++ (void)onSpngTap:(UITapGestureRecognizer *)g;
+@end
+@implementation MkxpSpngToggle
++ (void)onSpngTap:(UITapGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateEnded) mkxp_toggleSpng();
+}
+@end
+
+static volatile int g_spngOverride = -1;   /* -1=未手动切换, 0=开, 1=关 */
+static int mkxp_readDisableFlagFile(void) {
+    const char *home = getenv("HOME");
+    char p[512];
+    snprintf(p, sizeof(p), "%s/Documents/disable_spng", home ? home : "");
+    FILE *f = fopen(p, "rb");
+    if (f) { fclose(f); return 1; }
+    return 0;
+}
+extern "C" int mkxp_ios_spng_disabled(void) {
+    if (g_spngOverride != -1) return g_spngOverride;
+    return mkxp_readDisableFlagFile();
+}
+extern "C" void mkxp_ios_clear_decoded_cache(void);  /* 实现于 bitmap.cpp */
+static void mkxp_toggleSpng(void) {
+    g_spngOverride = (g_spngOverride == 1) ? 0 : 1;
+    fprintf(stderr, "[ios-embed] spng override -> %s\n",
+            g_spngOverride ? "DISABLED(libpng path)" : "ENABLED(spng path)");
+    mkxp_ios_clear_decoded_cache();
+    fprintf(stderr,
+        "[ios-embed] spng A/B: 三指轻点再次切换；观察画面颜色块是否随切换变化\n");
+}
+
 /* 场景快照落盘：无 Mac 环境下定位“画面内容对不对”的铁证。
  * 在 Documents/scene_dump_N.png 生成 PNG，Flutter 日志页可直接查看/分享。 */
 static void mkxp_dumpSceneToDoc(CGImageRef cg, uint64_t frameNo)
@@ -563,6 +602,14 @@ extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
         iv.autoresizingMask = UIViewAutoresizingFlexibleWidth |
                               UIViewAutoresizingFlexibleHeight;
         iv.opaque = YES;
+        iv.userInteractionEnabled = YES;
+        {
+            UITapGestureRecognizer *spngTap = [[UITapGestureRecognizer alloc]
+                initWithTarget:[MkxpSpngToggle class] action:@selector(onSpngTap:)];
+            spngTap.numberOfTouchesRequired = 3;
+            spngTap.numberOfTapsRequired = 1;
+            [iv addGestureRecognizer:spngTap];
+        }
         [sdlWin addSubview:iv];
         g_softView = iv;   /* 生命期与 App 一致，故意不释放 */
         fprintf(stderr, "[ios-embed] soft view created frame=%s\n",
