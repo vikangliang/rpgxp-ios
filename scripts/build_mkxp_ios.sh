@@ -1056,17 +1056,19 @@ s = s.replace("        updateAutotileInfo();\n        tileset->ensureNonAnimated
               "            }\n"
               "        }\n"
               "        updateAutotileInfo();\n        tileset->ensureNonAnimated();\n", 1)
-old_f = ('\t\tfprintf(stderr, "rgss: buildAtlas t=%ums blits=%zu atlas=%dx%d\\n",\n'
-         '\t\t\tSDL_GetTicks() - _baT0, blits.size(), atlas.size.x, atlas.size.y);\n')
-new_f = (old_f +
-         '\n'
-         '\t\t// mkxp-ios: store built atlas into cache for reuse\n'
-         '\t\t{\n'
-         '\t\t\tstd::string _key = tileset ? (tileset->filename() ? tileset->filename() : "") : "";\n'
-         '\t\t\tif (!_key.empty())\n'
-         '\t\t\t\tshState->atlasCacheStore(_key, atlas.gl, atlas.size.x, atlas.size.y);\n'
-         '\t\t}\n')
-s = s.replace(old_f, new_f, 1)
+# mkxp-ios: store built atlas into cache for reuse.
+# 锚定 buildAtlas 结尾（最后一个 GLMeta::blitEnd(); 之后、收尾 } 之前），
+# 不依赖 framework-entry.patch 的 fprintf——否则该 patch 没打上时缓存永不写入、fix 静默失效。
+store_anchor = "\t\t\tGLMeta::blitEnd();\n\t\t}\n"
+assert store_anchor in s, "buildAtlas tail anchor missing (tilemap.cpp layout changed?)"
+store_block = ("\n"
+               "\t\t// mkxp-ios: store built atlas into cache for reuse\n"
+               "\t\t{\n"
+               "\t\t\tstd::string _key = tileset ? (tileset->filename() ? tileset->filename() : \"\") : \"\";\n"
+               "\t\t\tif (!_key.empty())\n"
+               "\t\t\t\tshState->atlasCacheStore(_key, atlas.gl, atlas.size.x, atlas.size.y);\n"
+               "\t\t}\n")
+s = s.replace(store_anchor, store_anchor + store_block, 1)
 open(p, 'w', encoding='utf-8').write(s)
 print("patched atlas cache into mkxp-z sources")
 PYEOF
