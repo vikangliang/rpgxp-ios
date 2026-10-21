@@ -1001,32 +1001,30 @@ s = s.replace("\tTEXFBO::fini(p->atlasTex);\n\n\tp->atlasTex = tex;\n",
               "\t// mkxp-ios: cached atlas textures are owned by atlasCacheGl; never free them\n"
               "\tif (atlasCacheOwns(tex)) {\n\t\ttex = TEXFBO();\n\t\treturn;\n\t}\n"
               "\tTEXFBO::fini(p->atlasTex);\n\tp->atlasTex = tex;\n", 1)
-old_impl = ("void SharedState::releaseAtlasTex(TEXFBO &tex)\n"
-            "{\n")
-new_impl = (old_impl +
-            "\n"
-            "bool SharedState::atlasCacheLookup(const std::string &key, int w, int h, TEXFBO &out)\n"
-            "{\n"
-            "\tauto it = p->atlasCacheGl.find(key);\n"
-            "\tif (it == p->atlasCacheGl.end())\n\t\treturn false;\n"
-            "\tauto sit = p->atlasCacheSize.find(key);\n"
-            "\tif (sit == p->atlasCacheSize.end())\n\t\treturn false;\n"
-            "\tif (sit->second.first != w || sit->second.second != h)\n\t\treturn false;\n"
-            "\tout = it->second;\n"
-            "\treturn true;\n"
-            "}\n\n"
-            "void SharedState::atlasCacheStore(const std::string &key, const TEXFBO &tex, int w, int h)\n"
-            "{\n"
-            "\tp->atlasCacheGl[key] = tex;\n"
-            "\tp->atlasCacheSize[key] = std::make_pair(w, h);\n"
-            "}\n\n"
-            "bool SharedState::atlasCacheOwns(TEXFBO &tex) const\n"
-            "{\n"
-            "\tfor (const auto &kv : p->atlasCacheGl)\n"
-            "\t\tif (kv.second.tex == tex.tex)\n\t\t\treturn true;\n"
-            "\treturn false;\n"
-            "}\n\n")
-s = s.replace(old_impl, new_impl, 1)
+# append atlas cache method implementations at end of file (global scope, robust)
+s += ("\n"
+      "// ---- mkxp-ios: per-tileset atlas cache ----\n"
+      "bool SharedState::atlasCacheLookup(const std::string &key, int w, int h, TEXFBO &out)\n"
+      "{\n"
+      "\tauto it = p->atlasCacheGl.find(key);\n"
+      "\tif (it == p->atlasCacheGl.end())\n\t\treturn false;\n"
+      "\tauto sit = p->atlasCacheSize.find(key);\n"
+      "\tif (sit == p->atlasCacheSize.end())\n\t\treturn false;\n"
+      "\tif (sit->second.first != w || sit->second.second != h)\n\t\treturn false;\n"
+      "\tout = it->second;\n"
+      "\treturn true;\n"
+      "}\n\n"
+      "void SharedState::atlasCacheStore(const std::string &key, const TEXFBO &tex, int w, int h)\n"
+      "{\n"
+      "\tp->atlasCacheGl[key] = tex;\n"
+      "\tp->atlasCacheSize[key] = std::make_pair(w, h);\n"
+      "}\n\n"
+      "bool SharedState::atlasCacheOwns(TEXFBO &tex) const\n"
+      "{\n"
+      "\tfor (const auto &kv : p->atlasCacheGl)\n"
+      "\t\tif (kv.second.tex == tex.tex)\n\t\t\treturn true;\n"
+      "\treturn false;\n"
+      "}\n")
 open(p, 'w', encoding='utf-8').write(s)
 
 # ---- tilemap.cpp: include <string> + allocateAtlas/buildAtlas 缓存逻辑 ----
