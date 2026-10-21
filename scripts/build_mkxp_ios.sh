@@ -82,7 +82,7 @@ echo "== install C deps via vcpkg (arm64-ios-static) =="
   sdl2 "sdl2-image[libjpeg-turbo]" sdl2-ttf \
   physfs openal-soft \
   libtheora libvorbis libogg \
-  freetype pixman libpng libjpeg-turbo zlib uchardet
+  freetype pixman libpng libjpeg-turbo zlib uchardet libspng
 # 注：sdl2-image 默认 feature 集不含 JPEG——真机日志实测
 # "Error initializing SDL_image: JPEG images are not supported"（Essentials 有 .jpg 资源）。
 # [libjpeg-turbo] 显式打开 JPG 解码；PNG 内置不受影响。

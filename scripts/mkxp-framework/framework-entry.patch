@@ -2,7 +2,7 @@ diff --git a/binding/audio-binding.cpp b/binding/audio-binding.cpp
 index cee5c86..4b00374 100644
 --- a/binding/audio-binding.cpp
 +++ b/binding/audio-binding.cpp
-@@ -24,6 +24,18 @@ @@
+@@ -24,6 +24,18 @@
  #include "binding-util.h"
  #include "exception.h"
  
@@ -21,7 +21,7 @@ index cee5c86..4b00374 100644
  #define DEF_PLAY_STOP_POS(entity) \
  	RB_METHOD(audio_##entity##Play) \
  	{ \
-@@ -32,7 +44,9 @@ @@
+@@ -32,7 +44,9 @@
  		int volume = 100; \
  		int pitch = 100; \
  		double pos = 0.0; \
@@ -32,7 +32,7 @@ index cee5c86..4b00374 100644
  		GUARD_EXC( shState->audio().entity##Play(filename, volume, pitch, pos); ) \
  		return Qnil; \
  	} \
-@@ -55,7 +69,9 @@ @@
+@@ -55,7 +69,9 @@
  		const char *filename; \
  		int volume = 100; \
  		int pitch = 100; \
@@ -43,7 +43,7 @@ index cee5c86..4b00374 100644
  		GUARD_EXC( shState->audio().entity##Play(filename, volume, pitch); ) \
  		return Qnil; \
  	} \
-@@ -71,7 +87,9 @@ @@
+@@ -71,7 +87,9 @@ RB_METHOD(audio_##entity##Fade) \
  { \
  	RB_UNUSED_PARAM; \
  	int time; \
@@ -54,7 +54,7 @@ index cee5c86..4b00374 100644
  	shState->audio().entity##Fade(time); \
  	return Qnil; \
  }
-@@ -93,7 +111,9 @@ @@
+@@ -93,7 +111,9 @@ RB_METHOD(audio_bgmPlay)
      int pitch = 100;
      double pos = 0.0;
      int track = -127;
@@ -65,7 +65,7 @@ index cee5c86..4b00374 100644
      GUARD_EXC( shState->audio().bgmPlay(filename, volume, pitch, pos, track); )
      return Qnil;
  }
-@@ -102,7 +122,9 @@ @@
+@@ -102,7 +122,9 @@ RB_METHOD(audio_bgmStop)
  {
      RB_UNUSED_PARAM;
      int track = -127;
@@ -76,7 +76,7 @@ index cee5c86..4b00374 100644
      shState->audio().bgmStop(track);
      return Qnil;
  }
-@@ -111,7 +133,9 @@ @@
+@@ -111,7 +133,9 @@ RB_METHOD(audio_bgmPos)
  {
      RB_UNUSED_PARAM;
      int track = 0;
@@ -87,7 +87,7 @@ index cee5c86..4b00374 100644
      return rb_float_new(shState->audio().bgmPos(track));
  }
  
-@@ -119,7 +143,9 @@ @@
+@@ -119,7 +143,9 @@ RB_METHOD(audio_bgmGetVolume)
  {
      RB_UNUSED_PARAM;
      int track = -127;
@@ -98,7 +98,7 @@ index cee5c86..4b00374 100644
      int ret = 0;
      GUARD_EXC( ret = shState->audio().bgmGetVolume(track); )
      return rb_fix_new(ret);
-@@ -130,7 +156,9 @@ @@
+@@ -130,7 +156,9 @@ RB_METHOD(audio_bgmSetVolume)
      RB_UNUSED_PARAM;
      int volume;
      int track = -127;
@@ -109,7 +109,7 @@ index cee5c86..4b00374 100644
      GUARD_EXC( shState->audio().bgmSetVolume(volume, track); )
      return Qnil;
  }
-@@ -145,7 +173,9 @@ @@
+@@ -145,7 +173,9 @@ RB_METHOD(audio_bgmFade)
      RB_UNUSED_PARAM;
      int time;
      int track = -127;
@@ -124,7 +124,7 @@ diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
 index f7f293a..2e09e80 100644
 --- a/binding/binding-mri.cpp
 +++ b/binding/binding-mri.cpp
-@@ -57,6 +57,9 @@ @@
+@@ -57,6 +57,9 @@ extern "C" {
  #include <assert.h>
  #include <string>
  #include <zlib.h>
@@ -134,7 +134,7 @@ index f7f293a..2e09e80 100644
  
  #include <SDL_cpuinfo.h>
  #include <SDL_filesystem.h>
-@@ -270,6 +273,49 @@ @@
+@@ -270,6 +273,49 @@ static void mriBindingInit() {
      rb_str_freeze(vers);
      rb_define_const(mod, "VERSION", vers);
      
@@ -184,7 +184,7 @@ index f7f293a..2e09e80 100644
      // Automatically load zlib if it's present -- the correct way this time
      int state;
      rb_eval_string_protect("require('zlib') if !Kernel.const_defined?(:Zlib)", &state);
-@@ -865,6 +911,12 @@ @@
+@@ -865,6 +911,12 @@ bool evalScript(VALUE string, const char *filename)
  
  #define SCRIPT_SECTION_FMT (rgssVer >= 3 ? "{%04ld}" : "Section%03ld")
  
@@ -197,7 +197,7 @@ index f7f293a..2e09e80 100644
  static void runRMXPScripts(BacktraceData &btData) {
      const Config &conf = shState->rtData().config;
      const std::string &scriptPack = conf.game.scripts;
-@@ -898,6 +950,7 @@ @@
+@@ -898,6 +950,7 @@ static void runRMXPScripts(BacktraceData &btData) {
      rb_gv_set("$RGSS_SCRIPTS", scriptArray);
      
      long scriptCount = RARRAY_LEN(scriptArray);
@@ -205,7 +205,7 @@ index f7f293a..2e09e80 100644
      
      std::string decodeBuffer;
      decodeBuffer.resize(0x1000);
-@@ -943,8 +996,11 @@ @@
+@@ -943,8 +996,11 @@ static void runRMXPScripts(BacktraceData &btData) {
              break;
          }
          
@@ -217,7 +217,7 @@ index f7f293a..2e09e80 100644
      
      /* Execute preloaded scripts */
      for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
-@@ -957,6 +1013,8 @@ @@
+@@ -957,6 +1013,8 @@ static void runRMXPScripts(BacktraceData &btData) {
      
      while (true) {
          for (long i = 0; i < scriptCount; ++i) {
@@ -230,7 +230,7 @@ diff --git a/src/audio/alstream.cpp b/src/audio/alstream.cpp
 index 73dfe41..7745e71 100644
 --- a/src/audio/alstream.cpp
 +++ b/src/audio/alstream.cpp
-@@ -42,7 +42,7 @@ @@
+@@ -42,7 +42,7 @@ ALStream::ALStream(LoopMode loopMode,
  	  source(0),
  	  thread(0),
  	  preemptPause(false),
@@ -239,7 +239,7 @@ index 73dfe41..7745e71 100644
  {
  	alSrc = AL::Source::gen();
  
-@@ -344,17 +344,62 @@ @@
+@@ -344,17 +344,62 @@ void ALStream::checkStopped()
  	if (!streamInited)
  		return;
  
@@ -312,7 +312,7 @@ diff --git a/src/audio/alstream.h b/src/audio/alstream.h
 index e8c1606..c111a1f 100644
 --- a/src/audio/alstream.h
 +++ b/src/audio/alstream.h
-@@ -61,6 +61,12 @@ @@
+@@ -61,6 +61,12 @@ struct ALStream
  	AtomicFlag streamInited;
  	AtomicFlag sourceExhausted;
  
@@ -329,7 +329,7 @@ diff --git a/src/audio/audio.cpp b/src/audio/audio.cpp
 index 6e42182..22a058e 100644
 --- a/src/audio/audio.cpp
 +++ b/src/audio/audio.cpp
-@@ -30,6 +30,7 @@ @@
+@@ -30,6 +30,7 @@
  #include "exception.h"
  
  #include <string>
@@ -337,7 +337,7 @@ index 6e42182..22a058e 100644
  #include <vector>
  
  #include <SDL_thread.h>
-@@ -113,6 +114,18 @@ @@
+@@ -113,6 +114,18 @@ struct AudioPrivate
  			if (meWatch.termReq)
  				return;
  
@@ -360,7 +360,7 @@ diff --git a/src/audio/vorbissource.cpp b/src/audio/vorbissource.cpp
 index 7716a69..cb91502 100644
 --- a/src/audio/vorbissource.cpp
 +++ b/src/audio/vorbissource.cpp
-@@ -185,6 +185,7 @@ @@
+@@ -185,6 +185,7 @@ struct VorbisSource : ALDataSource
  		Status retStatus = ALDataSource::NoError;
  
  		bool readAgain = false;
@@ -368,7 +368,7 @@ index 7716a69..cb91502 100644
  
  		if (loop.valid)
  		{
-@@ -200,9 +201,17 @@ @@
+@@ -200,9 +201,17 @@ struct VorbisSource : ALDataSource
  
  			if (res < 0)
  			{
@@ -389,10 +389,10 @@ index 7716a69..cb91502 100644
  			}
  
 diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
-index 4b43123..0177841 100644
+index 4b43123..01a6f0a 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
-@@ -22,6 +22,10 @@ @@
+@@ -22,6 +22,10 @@
  #include "bitmap.h"
  
  #include <SDL.h>
@@ -403,7 +403,103 @@ index 4b43123..0177841 100644
  #include <SDL_image.h>
  #include <SDL_ttf.h>
  #include <SDL_rect.h>
-@@ -466,18 +470,172 @@ @@
+@@ -53,6 +57,7 @@
+ 
+ #include <math.h>
+ #include <algorithm>
++#include <spng.h>
+ 
+ extern "C" {
+ #include "libnsgif/libnsgif.h"
+@@ -399,6 +404,54 @@ struct BitmapPrivate
+     }
+ };
+ 
++/* libspng fast-path: decode an already-decrypted PNG buffer directly into an
++ * ABGR8888 SDL_Surface. This skips SDL_image/libpng and the ensureFormat
++ * byte-swap copy (ensureFormat is a no-op once the surface is already
++ * ABGR8888). Returns NULL on any error so the caller can fall back to
++ * IMG_LoadTyped_RW. */
++static SDL_Surface *mkxp_spng_decode_abgr(const uint8_t *png, size_t len)
++{
++    spng_ctx *ctx = spng_ctx_new(0);
++    if (!ctx)
++        return nullptr;
++
++    spng_set_png_buffer(ctx, png, len);
++
++    spng_ihdr ihdr;
++    if (spng_get_ihdr(ctx, &ihdr) != 0)
++    { spng_ctx_free(ctx); return nullptr; }
++
++    if (ihdr.width == 0 || ihdr.height == 0 ||
++        ihdr.width > 16384 || ihdr.height > 16384)
++    { spng_ctx_free(ctx); return nullptr; }
++
++    size_t out_size = 0;
++    if (spng_decoded_image_size(ctx, SPNG_FMT_RGBA8, SPNG_DECODE_ALL, &out_size) != 0)
++    { spng_ctx_free(ctx); return nullptr; }
++
++    int bpp;
++    Uint32 rMask, gMask, bMask, aMask;
++    SDL_PixelFormatEnumToMasks(SDL_PIXELFORMAT_ABGR8888,
++                               &bpp, &rMask, &gMask, &bMask, &aMask);
++    SDL_Surface *surf = SDL_CreateRGBSurface(0, (int)ihdr.width, (int)ihdr.height,
++                                             bpp, rMask, gMask, bMask, aMask);
++    if (!surf)
++    { spng_ctx_free(ctx); return nullptr; }
++
++    /* 32bpp pitch is exactly width*4; spng's RGBA8 output already matches the
++     * ABGR8888 memory order, so decode straight into the surface. */
++    if ((int)ihdr.width * 4 != surf->pitch ||
++        spng_decode_image(ctx, surf->pixels, out_size, SPNG_FMT_RGBA8, SPNG_DECODE_ALL) != 0)
++    {
++        SDL_FreeSurface(surf);
++        spng_ctx_free(ctx);
++        return nullptr;
++    }
++
++    spng_ctx_free(ctx);
++    return surf;
++}
++
+ struct BitmapOpenHandler : FileSystem::OpenHandler
+ {
+     // Non-GIF
+@@ -460,24 +513,204 @@ struct BitmapOpenHandler : FileSystem::OpenHandler
+                 return false;
+             }
+         } else {
+-            surface = IMG_LoadTyped_RW(&ops, 1, ext);
++            /* libspng fast path: decode the (already RGSSAD-decrypted) PNG
++             * straight to ABGR8888, avoiding SDL_image/libpng + the
++             * ensureFormat byte-swap copy. Falls back to IMG_LoadTyped_RW on
++             * any failure. */
++            static int s_spngOk = 0, s_spngFail = 0;
++            Sint64 _sz = ops.size(&ops);
++            if (_sz > 0 && _sz <= (Sint64)(64 * 1024 * 1024)) {
++                uint8_t *_buf = (uint8_t*)malloc((size_t)_sz);
++                if (_buf) {
++                    ops.seek(&ops, 0, RW_SEEK_SET);
++                    if (ops.read(&ops, _buf, 1, (size_t)_sz) == (size_t)_sz)
++                        surface = mkxp_spng_decode_abgr(_buf, (size_t)_sz);
++                    free(_buf);
++                }
++            }
++            if (!surface) {
++                ops.seek(&ops, 0, RW_SEEK_SET);
++                surface = IMG_LoadTyped_RW(&ops, 1, ext);
++                if (s_spngFail++ < 3)
++                    fprintf(stderr, "rgss: spng fallback (IMG_LoadTyped_RW) for %s\n", ext);
++            } else {
++                /* spng consumed the stream; IMG_LoadTyped_RW won't run, so
++                 * close the phys file ourselves (mirrors freesrc=1). */
++                SDL_RWclose(&ops);
++                if (s_spngOk++ < 3)
++                    fprintf(stderr, "rgss: spng decode ok for %s\n", ext);
++            }
+         }
+         return (surface || gif);
      }
  };
  
@@ -580,7 +676,7 @@ index 4b43123..0177841 100644
      }
      
      if (handler.gif) {
-@@ -578,7 +736,18 @@ @@
+@@ -578,7 +811,18 @@ Bitmap::Bitmap(const char *filename)
      
      
      p->ensureFormat(imgSurf, SDL_PIXELFORMAT_ABGR8888);
@@ -604,7 +700,7 @@ diff --git a/src/eventthread.cpp b/src/eventthread.cpp
 index 355b698..56ea0fc 100644
 --- a/src/eventthread.cpp
 +++ b/src/eventthread.cpp
-@@ -465,20 +464,47 @@ @@
+@@ -465,20 +465,47 @@ void EventThread::process(RGSSThreadData &rtData)
                  switch(event.type - usrIdStart)
                  {
                      case REQUEST_SETFULLSCREEN :
@@ -652,7 +748,7 @@ index 355b698..56ea0fc 100644
                          rc = SDL_GetDesktopDisplayMode(SDL_GetWindowDisplayIndex(win), &dm);
                          if (!rc)
                              SDL_SetWindowPosition(win,
-@@ -486,10 +512,13 @@ @@
+@@ -486,10 +513,13 @@ void EventThread::process(RGSSThreadData &rtData)
                                                    (dm.h / 2) - (winH / 2));
                          rtData.rqWindowAdjust.clear();
                          break;
@@ -666,7 +762,7 @@ index 355b698..56ea0fc 100644
                          break;
                          
                      case REQUEST_TEXTMODE :
-@@ -566,7 +595,9 @@ @@
+@@ -566,7 +596,9 @@ void EventThread::process(RGSSThreadData &rtData)
                              break;
                          }
                          
@@ -676,7 +772,7 @@ index 355b698..56ea0fc 100644
                          break;
                          
                      case UPDATE_SCREEN_RECT :
-@@ -649,6 +680,27 @@ @@
+@@ -649,6 +681,27 @@ int EventThread::eventFilter(void *data, SDL_Event *event)
      return 1;
  }
  
@@ -708,7 +804,7 @@ diff --git a/src/input/input.cpp b/src/input/input.cpp
 index 67c7799..83126e1 100644
 --- a/src/input/input.cpp
 +++ b/src/input/input.cpp
-@@ -35,9 +34,16 @@ @@
+@@ -35,9 +35,16 @@
  #include <vector>
  #include <cmath>
  #include <unordered_map>
@@ -725,7 +821,7 @@ index 67c7799..83126e1 100644
  #define BUTTON_CODE_COUNT 26
  
  #define m(vk,sc) { vk, SDL_SCANCODE_##sc }
-@@ -965,6 +971,14 @@ @@
+@@ -965,6 +972,14 @@ struct InputPrivate
          appendBindings(kbBindings);
          appendBindings(ctrlABindings);
          appendBindings(ctrlBBindings);
@@ -744,7 +840,7 @@ diff --git a/src/main.cpp b/src/main.cpp
 index 4779221..d7e0394 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -30,11 +29,14 @@ @@
+@@ -30,11 +30,14 @@
  #include <SDL_sound.h>
  #include <SDL_ttf.h>
  
@@ -759,7 +855,7 @@ index 4779221..d7e0394 100644
  
  #include "binding.h"
  #include "sharedstate.h"
-@@ -201,7 +203,11 @@ @@
+@@ -201,7 +204,11 @@ static void setupWindowIcon(const Config &conf, SDL_Window *win) {
    }
  }
  
@@ -772,7 +868,7 @@ index 4779221..d7e0394 100644
      SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
      SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
  
-@@ -351,7 +357,17 @@ @@
+@@ -351,7 +358,17 @@ int main(int argc, char *argv[]) {
  #endif
        return 0;
      }
@@ -791,7 +887,7 @@ index 4779221..d7e0394 100644
  #ifdef MKXPZ_BUILD_XCODE
      {
          std::string downloadsPath = "/Users/" + mkxp_sys::getUserName() + "/Downloads";
-@@ -414,7 +430,12 @@ @@
+@@ -414,7 +431,12 @@ int main(int argc, char *argv[]) {
      if (!mode.refresh_rate)
        conf.syncToRefreshrate = false;
  
@@ -805,7 +901,7 @@ index 4779221..d7e0394 100644
  
  #ifndef MKXPZ_INIT_GL_LATER
      SDL_GLContext glCtx = initGL(win, conf, 0);
-@@ -422,84 +443,93 @@ @@
+@@ -422,84 +444,93 @@ int main(int argc, char *argv[]) {
      SDL_GLContext glCtx = NULL;
  #endif
  
@@ -950,7 +1046,7 @@ index 4779221..d7e0394 100644
  
      return 0;
  }
-@@ -544,7 +574,13 @@ @@
+@@ -544,7 +575,13 @@ static SDL_GLContext initGL(SDL_Window *win, Config &conf,
    printGLInfo();
  
    bool vsync = conf.vsync || conf.syncToRefreshrate;
