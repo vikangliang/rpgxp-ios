@@ -389,7 +389,7 @@ index 7716a69..cb91502 100644
  			}
  
 diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
-index 4b43123..01a6f0a 100644
+index 4b43123..b68eebe 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
 @@ -22,6 +22,10 @@
@@ -437,7 +437,7 @@ index 4b43123..01a6f0a 100644
 +    { spng_ctx_free(ctx); return nullptr; }
 +
 +    size_t out_size = 0;
-+    if (spng_decoded_image_size(ctx, SPNG_FMT_RGBA8, SPNG_DECODE_ALL, &out_size) != 0)
++    if (spng_decoded_image_size(ctx, SPNG_FMT_RGBA8, &out_size) != 0)
 +    { spng_ctx_free(ctx); return nullptr; }
 +
 +    int bpp;
@@ -452,7 +452,7 @@ index 4b43123..01a6f0a 100644
 +    /* 32bpp pitch is exactly width*4; spng's RGBA8 output already matches the
 +     * ABGR8888 memory order, so decode straight into the surface. */
 +    if ((int)ihdr.width * 4 != surf->pitch ||
-+        spng_decode_image(ctx, surf->pixels, out_size, SPNG_FMT_RGBA8, SPNG_DECODE_ALL) != 0)
++        spng_decode_image(ctx, surf->pixels, out_size, SPNG_FMT_RGBA8, 0) != 0)
 +    {
 +        SDL_FreeSurface(surf);
 +        spng_ctx_free(ctx);
