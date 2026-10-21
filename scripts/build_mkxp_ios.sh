@@ -1064,12 +1064,13 @@ assert old_mega in s, "mega-surface clean-else anchor missing"
 s = s.replace(old_mega, new_mega, 1)
 
 # mkxp-ios: store built atlas into cache for reuse.
-# 锚定 buildAtlas 结尾：regular 分支的 GLMeta::blitEnd(); 之后、buildAtlas 函数收尾 } 之前
-# （"\t\t}\n\t}" —— 2 层 }，唯一；mega 分支结尾是 "}\n\telse" 不匹配）。
-# 必须注入在 if/else 之后、函数末尾，因为 Essentials 用 mega-surface 走 if 分支，
-# regular 分支(else)不执行——之前把 Store 注入 else 分支导致 Essentials 地图从未写缓存。
-store_anchor = "\t\t\tGLMeta::blitEnd();\n\t\t}\n\t}\n"
-assert store_anchor in s, "buildAtlas tail anchor missing (tilemap.cpp layout changed?)"
+# 缓存 Store 必须注入在 buildAtlas 的 if/else 之后、函数收尾 } 之前（两分支都经过），
+# 因为 Essentials 用 mega-surface 走 if 分支，regular(else) 不执行——之前把 Store 注入
+# else 分支导致 Essentials 地图从未写缓存。
+# 锚点必须对齐 framework-entry.patch：它在 buildAtlas 尾部插入计时 fprintf（空格缩进），
+# 夹在 blitting 的 } 与函数收尾 } 之间。所以优先锚定该 fprintf 块；若 patch 被
+# patch -p1 -f 静默丢弃（极端情况），退回 pristine 尾部。两种形态都把 store_block
+# 插到 buildAtlas 真正末尾（fprintf 之后、收尾 } 之前），对 mega/regular 两分支都生效。
 store_block = ("\n"
                "\t\t// mkxp-ios: store built atlas into cache for reuse\n"
                "\t\t{\n"
@@ -1077,7 +1078,31 @@ store_block = ("\n"
                "\t\t\tif (!_key.empty())\n"
                "\t\t\t\tshState->atlasCacheStore(_key, atlas.gl, atlas.size.x, atlas.size.y);\n"
                "\t\t}\n")
-s = s.replace(store_anchor, store_anchor + store_block, 1)
+# framework-entry.patch 在 buildAtlas 尾部注入计时 fprintf（缩进可能是 tab 或空格），
+# 夹在 blitting 的 } 与函数收尾 } 之间。用正则（缩进无关）在其后、收尾 } 之前插入
+# store_block，对 mega/regular 两分支都生效。若 patch 被静默丢弃，退回 pristine 尾部。
+import re
+store_anchor_pristine = "\t\t\tGLMeta::blitEnd();\n\t\t}\n\t}\n"
+_fprintf_marker = 'fprintf(stderr, "rgss: buildAtlas t=%ums blits=%zu atlas=%dx%d\\n",'
+if _fprintf_marker in s:
+    # 缩进无关匹配 fprintf 计时块 + 收尾 }，保留原缩进并插入 store_block
+    _pat = re.compile(
+        r'(\s*)fprintf\(stderr, "rgss: buildAtlas t=%ums blits=%zu atlas=%dx%d\\n",\n'
+        r'(\s*)SDL_GetTicks\(\) - _baT0, blits\.size\(\), atlas\.size\.x, atlas\.size\.y\);\n'
+        r'(\s*)\}\n'
+    )
+    _m = _pat.search(s)
+    if not _m:
+        raise AssertionError("buildAtlas fprintf present but closing-brace pattern not found")
+    repl = (_m.group(1) + 'fprintf(stderr, "rgss: buildAtlas t=%ums blits=%zu atlas=%dx%d\\n",\n'
+            + _m.group(2) + 'SDL_GetTicks() - _baT0, blits.size(), atlas.size.x, atlas.size.y);\n'
+            + store_block
+            + _m.group(3) + '}\n')
+    s = _pat.sub(repl, s, 1)
+elif store_anchor_pristine in s:
+    s = s.replace(store_anchor_pristine, "\t\t\tGLMeta::blitEnd();\n\t\t}\n" + store_block + "\t}\n", 1)
+else:
+    raise AssertionError("buildAtlas tail anchor missing (tilemap.cpp layout changed?)")
 open(p, 'w', encoding='utf-8').write(s)
 print("patched atlas cache into mkxp-z sources")
 PYEOF
