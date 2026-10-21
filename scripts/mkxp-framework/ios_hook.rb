@@ -52,6 +52,43 @@ def __mkxp_log(tag, msg)
 rescue StandardError
   # 日志永不影响主流程
 end
+
+# ---- map-entry timing diagnostic（定位室内→室外 ~10s 卡顿；纯计时、不改逻辑）----
+# lazy 安装 + 开关 + begin/rescue，绝不影响游戏功能。首次精灵解析时安装
+# （彼时 Game_Map/Spriteset_Map/Tilemap/Graphics 均已定义），此后各次进图
+# 打出每阶段 ms 分解——哪一段吃掉 ~10s 一目了然。诊断完把 $__mkxp_timing
+# 改 false（或整段删）即零开销。
+$__mkxp_timing = true
+$__mkxp_t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+$__mkxp_timing_done = false
+def __mkxp_ms
+  ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - $__mkxp_t0) * 1000).to_i
+rescue StandardError
+  -1
+end
+def __mkxp_time_wrap(cls, mname, label)
+  im = (cls.instance_method(mname) rescue nil)
+  return unless im
+  cls.send(:define_method, mname) do |*a, &b|
+    t = __mkxp_ms
+    r = im.bind(self).call(*a, &b)
+    $stderr.puts "[map-timing] #{label} +#{__mkxp_ms - t}ms (end t=#{__mkxp_ms})"
+    r
+  end
+rescue StandardError => e
+  $stderr.puts "[map-timing] wrap #{label} failed: #{e.class}"
+end
+def __mkxp_install_map_timing
+  return if $__mkxp_timing_done
+  $__mkxp_timing_done = true
+  return unless $__mkxp_timing
+  __mkxp_time_wrap(::Game_Map, :setup, "Game_Map#setup") if defined?(::Game_Map)
+  __mkxp_time_wrap(::Spriteset_Map, :initialize, "Spriteset_Map#init") if defined?(::Spriteset_Map)
+  __mkxp_time_wrap(::Tilemap, :initialize, "Tilemap#init") if defined?(::Tilemap)
+  $stderr.puts "[map-timing] installed; next map entry logs per-phase ms"
+rescue StandardError => e
+  $stderr.puts "[map-timing] install failed: #{e.class}"
+end
 $__mkxp_resolve = lambda do |s|
   # 【根治】字符串对象所有权：本解析器返回的字符串绝不能与调用方共享。
   # 此前 `str = s.to_s`（String 时返回自身）+ `next cached`（直接返回缓存对象），
@@ -205,6 +242,7 @@ class << Object
         ::Object.send(:define_method, :ow_sprite_filename) do |*args, &blk|
           unless $__mkxp_cgf_done
             $__mkxp_cgf_done = true
+            __mkxp_install_map_timing
             begin
               sp = ::GameData::Species
               ocgf = sp.method(:check_graphic_file)
