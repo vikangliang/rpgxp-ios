@@ -22,6 +22,10 @@ final class MkxpTouchOverlay: NSObject {
   private var menuButton: UIButton?
   private var controlsHidden = false
 
+  /// 动作键触感。与圆盘方向键同为 .light，保持手感一致。
+  /// prepare() 提前预热 Taptic Engine，避免首次按下时反馈迟到或丢失。
+  private let actionHaptic = UIImpactFeedbackGenerator(style: .light)
+
   /// 启动加载 HUD：必须画在 SDL 引擎窗口（level 1999）【之上】——引擎窗口
   /// 创建后立刻以纯黑盖住 Flutter，Flutter 侧的加载提示根本看不见。
   private var loadingWindow: UIWindow?
@@ -103,6 +107,7 @@ final class MkxpTouchOverlay: NSObject {
   func show() {
     if let win = window {
       win.isHidden = false
+      actionHaptic.prepare()   // 切回前台/重新显示时补一次预热
       return
     }
     let scene = (UIApplication.shared.connectedScenes
@@ -129,6 +134,7 @@ final class MkxpTouchOverlay: NSObject {
     buildDpad(in: ctl)
     buildActionButtons(in: ctl, root: root)
     buildMenuButton(in: ctl, root: root)
+    actionHaptic.prepare()   // 预热 Taptic Engine：首次按动作键时不掉反馈
 
     window = win
     win.isHidden = false
@@ -214,7 +220,12 @@ final class MkxpTouchOverlay: NSObject {
 
   // MARK: - 交互
 
-  @objc private func actionDown(_ s: UIButton) { MkxpBridge.key(s.tag, down: true) }
+  @objc private func actionDown(_ s: UIButton) {
+    // 按下即刻给轻触感（与圆盘方向键一致），再 prepare 为下一次按下预热。
+    actionHaptic.impactOccurred()
+    actionHaptic.prepare()
+    MkxpBridge.key(s.tag, down: true)
+  }
   @objc private func actionUp(_ s: UIButton)   { MkxpBridge.key(s.tag, down: false) }
 
   /// "⋯"菜单：动作表（收起/显示控件、退出游戏）。
