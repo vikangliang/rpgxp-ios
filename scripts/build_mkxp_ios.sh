@@ -1057,9 +1057,11 @@ s = s.replace("        updateAutotileInfo();\n        tileset->ensureNonAnimated
               "        }\n"
               "        updateAutotileInfo();\n        tileset->ensureNonAnimated();\n", 1)
 # mkxp-ios: store built atlas into cache for reuse.
-# 锚定 buildAtlas 结尾（最后一个 GLMeta::blitEnd(); 之后、收尾 } 之前），
-# 不依赖 framework-entry.patch 的 fprintf——否则该 patch 没打上时缓存永不写入、fix 静默失效。
-store_anchor = "\t\t\tGLMeta::blitEnd();\n\t\t}\n"
+# 锚定 buildAtlas 结尾：regular 分支的 GLMeta::blitEnd(); 之后、buildAtlas 函数收尾 } 之前
+# （"\t\t}\n\t}" —— 2 层 }，唯一；mega 分支结尾是 "}\n\telse" 不匹配）。
+# 必须注入在 if/else 之后、函数末尾，因为 Essentials 用 mega-surface 走 if 分支，
+# regular 分支(else)不执行——之前把 Store 注入 else 分支导致 Essentials 地图从未写缓存。
+store_anchor = "\t\t\tGLMeta::blitEnd();\n\t\t}\n\t}\n"
 assert store_anchor in s, "buildAtlas tail anchor missing (tilemap.cpp layout changed?)"
 store_block = ("\n"
                "\t\t// mkxp-ios: store built atlas into cache for reuse\n"
