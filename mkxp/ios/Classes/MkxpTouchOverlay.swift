@@ -157,15 +157,14 @@ final class MkxpTouchOverlay: NSObject {
 
   // MARK: - 控件构建
 
-  /// 十字方向区：单一触摸追踪视图（覆盖整个十字外接范围）。
-  /// 之前 4 个独立 UIButton 的缺陷：按住后手指滑出按钮不会触发 touchUp，
-  /// 原方向键一直卡在“按下”→ 表现为“偶尔失灵”。单视图追踪可随手滑换向、
-  /// 也天然支持斜向双键（如右+上）。
+  /// 圆盘方向区：单一触摸追踪视图（整盘命中）。
+  /// 触摸点相对盘心的角度判 4 向（点哪亮哪），中心小圆环为死区，
+  /// 换向触发轻触感；手指可滑动连续换向、抬起精准释放。
   private func buildDpad(in ctl: UIView) {
-    let side: CGFloat = 204      // 十字外接边长（4 臂 + 中心 hub + 边距）
-    let cx: CGFloat = 104        // 十字中心 x（左侧偏下，少挡画面）
+    let side: CGFloat = 204      // 圆盘直径
+    let cx: CGFloat = 104        // 盘心 x（左侧偏下，少挡画面）
     let h = max(ctl.bounds.height, UIScreen.main.bounds.height)
-    let cy = h - 150             // 十字中心 y
+    let cy = h - 150             // 盘心 y
     let pad = MkxpDpadView(frame: CGRect(
         x: cx - side / 2, y: cy - side / 2, width: side, height: side))
     pad.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
@@ -270,69 +269,104 @@ final class MkxpPassthroughView: UIView {
   }
 }
 
-/// 十字方向键：单视图追踪全部触摸，按位置判定 4 向（上/下/左/右）。
-/// 设计目标：消除“误触”。命中区是【真正的十字】——中心 hub + 4 条臂，
-/// 臂外的 4 个角落与中心 hub 都是死区；同一时刻只认一条臂（取最近按下），
-/// 因此不会斜向合成双键、也不会点到相邻方向。手指可在臂间滑动自动换方向、
-/// 抬起精准释放（旧的多 UIButton 方案会卡键）。
+/// 圆盘方向键：整盘命中，按触摸点相对盘心的角度判 4 向（点哪亮哪），
+/// 中心小圆环为死区；换向触发轻触感。同一时刻只保留一个方向，
+/// 手指滑动可连续换向、抬起精准释放（旧的多 UIButton 方案会卡键）。
 final class MkxpDpadView: UIView {
-  private let armW: CGFloat = 64      // 每条臂宽度
-  private let armLen: CGFloat = 64    // 臂长（中心到臂尖）
-  private let hub: CGFloat = 30       // 中心死区半径（十字中心不响应）
+  private let hub: CGFloat = 26        // 中心死区半径（小圆环内不响应）
   private var held: Set<Int32> = []
   private var heldOrder: [Int32] = []   // 按下顺序（最近按下优先保留）
   /// 本视图上仍活动的触摸（自维护）。不能用 event.allTouches：
   /// 已 ended 的触摸 location 依然有效，计入会把键永远卡在按下
   /// （表现为“最后点的方向一直自动走下去”、选项菜单上下失效）。
   private var activeTouches: Set<UITouch> = []
+  private let haptic = UIImpactFeedbackGenerator(style: .light)
+
+  private var wedges: [Int32: CAShapeLayer] = [:]   // 方向 -> 高亮楔形
+  private var arrows: [Int32: CAShapeLayer] = [:]   // 方向 -> 箭头三角
+  /// 方向 -> 扇区起止角（atan2(dy,dx) 坐标系，y 向下顺时针为正）
+  private let sectors: [(key: Int32, a0: CGFloat, a1: CGFloat)] = [
+    (8, -3 * .pi / 4, -.pi / 4),       // 上
+    (6, -.pi / 4,      .pi / 4),       // 右
+    (2,  .pi / 4,  3 * .pi / 4),       // 下
+    (4,  3 * .pi / 4,  5 * .pi / 4),   // 左
+  ]
 
   override init(frame: CGRect) {
     super.init(frame: frame)
     backgroundColor = .clear
     isMultipleTouchEnabled = true
-    drawCross()
+    buildDial()
   }
   required init?(coder: NSCoder) { fatalError() }
 
-  /// 画“十字”：中心 hub（圆，半透明）+ 4 条臂（圆角矩形，含 ▲▼◀▶）。
-  /// 臂与 hub 之间留 8pt 缝，视觉上清楚分隔每个方向，配合死区彻底防误触。
-  private func drawCross() {
-    let cx = bounds.midX, cy = bounds.midY
-    let hubView = makePad(w: hub * 2, h: hub * 2, rounded: hub, alpha: 0.06)
-    hubView.center = CGPoint(x: cx, y: cy)
-    addSubview(hubView)
-    let off = hub + 8 + armLen / 2   // 臂中心：hub 边缘外侧再留 8pt 缝
-    let arms: [(CGPoint, String)] = [
-      (CGPoint(x: 0, y: -off), "▲"),
-      (CGPoint(x: 0, y:  off), "▼"),
-      (CGPoint(x: -off, y: 0), "◀"),
-      (CGPoint(x:  off, y: 0), "▶"),
-    ]
-    for (p, arrow) in arms {
-      let v = makePad(w: armW, h: armLen, rounded: 14, alpha: 0.12)
-      v.center = CGPoint(x: cx + p.x, y: cy + p.y)
-      let lb = UILabel(frame: v.bounds)
-      lb.text = arrow
-      lb.textColor = .white
-      lb.font = .systemFont(ofSize: 20, weight: .bold)
-      lb.textAlignment = .center
-      lb.isUserInteractionEnabled = false
-      v.addSubview(lb)
-      addSubview(v)
+  /// 画圆盘：半透明底盘 + 细描边、4 个高亮楔形（默认隐藏）、4 个灰色箭头、
+  /// 中心小圆环（死区指示）。样式对齐用户提供的参考图。
+  private func buildDial() {
+    let c = CGPoint(x: bounds.midX, y: bounds.midY)
+    let r = bounds.width / 2
+
+    let disc = CAShapeLayer()
+    disc.path = UIBezierPath(ovalIn: CGRect(x: c.x - r + 2, y: c.y - r + 2,
+                                            width: r * 2 - 4, height: r * 2 - 4)).cgPath
+    disc.fillColor = UIColor(white: 1, alpha: 0.07).cgColor
+    disc.strokeColor = UIColor(white: 1, alpha: 0.22).cgColor
+    disc.lineWidth = 1.5
+    layer.addSublayer(disc)
+
+    for (key, a0, a1) in sectors {
+      let w = CAShapeLayer()
+      w.path = sectorPath(center: c, radius: r - 5, a0: a0, a1: a1).cgPath
+      w.fillColor = UIColor(white: 1, alpha: 0.16).cgColor
+      w.opacity = 0
+      layer.addSublayer(w)
+      wedges[key] = w
+
+      let a = CAShapeLayer()
+      a.path = arrowPath(center: c, angle: (a0 + a1) / 2)
+      a.fillColor = UIColor(white: 1, alpha: 0.40).cgColor
+      layer.addSublayer(a)
+      arrows[key] = a
     }
+
+    let ring = CAShapeLayer()
+    ring.path = UIBezierPath(ovalIn: CGRect(x: c.x - hub + 3, y: c.y - hub + 3,
+                                            width: (hub - 3) * 2, height: (hub - 3) * 2)).cgPath
+    ring.fillColor = UIColor(white: 1, alpha: 0.05).cgColor
+    ring.strokeColor = UIColor(white: 1, alpha: 0.30).cgColor
+    ring.lineWidth = 1.5
+    layer.addSublayer(ring)
   }
 
-  private func makePad(w: CGFloat, h: CGFloat, rounded: CGFloat, alpha: CGFloat) -> UIView {
-    let v = UIView(frame: CGRect(x: 0, y: 0, width: w, height: h))
-    v.backgroundColor = UIColor(white: 1, alpha: alpha)
-    v.layer.cornerRadius = rounded
-    v.layer.borderWidth = 1
-    v.layer.borderColor = UIColor(white: 1, alpha: 0.22).cgColor
-    v.isUserInteractionEnabled = false
-    return v
+  private func sectorPath(center c: CGPoint, radius: CGFloat, a0: CGFloat, a1: CGFloat) -> UIBezierPath {
+    let p = UIBezierPath()
+    p.move(to: c)
+    p.addArc(withCenter: c, radius: radius, startAngle: a0, endAngle: a1, clockwise: true)
+    p.close()
+    return p
+  }
+
+  /// 指向 `angle` 方向的三角形（顶点朝外，位于盘心到边缘约 58% 处）
+  private func arrowPath(center c: CGPoint, angle: CGFloat) -> CGPath {
+    let d = bounds.width * 0.29
+    let s: CGFloat = 15
+    let dir = CGPoint(x: cos(angle), y: sin(angle))
+    let perp = CGPoint(x: -dir.y, y: dir.x)
+    let tip = CGPoint(x: c.x + dir.x * (d + s), y: c.y + dir.y * (d + s))
+    let b1 = CGPoint(x: c.x + dir.x * (d - s) + perp.x * s * 0.85,
+                     y: c.y + dir.y * (d - s) + perp.y * s * 0.85)
+    let b2 = CGPoint(x: c.x + dir.x * (d - s) - perp.x * s * 0.85,
+                     y: c.y + dir.y * (d - s) - perp.y * s * 0.85)
+    let p = UIBezierPath()
+    p.move(to: tip)
+    p.addLine(to: b1)
+    p.addLine(to: b2)
+    p.close()
+    return p.cgPath
   }
 
   override func touchesBegan(_ t: Set<UITouch>, with e: UIEvent?) {
+    haptic.prepare()
     activeTouches.formUnion(t)
     refresh()
   }
@@ -351,7 +385,7 @@ final class MkxpDpadView: UIView {
   private func refresh() {
     var candidates = Set<Int32>()
     for t in activeTouches {
-      candidates.formUnion(keysFor(point: t.location(in: self)))
+      if let k = directionKey(at: t.location(in: self)) { candidates.insert(k) }
     }
     heldOrder = heldOrder.filter { candidates.contains($0) }
     for k in candidates.sorted() where !heldOrder.contains(k) {
@@ -360,21 +394,39 @@ final class MkxpDpadView: UIView {
     var want: Set<Int32> = []
     if let k = heldOrder.last { want.insert(k) }
     for old in held.subtracting(want) { MkxpBridge.key(Int(old), down: false) }
-    for k in want.subtracting(held) { MkxpBridge.key(Int(k), down: true) }
+    for k in want.subtracting(held) {
+      MkxpBridge.key(Int(k), down: true)
+      haptic.impactOccurred()   // 新方向按下：轻触感
+    }
     held = want
+    updateVisual(dir: heldOrder.last)
   }
 
-  /// 位置 → 方向键码（十字命中）：
-  /// - 中心 hub（|dx|<hub 且 |dy|<hub）→ 不响应；
-  /// - 竖向臂（|dx|<=armW/2 且 |dy|>=hub）→ 上/下；
-  /// - 横向臂（|dy|<=armW/2 且 |dx|>=hub）→ 左/右；
-  /// - 其余（臂外 4 角）→ 不响应，避免误触相邻方向。
-  private func keysFor(point p: CGPoint) -> Set<Int32> {
+  /// 触摸点 -> 方向键码：以盘心为原点按角度四分（点哪亮哪），
+  /// 中心 hub（r < hub）与盘外四角（r > 半径）都是死区，避免误触。
+  private func directionKey(at p: CGPoint) -> Int32? {
     let dx = p.x - bounds.midX
     let dy = p.y - bounds.midY
-    if abs(dx) < hub && abs(dy) < hub { return [] }
-    if abs(dx) <= armW / 2 && abs(dy) >= hub { return [dy < 0 ? 8 : 2] }   // 上=8 下=2
-    if abs(dy) <= armW / 2 && abs(dx) >= hub { return [dx < 0 ? 4 : 6] }   // 左=4 右=6
-    return []
+    let r = hypot(dx, dy)
+    if r < hub || r > bounds.width / 2 - 2 { return nil }
+    switch atan2(dy, dx) {
+    case ..<(-3 * .pi / 4): return 4    // 左
+    case ..<(-.pi / 4):     return 8    // 上
+    case ..<( .pi / 4):     return 6    // 右
+    case ..<( 3 * .pi / 4): return 2    // 下
+    default:                return 4    // 左
+    }
+  }
+
+  /// 点哪亮哪：按下方向的楔形点亮、箭头变白，其余熄灭；松开全部复位。
+  private func updateVisual(dir: Int32?) {
+    CATransaction.begin()
+    CATransaction.setAnimationDuration(0.08)
+    for (k, w) in wedges {
+      let on = (k == dir)
+      w.opacity = on ? 1 : 0
+      arrows[k]?.fillColor = (on ? UIColor.white : UIColor(white: 1, alpha: 0.40)).cgColor
+    }
+    CATransaction.commit()
   }
 }
