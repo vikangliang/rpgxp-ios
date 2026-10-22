@@ -638,6 +638,19 @@ else:
     print("binding-mri.cpp: showExc anchor missing")
 PYEOF
 
+# ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
+# 提前 apply：framework 的 bitmap.cpp 段基于 pristine 生成，必须在 646/748 的
+# bitmap 注入之前 apply，否则后者改过的 bitmap.cpp 让 framework hunk 的 context
+# 失配 -> FATAL。646/748 在下方 3a-2/3a-3 注入，锚点在其后再 apply 仍稳。
+if [ -d "$MKXP_SRC/src" ]; then
+  git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/framework-entry.patch" 2>/dev/null \
+   || { echo "WARN: git apply 失败，回退 patch -p1 -f（可能静默丢弃不匹配 hunk）"; \
+        patch -p1 -f --no-backup-if-mismatch -d "$MKXP_SRC" \
+        < "$ROOT/scripts/mkxp-framework/framework-entry.patch" \
+        || { echo "FATAL: framework-entry.patch 应用失败（v2.4.2 源码对不上？）"; exit 1; }; }
+  echo "applied framework-entry.patch"
+fi
+
 # ---------- 3a-2. iOS 横线修复：tainted 区域非法矩形护栏 ----------
 # 设备日志里反复出现 "pixman_region_union_rect: Invalid rectangle passed"，
 # 来源是 Bitmap::addTaintedArea / substractTaintedArea 收到宽高<=0 或越界的
@@ -918,24 +931,7 @@ else:
     print("alstream.cpp: pause/resume anchor missing")
 PYEOF
 
-# ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
-# framework-entry.patch（git diff，LF 行尾）：
-#   1. src/main.cpp: int main() -> extern "C" int mkxp_z_main()
-#      （原符号会与 Flutter App 的 main 冲突，且需按 C 约定被框架层调用）
-#   2. src/input/input.cpp: applyBindingDesc 里重建 rgssKey->scancode 反查表
-#      （带 mutex：RGSS 线程写、UI 线程读）
-# mkxp_framework.cpp 拷入 src/ 后由 CMake 的 SRC 清单编译（mkxp_run/mkxp_key/mkxp_quit）。
 if [ -d "$MKXP_SRC/src" ]; then
-  # 首选严格 git apply（能精确暴露真正的源码不匹配）；若因 hunk 行数写错而失败，
-  # 回退到 patch -p1（按上下文模糊匹配，对计数不敏感），避免手工维护 diff 时计数漂移
-  # 导致整块 "corrupt patch"。两者都失败才真正报错。
-  git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/framework-entry.patch" 2>/dev/null \
-   || { echo "WARN: git apply 失败，回退 patch -p1 -f（可能静默丢弃不匹配 hunk）"; \
-        patch -p1 -f --no-backup-if-mismatch -d "$MKXP_SRC" \
-        < "$ROOT/scripts/mkxp-framework/framework-entry.patch" \
-        || { echo "FATAL: framework-entry.patch 应用失败（v2.4.2 源码对不上？）"; exit 1; }; }
-  echo "applied framework-entry.patch"
-
   # 零死角校验：确认关键补丁 hunk 真的落进源码（避免 patch -f 静默丢弃）。
   # 任何签名缺失 = 对应修复没生效 = 构建直接失败，绝不让“试探包”流到真机。
   # 「rgss: buildAtlas t=」必须在此：patch -p1 -f 回退时 tilemap.cpp hunk 可被静默丢弃
