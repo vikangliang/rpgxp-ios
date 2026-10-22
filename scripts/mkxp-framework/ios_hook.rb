@@ -78,15 +78,28 @@ def __mkxp_time_wrap(cls, mname, label)
 rescue StandardError => e
   $stderr.puts "[map-timing] wrap #{label} failed: #{e.class}"
 end
+def __mkxp_wrap_new(cls, label)
+  return unless cls && cls.respond_to?(:new)
+  return if cls.instance_variable_get(:@__mkxp_new_wrapped)
+  cls.instance_variable_set(:@__mkxp_new_wrapped, true)
+  orig = cls.method(:new)
+  cls.define_singleton_method(:new) do |*a, &b|
+    t = __mkxp_ms
+    r = orig.call(*a, &b)
+    $stderr.puts "[map-timing] #{label} +#{__mkxp_ms - t}ms"
+    r
+  end
+rescue StandardError => e
+  $stderr.puts "[map-timing] wrap-new #{label} failed: #{e.class}"
+end
 def __mkxp_install_map_timing
   return if $__mkxp_timing_done
   $__mkxp_timing_done = true
   return unless $__mkxp_timing
   __mkxp_time_wrap(::Game_Map, :setup, "Game_Map#setup") if defined?(::Game_Map)
   __mkxp_time_wrap(::Spriteset_Map, :initialize, "Spriteset_Map#init") if defined?(::Spriteset_Map)
-  __mkxp_time_wrap(::Tilemap, :initialize, "Tilemap#init") if defined?(::Tilemap)
-  __mkxp_time_wrap(::Tilemap, :tileset=, "Tilemap#tileset=") if defined?(::Tilemap)
-  __mkxp_time_wrap(::Tilemap, :map_data=, "Tilemap#map_data=") if defined?(::Tilemap)
+  __mkxp_wrap_new(::Tilemap, "Tilemap.new") if defined?(::Tilemap)
+  __mkxp_wrap_new(::Sprite_Character, "Sprite_Character.new") if defined?(::Sprite_Character)
   $stderr.puts "[map-timing] installed; next map entry logs per-phase ms"
 rescue StandardError => e
   $stderr.puts "[map-timing] install failed: #{e.class}"
