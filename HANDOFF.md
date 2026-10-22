@@ -2,9 +2,9 @@
 
 > 本文件专门写给「接手继续云编译」的会话/人。AI 记忆**不随仓库走**，所以把接力上下文写在这里。
 
-## 当前状态（2026-10-21，更新于 `3010f5b`）
+## 当前状态（2026-10-22，更新于 `1e944f7`）
 
-> 今天两条线：① spng 视觉回归关停 + tileset 像素安全 pin（✅ 已完成验证）；② **室内→室外 ~10s 卡顿真凶已定位 = Tilemap 图集重建（`Spriteset_Map#init` ~7.4s）**，修复方向明确、待实施。**⚠️ 143ms tileset 解码不是瓶颈，别再追它、别再想做「异步/后台解码 tileset」（已作废）。**
+> 今天两条线：① spng 视觉回归关停 + tileset 像素安全 pin（✅ 已完成验证）；② **室内→室外 ~10s 卡顿：10-21 的「buildAtlas 图集重建」结论已被 10-22 复核推翻（见下方 🔴🔴）——`f15464e` 的 buildAtlas 修复没消掉 7.4s，真凶更可能在 bitmap.cpp 的 autotile 展开 blit**。**⚠️ 143ms tileset 解码不是瓶颈（已作废）。**
 
 ### ⚠️ 2026-10-21 23:29 真机日志判别：7.4s 未消 ≠ 修复无效，是**包里根本没有**
 
@@ -37,7 +37,7 @@
 **下一步**：推上去出下一版包再测。新包日志判据（缺任一 = 白装一轮）：
 `rgss: buildAtlas t=` ＋ 首次 `rgss: atlas-cache MISS` ＋ 重进同图 `rgss: atlas-cache HIT`。
 
-### 🔴 当前主攻：室内→室外 ~10s 卡顿（真凶已定位，待修）
+### 🔴 当前主攻（旧结论，10-21）：室内→室外 ~10s 卡顿 = Tilemap 图集重建 —— ⚠️ 2026-10-22 复核见下方 🔴🔴，此结论已被推翻/需修正
 
 **诊断手段**：`3010f5b` 在 `ios_hook.rb` 加建图阶段计时（lazy 安装、纯日志、`$__mkxp_timing` 开关 + rescue，不影响功能）；首次精灵解析时安装，此后每次进图打 `[map-timing]` 各阶段 ms。
 
@@ -58,6 +58,40 @@
 1. **主推：按 tileset 缓存 GL 图集纹理**——同一套 tileset 的图集解一次留着（在 shState 层按 tileset 键缓存 TexFBO），之后进任何用它的图直接复用 → 回退重进室外从 7.4s → ~0。与像素 pin 一脉相承，但缓存的是 GL 图集而非 CPU 像素。
 2. **先确认再改**：`tilemap.cpp` 的 `buildAtlas` + 地图数据绑定处各加 `+Nms` timing，一版诊断包坐实 7.4s 确在图集重建（而非地图数据处理），再上修复。
 3. 次选：优化巨型 tileset 图集构建本身。
+
+### 🔴🔴 2026-10-22 复判：7.4s 真凶 = bitmap.cpp 的 autotile 展开 blit（f15464e 没压住）
+
+> 本节能直接定位结论，靠的是**源码级追链路**（不是旧日志考古——旧日志判别已踩过"旧包陷阱"，见 memory #17）。
+
+**已确认的事实链**
+- 当前 HEAD = `1e944f7`：它是 `dc93e52` 之上的 ES3 回滚（`79f2c0c`/`1e1397e` 的 nativeBlit=1 已 revert）。
+- `dc93e52` 是 `f15464e` 的后代 → 所以 `f15464e` 的 **buildAtlas 修复**（旧路径 `subRectImageUpload`/glTexSubImage2D 整幅 ~42MB 拷贝 → 改为每车道 `glTexImage2D` + GPU blit 进 atlas FBO，并**禁用 atlas 缓存**）依然存在于 `1e944f7` 的 `framework-entry.patch`（git 校验 dc93e52 的 patch 含 `subRectImageUpload`/`buildAtlas`/`glTexImage2D` 命中）。
+- **但用户 2026-10-22 报告：装 `1e944f7` 进图仍是 ~7.4s**（`Spriteset_Map#init`）。→ `f15464e` 的 buildAtlas 重写**没有消掉** 7.4s。
+
+**根因复判（源码推理 + 留一个待 device 坐实的点）**
+- 旧 §🔴 把 7.4s 归给 `tilemap.cpp` 的 `buildAtlas`（每次进图重建整张 40MB 图集）。`f15464e` 已把它改成 GPU blit，预期 <2s。
+- 既然 `1e944f7` 仍 7.4s，剩余大头**更可能是 `bitmap.cpp` 里 `AutotileExpander.expand` 的那几千次 1:1 `blt`**（宽 autotile 一张就 6144 次），`f15464e` 完全没碰这条路径。
+- **源码铁证（bitmap.cpp）**：`Bitmap(int,int)` 构造里 `clear()` → `addTaintedArea(rect())` 把**新建 dest 整张标脏**。autotile 展开对全新 dest 做 `opacity=255` 的 `blt`，`stretchBlt` 的 FAST 路径守卫是
+  `opacity==255 && (!touchesTaintedArea(destRect) || !m_gpuSeeded)`；对"整张脏 + 从未上传 GPU"的全新 dest = `(!true || !false)` = `true` → **走 FAST 路径**。iOS ES2 下 `GLMeta::blitEnd` 没有 `glBlitFramebuffer` → 走 **shader 回退（每 blit ~15 个 GL 调用）**。6144 次 ×15 = 残余 7.4s。
+- ⚠️ **诚实保留的两种可能**（device 日志未再坐实）：(a) `f15464e` 的新 GPU-blit 路径在 Metal 翻译层仍然慢；(b) 主导开销就是 autotile 展开 blit。**两者修法不同，但 (b) 的修法对 (a) 无害**。
+
+**ES3 原生 blit 已永久封死（别再试）**
+- `79f2c0c`/`1e1397e` 试过 `glBlitFramebuffer` 原生 blit（设 `nativeBlit=1`）——本可让 FAST 路径降到 ~1 GL 调用，但它**破坏 iOS 软呈现**（标题界面卡死 + `0x506` 帧缓冲错误），已回滚。所以根治只能走 **CPU 侧**，不能靠原生 blit。
+
+**拟定修法（CPU 累积 + 末尾单次上传，不碰显示管线、不动游戏）**
+1. `BitmapPrivate` 加 `bool m_gpuSeeded = false`（GPU 纹理已有真实内容；全新 dest 默认 false）。在**图片加载 ctor**（`uploadImage` 之后，~bitmap.cpp:643）和 **pixeldata ctor**（~:667）置 `true`；`Bitmap(int,int)` 全新 dest 保持 `false`。
+2. `stretchBlt` FAST 路径：若 `!p->m_gpuSeeded`，改用 **CPU 累积**——对 dest 惰性 `SDL_Surface`（`allocSurface` 后填透明），源经 `ensureCpuSurface()`（`glReadPixels` 从 `gl.fbo` 下载，复用 `getPixel` 同款机制）拿到像素，用 `SDL_BlitScaled` 拷进 dest，然后 `return`（**延迟 GPU 上传**）。源若拿不到 CPU surface（如 megaSurface）则回落到原 GL blit 并置 `m_gpuSeeded=true` 防止反复重试。
+3. **单次上传钩子**：在 `Bitmap::getGLTypes()`（`const`，`const_cast` 后）和 `Bitmap::bindTex` 里调 `ensureGpuUpload()`——`TEX::uploadImage(gl.width, gl.height, surface->pixels, GL_RGBA)` 把累积的 CPU surface 一次传上 `gl.tex`，释放 surface、置 `m_gpuSeeded=true`、重新 `addTaintedArea(rect())` 整张。autotile 展开结束后 buildAtlas 绑该纹理时即触发这一次上传。
+4. 效果：autotile 展开 = 几千次廉价 CPU 拷贝 + **一次**上传，残余 7.4s 应降到几十 ms；只对"全新、从未上传 GPU 的 dest"生效，UI/精灵 blit（已 seeded 或重叠进脏区）走原 GL 路径 → 预期无视觉回归，但**核心 blit 路径改动，必须真机验证**。
+
+**⚠️ patch 生成硬约束（踩过坑，见 memory #14/#85402296）**
+- `bitmap.cpp` 在 `framework-entry.patch` **之前**会被构建脚本 pre-patch 改过：`3a-2`（tainted 区域非法矩形护栏，动 `addTaintedArea`/`substractTaintedArea`）、`3a-3`（drawText 视口裁剪诊断）。→ 任何新增 `bitmap.cpp` hunk **必须基于 pre-patched 源码**，不能对 pristine 重 `git diff`。
+- 正确流程：以 `dc93e52` 的 `framework-entry.patch` 作底（它本就针对 pre-patched 源码）→ clone 里先跑 `build_mkxp_ios.sh` 里的 `3a-2`+`3a-3` 两段 Python（或直接复刻替换串）→ `git apply dc93e52:scripts/mkxp-framework/framework-entry.patch`（记为 DCE）→ 改代码 → `git diff DCE..MINE -- src/display/bitmap.cpp src/display/bitmap.h` → 把该 hunk **追加**进 `framework-entry.patch`。`bitmap.h` 未被 pre-patch 动过，可用 pristine 上下文。
+- **必须给新代码加一个签名串**（如 `fprintf(stderr,"rgss: cpuBlit fresh-dest fast path\n")` 或独特注释），并加进 `scripts/build_mkxp_ios.sh` 的 9 个签名 FATAL 校验列表（~:939）——否则 hunk 被 `patch -p1 -f` 静默丢弃时会**悄悄出"以为修了其实没修"的包**（memory #14 同款事故）。
+
+**决策（2026-10-22）**
+- 用户暂不强推实现，先把分析落 HANDOFF。当前可用构建 = `1e944f7`（功能正常、无 ES3，但每次进图仍 ~7.4s）。
+- 下次恢复时二选一：① 先发一版诊断包（在 autotile 展开外加 `[map-timing]` 子计时，对比 `buildAtlas t=`）坐实 (a) vs (b)；或 ② 直接按上面约束实现 CPU-blit 修法（它对 (b) 必有效、对 (a) 无害）。
 
 **已完成项（今天上午，✅ 已验证）：**
 
