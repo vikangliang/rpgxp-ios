@@ -150,6 +150,46 @@ def __mkxp_install_tracepoint_profiler
 rescue StandardError => e
   $stderr.puts "[tp] install failed: #{e.class}"
 end
+# ---- autotile 展开探查+缓存（排查室内→室外卡顿：AutotileExpander#expand 数千次 GPU blit）----
+# 游戏脚本加载、TilemapRenderer::AutotileExpander 定义后安装；
+# 记录每次 expand 的签名与耗时，并按"Bitmap 用尺寸 + 其它参数"作稳定 key 缓存返回值，
+# 命中即跳过数千次 GPU blit（首次慢、重进/同 tileset 快）。begin/rescue 兜底，绝不影响游戏。
+def __mkxp_install_autotile_cache
+  return unless defined?(::TilemapRenderer) && ::TilemapRenderer.const_defined?(:AutotileExpander)
+  cls = ::TilemapRenderer::AutotileExpander
+  return if cls.instance_variable_get(:@__mkxp_at_wrapped)
+  orig = (cls.method(:expand) rescue nil)
+  return unless orig
+  cls.instance_variable_set(:@__mkxp_at_wrapped, true)
+  store = {}
+  cls.instance_variable_set(:@__mkxp_at_store, store)
+  cls.define_singleton_method(:expand) do |*a, &b|
+    key = a.map do |x|
+      if x.is_a?(Bitmap)
+        "#{x.width}x#{x.height}"
+      elsif x.is_a?(Array) || x.is_a?(Hash)
+        x.hash.to_s(36)
+      else
+        x.inspect
+      end
+    end.join('|')
+    if store.key?(key)
+      $stderr.puts "[autotile-cache] HIT argc=#{a.size}"
+      store[key]
+    else
+      t = (Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0)
+      r = orig.call(*a, &b)
+      dt = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t) * 1000).to_i rescue -1
+      $stderr.puts "[autotile-cache] MISS +#{dt}ms arity=#{orig.arity} argc=#{a.size} args=[#{a.map(&:class).join(',')}] ret=#{r.class} key=#{key[0,80]}"
+      store[key] = r
+      r
+    end
+  end
+  $stderr.puts "[autotile-cache] installed (TilemapRenderer::AutotileExpander.expand wrapped)"
+rescue StandardError => e
+  $stderr.puts "[autotile-cache] install failed: #{e.class}: #{e.message}"
+end
+
 def __mkxp_install_map_timing
   return if $__mkxp_timing_done
   $__mkxp_timing_done = true
@@ -263,6 +303,7 @@ class << Object
     return if $__mkxp_busy
     $__mkxp_busy = true
     begin
+      __mkxp_install_autotile_cache if defined?(::TilemapRenderer) && ::TilemapRenderer.const_defined?(:AutotileExpander)
       # 包装一律替换 Object 的【实例】方法（顶层 def 的真实落点），
       # 使 main 上下文与类上下文的所有调用都被拦截；此前定义在
       # Object 单例类上的包装只拦截类上下文调用，是覆盖不全的根子。
