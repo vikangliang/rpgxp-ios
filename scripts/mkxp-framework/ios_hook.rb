@@ -167,16 +167,24 @@ def __mkxp_install_autotile_cache
   cls.define_singleton_method(:expand) do |*a, &b|
     key = a.map do |x|
       if x.is_a?(Bitmap)
-        # 尺寸 + 内容指纹：只按尺寸会让【不同内容、同尺寸】的 autotile 误命中（串图）
+        # 尺寸 + 全图步进采样指纹。此前仅 16 个采样点太稀：两个不同 autotile
+        # （同尺寸、底色相近，如草丛/花圃）极易碰撞 -> 误命中 -> 串图，
+        # 表现为"花底部缺失/组合错乱"（实际显示成了另一张展开图）。
+        # 步进 4px + 行间交错覆盖全图，碰撞概率≈0；开销仅在 MISS 时一次，
+        # 相比 expand 本身（数千次 blit、秒级）可忽略。
         w = x.width; h = x.height
         fp = 0
         begin
-          [0, h / 3, h / 2, h - 1].each do |py|
-            [0, w / 3, w / 2, w - 1].each do |px|
-              c = x.get_pixel(px, py)
-              fp = (fp * 31 + c.red.to_i + c.green.to_i * 3
-                    + c.blue.to_i * 7 + c.alpha.to_i * 11) & 0xFFFFFF
+          y = 0
+          while y < h
+            xx = (y / 4) % 4   # 行间交错起点，避免只采固定几列
+            while xx < w
+              c = x.get_pixel(xx, y)
+              fp = (fp * 33 + c.red.to_i * 3 + c.green.to_i * 5 +
+                    c.blue.to_i * 7 + c.alpha.to_i * 13) & 0x3FFFFFFF
+              xx += 4
             end
+            y += 4
           end
         rescue StandardError
           fp = 0
@@ -188,13 +196,21 @@ def __mkxp_install_autotile_cache
         x.inspect
       end
     end.join('|')
-    if store.key?(key)
+    tpl = store[key] if store.key?(key)
+    if tpl.is_a?(Bitmap) && tpl.disposed?
+      # 模板失效（被 GC/淘汰前已 dispose）：丢弃并重展，绝不交出死对象
+      store.delete(key)
+      order.delete(key)
+      tpl = nil
+      $stderr.puts "[autotile-cache] template disposed -> re-expand"
+    end
+    if tpl
       order.delete(key)
       order.push(key)
       $stderr.puts "[autotile-cache] HIT argc=#{a.size}"
       # 交出【副本】：游戏 dispose 的是它持有的那张，缓存模板必须与之解耦，
       # 否则命中时返回已被 dispose 的 bitmap -> RGSSError: disposed bitmap
-      __mkxp_clone_bitmap(store[key])
+      __mkxp_clone_bitmap(tpl)
     else
       t = (Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0)
       r = orig.call(*a, &b)
