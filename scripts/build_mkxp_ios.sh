@@ -1192,6 +1192,31 @@ if old_destroy in s:
     print("patched main.cpp: SDL_DestroyWindow dispatched to iOS main thread (signal=5 exit crash fix)")
 else:
     print("main.cpp: destroy anchor missing")
+
+# --- 3a-1.6c (part 2): SDL_Quit 也必须在主线程（signal=5 退出/切后台闪退二级根因）---
+# 症状：现有修复只把 SDL_DestroyWindow 推主线程，但 SDL_Quit -> SDL_VideoQuit
+#       -> UIKit_SuspendScreenSaver 仍在 engineLoop 后台线程跑 -> UIKit 断言
+#       -> SIGTRAP(5) 杀进程（深灰市跟宠脚本报错后退出/切后台即触发）。
+# 修法：SDL_Quit 用 dispatch_sync 推主线程，与上面的窗口销毁同队列串行，
+#       先销毁窗口再 quit 视频子系统，无双释放。
+old_quit = (
+"        SDL_Quit();\n")
+new_quit = (
+"#if defined(__APPLE__)\n"
+"        /* iOS fix: SDL_Quit -> SDL_VideoQuit -> UIKit_SuspendScreenSaver must\n"
+"         * run on the iOS main thread; the cleanup runs on the engineLoop\n"
+"         * (background) thread, so dispatch it synchronously to the main queue. */\n"
+"        dispatch_sync(dispatch_get_main_queue(), ^{\n"
+"            SDL_Quit();\n"
+"        });\n"
+"#else\n"
+"        SDL_Quit();\n"
+"#endif\n")
+if old_quit in s:
+    s = s.replace(old_quit, new_quit, 1)
+    print("patched main.cpp: SDL_Quit dispatched to iOS main thread (signal=5 fix part 2)")
+else:
+    print("main.cpp: SDL_Quit anchor missing")
 PYEOF
 
   # ---------- 3a-1.6d. 字体查找诊断：iOS 消息框少字定位 ----------
