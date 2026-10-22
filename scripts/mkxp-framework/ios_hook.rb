@@ -92,15 +92,71 @@ def __mkxp_wrap_new(cls, label)
 rescue StandardError => e
   $stderr.puts "[map-timing] wrap-new #{label} failed: #{e.class}"
 end
+# 更狠定位：Spriteset_Map#init 期间开 TracePoint，把内部每个方法调用计时，
+# >500ms 的连调用深度一起打出来——7.3s 藏在哪个方法(Ruby 或 Ruby→C++ 如
+# Tilemap.new/tileset=)直接现形，不依赖那些"在框架里却不执行"的 C++ 计时。
+# 安全阀：只测前 3 次进图；单次事件数上限 200000 防 TracePoint 拖垮；找到
+# >1500ms 的方法后当场关掉 TracePoint（定位到即停，避免无谓开销）。
+$__mkxp_tp_budget = 3
+def __mkxp_install_tracepoint_profiler
+  return unless defined?(::Spriteset_Map)
+  return if ::Spriteset_Map.instance_variable_get(:@__mkxp_tp_done)
+  ::Spriteset_Map.instance_variable_set(:@__mkxp_tp_done, true)
+  im = ::Spriteset_Map.instance_method(:initialize)
+  ::Spriteset_Map.send(:define_method, :initialize) do |*a, &b|
+    if $__mkxp_tp_budget <= 0
+      return im.bind(self).call(*a, &b)  # 预算用完，退回普通路径，零开销
+    end
+    $__mkxp_tp_budget -= 1
+    stack = []
+    ev = 0
+    found = false
+    tp = TracePoint.new(:call, :return) do |t|
+      begin
+        ev += 1
+        if ev > 200000 || found
+          tp.disable
+          next
+        end
+        mid = t.method_id.to_s
+        next if mid.start_with?('__mkxp')
+        if t.event == :call
+          stack.push([mid, __mkxp_ms])
+        else
+          e = stack.pop
+          if e
+            d = __mkxp_ms - e[1]
+            if d > 500
+              $stderr.puts "[tp]#{'  ' * stack.size} #{e[0]} +#{d}ms"
+              found = true if d > 1500  # 定位到即停
+            end
+          end
+        end
+      rescue StandardError
+      end
+    end
+    t0 = __mkxp_ms
+    tp.enable
+    begin
+      r = im.bind(self).call(*a, &b)
+    ensure
+      tp.disable
+      $stderr.puts "[map-timing] Spriteset_Map#init +#{__mkxp_ms - t0}ms (traced, ev=#{ev})"
+    end
+    r
+  end
+rescue StandardError => e
+  $stderr.puts "[tp] install failed: #{e.class}"
+end
 def __mkxp_install_map_timing
   return if $__mkxp_timing_done
   $__mkxp_timing_done = true
   return unless $__mkxp_timing
   __mkxp_time_wrap(::Game_Map, :setup, "Game_Map#setup") if defined?(::Game_Map)
-  __mkxp_time_wrap(::Spriteset_Map, :initialize, "Spriteset_Map#init") if defined?(::Spriteset_Map)
+  __mkxp_install_tracepoint_profiler if defined?(::Spriteset_Map)
   __mkxp_wrap_new(::Tilemap, "Tilemap.new") if defined?(::Tilemap)
   __mkxp_wrap_new(::Sprite_Character, "Sprite_Character.new") if defined?(::Sprite_Character)
-  $stderr.puts "[map-timing] installed; next map entry logs per-phase ms"
+  $stderr.puts "[map-timing] installed; Spriteset_Map#init now TracePoint-profiled"
 rescue StandardError => e
   $stderr.puts "[map-timing] install failed: #{e.class}"
 end
