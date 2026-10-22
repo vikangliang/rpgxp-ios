@@ -1019,8 +1019,12 @@ s += ("\n"
       "}\n\n"
       "void SharedState::atlasCacheStore(const std::string &key, const TEXFBO &tex, int w, int h)\n"
       "{\n"
-      "\tp->atlasCacheGl[key] = tex;\n"
-      "\tp->atlasCacheSize[key] = std::make_pair(w, h);\n"
+      "\t/* mkxp-ios: cache DISABLED. Per-lane buildAtlas is now fast (<2s) on\n"
+      "\t * every entry, so caching is unnecessary; an unbounded cache risks GPU\n"
+      "\t * OOM (30-70 tilesets) and eviction risks use-after-free on live\n"
+      "\t * tilemaps. No-op => fresh atlas per tilemap, freed on release, no\n"
+      "\t * sharing. Lookup always misses -> buildAtlas always runs (fast). */\n"
+      "\t(void)key; (void)tex; (void)w; (void)h;\n"
       "}\n\n"
       "bool SharedState::atlasCacheOwns(TEXFBO &tex) const\n"
       "{\n"
@@ -1063,10 +1067,11 @@ s = s.replace("        updateAutotileInfo();\n        tileset->ensureNonAnimated
               "            fprintf(stderr, \"rgss: atlas-cache MISS key='%s' (%dx%d)\\n\", _key.c_str(), atlas.size.x, atlas.size.y);\n"
               "        }\n"
               "        updateAutotileInfo();\n        tileset->ensureNonAnimated();\n", 1)
-# mkxp-ios: mega-surface tileset -> 单次 glTexImage2D + GPU blit
-# (iOS A13 Metal: glTexSubImage2D 极慢，每调用整块拷贝 ~42MB atlas；改整块上传+GPU blit)
+# mkxp-ios: mega-surface tileset -> 按车道 glTexImage2D + GPU blit
+# (iOS A13 Metal: glTexSubImage2D 极慢，每调用整块拷贝 ~42MB atlas；改每车道≤maxTexSize
+#  新纹理上传+GPU blit；注意绝不能整张 256x38660 上传——超 maxTexSize 会黑)
 old_mega = ("\t\t\telse\n\t\t\t{\n\t\t\t\t/* Clean implementation */\n\t\t\t\tTEX::bind(atlas.gl.tex);\n\n\t\t\t\tfor (size_t i = 0; i < blits.size(); ++i)\n\t\t\t\t{\n\t\t\t\t\tconst TileAtlas::Blit &blitOp = blits[i];\n\n\t\t\t\t\tGLMeta::subRectImageUpload(tsSurf->w, blitOp.src.x, blitOp.src.y,\n\t\t\t\t\t                           blitOp.dst.x, blitOp.dst.y, tsLaneW, blitOp.h, tsSurf, GL_RGBA);\n\t\t\t\t}\n\n\t\t\t\tGLMeta::subRectImageEnd();\n\t\t\t}\n")
-new_mega = ("\t\t\telse\n\t\t\t{\n\t\t\t\t/* iOS (Apple A13, OpenGL ES 2.0 Metal): glTexSubImage2D is\n\t\t\t\t * pathologically slow - the Metal backend has no native sub-image\n\t\t\t\t * update, so every call copies the ENTIRE atlas texture (~42MB) on\n\t\t\t\t * the CPU. ~3 lanes -> buildAtlas stalled ~7.4s on map entry.\n\t\t\t\t * Fix: upload the whole tileset ONCE via glTexImage2D (fast on\n\t\t\t\t * Metal: a fresh texture, no existing-texture copy) into a temp\n\t\t\t\t * TEXFBO, then blit its lanes into the atlas via GPU (blitRectangle). */\n\t\t\t\tTEXFBO tsTex;\n\t\t\t\tTEXFBO::init(tsTex);\n\t\t\t\tTEX::bind(tsTex.tex);\n\t\t\t\tTEX::uploadImage(tsSurf->w, tsSurf->h, tsSurf->pixels, GL_RGBA);\n\n\t\t\t\tGLMeta::blitBegin(atlas.gl);\n\t\t\t\tGLMeta::blitSource(tsTex);\n\n\t\t\t\tfor (size_t i = 0; i < blits.size(); ++i)\n\t\t\t\t{\n\t\t\t\t\tconst TileAtlas::Blit &blitOp = blits[i];\n\t\t\t\t\tGLMeta::blitRectangle(IntRect(blitOp.src.x, blitOp.src.y, tsLaneW, blitOp.h),\n\t\t\t\t\t                      blitOp.dst);\n\t\t\t\t}\n\n\t\t\t\tGLMeta::blitEnd();\n\t\t\t\tTEXFBO::fini(tsTex);\n\t\t\t}\n")
+new_mega = ("\t\t\telse\n\t\t\t{\n\t\t\t\t/* iOS (Apple A13, OpenGL ES 2.0 Metal): glTexSubImage2D is\n\t\t\t\t * pathologically slow - the Metal backend has no native sub-image\n\t\t\t\t * update, so every call copies the ENTIRE atlas texture (~42MB) on\n\t\t\t\t * the CPU. ~3 lanes -> buildAtlas stalled ~7.4s on map entry.\n\t\t\t\t * Fix: upload EACH lane (full-width contiguous rows, height <=\n\t\t\t\t * maxTexSize) via a fresh glTexImage2D into a temp TEXFBO (fast on\n\t\t\t\t * Metal: no existing-texture copy), then GPU-blit it into the atlas.\n\t\t\t\t * Per-lane keeps every texture <= maxTexSize (uploading the whole\n\t\t\t\t * 256x38660 tileset at once exceeds it -> incomplete tex -> BLACK). */\n\t\t\t\tGLMeta::blitBegin(atlas.gl);\n\n\t\t\t\tfor (size_t i = 0; i < blits.size(); ++i)\n\t\t\t\t{\n\t\t\t\t\tconst TileAtlas::Blit &blitOp = blits[i];\n\n\t\t\t\t\tTEXFBO tsTex;\n\t\t\t\t\tTEXFBO::init(tsTex);\n\t\t\t\t\tTEX::bind(tsTex.tex);\n\t\t\t\t\tTEX::uploadImage(tsLaneW, blitOp.h,\n\t\t\t\t\t                 (const uint8_t*)tsSurf->pixels + (size_t)blitOp.src.y * tsSurf->pitch,\n\t\t\t\t\t                 GL_RGBA);\n\n\t\t\t\t\tGLMeta::blitSource(tsTex);\n\t\t\t\t\tGLMeta::blitRectangle(IntRect(0, 0, tsLaneW, blitOp.h), blitOp.dst);\n\t\t\t\t\tTEXFBO::fini(tsTex);\n\t\t\t\t}\n\n\t\t\t\tGLMeta::blitEnd();\n\t\t\t}\n")
 assert old_mega in s, "mega-surface clean-else anchor missing"
 s = s.replace(old_mega, new_mega, 1)
 
