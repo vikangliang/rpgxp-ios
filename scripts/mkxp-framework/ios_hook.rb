@@ -85,6 +85,8 @@ def __mkxp_install_map_timing
   __mkxp_time_wrap(::Game_Map, :setup, "Game_Map#setup") if defined?(::Game_Map)
   __mkxp_time_wrap(::Spriteset_Map, :initialize, "Spriteset_Map#init") if defined?(::Spriteset_Map)
   __mkxp_time_wrap(::Tilemap, :initialize, "Tilemap#init") if defined?(::Tilemap)
+  __mkxp_time_wrap(::Tilemap, :tileset=, "Tilemap#tileset=") if defined?(::Tilemap)
+  __mkxp_time_wrap(::Tilemap, :map_data=, "Tilemap#map_data=") if defined?(::Tilemap)
   $stderr.puts "[map-timing] installed; next map entry logs per-phase ms"
 rescue StandardError => e
   $stderr.puts "[map-timing] install failed: #{e.class}"
@@ -273,6 +275,7 @@ class << Object
         origR = ::Object.instance_method(:pbResolveBitmap)
         resR = $__mkxp_resolve
         ::Object.send(:define_method, :pbResolveBitmap) do |x|
+          __mkxp_install_map_timing
           ret = origR.bind(self).call(x)
           if nil_or_empty?(ret)
             s = x.to_s
