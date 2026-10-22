@@ -925,7 +925,7 @@ PYEOF
 #   2. src/input/input.cpp: applyBindingDesc 里重建 rgssKey->scancode 反查表
 #      （带 mutex：RGSS 线程写、UI 线程读）
 # mkxp_framework.cpp 拷入 src/ 后由 CMake 的 SRC 清单编译（mkxp_run/mkxp_key/mkxp_quit）。
-if [ -f "$MKXP_SRC/.git/config" ]; then
+if [ -d "$MKXP_SRC/src" ]; then
   # 首选严格 git apply（能精确暴露真正的源码不匹配）；若因 hunk 行数写错而失败，
   # 回退到 patch -p1（按上下文模糊匹配，对计数不敏感），避免手工维护 diff 时计数漂移
   # 导致整块 "corrupt patch"。两者都失败才真正报错。
@@ -1424,6 +1424,9 @@ echo "installed ios_embed.mm (Objective-C++, UIKit 窗口提升)"
 brew install xxd >/dev/null 2>&1 || true
 command -v xxd >/dev/null 2>&1 || brew reinstall xxd >/dev/null 2>&1 || true
 MKXP_CMAKE=$ROOT/scripts/mkxp-cmake
+# 干净重建：删掉可能复用的旧 build-ios（过期 .o / CMakeCache），避免补丁进了源码
+# 却没编进二进制（源码级 FATAL 绿但二进制无标记 = 白装一轮 IPA）。
+rm -rf "$MKXP_SRC/build-ios"
 cmake -B "$MKXP_SRC/build-ios" \
   -S "$MKXP_CMAKE" \
   -DCMAKE_SYSTEM_NAME=iOS \
@@ -1438,6 +1441,14 @@ cmake -B "$MKXP_SRC/build-ios" \
   -DRUBY_LIB="$RUBY_LIB"
 cmake --build "$MKXP_SRC/build-ios" -j"$(sysctl -n hw.ncpu)"
 echo "mkxp static lib: $(ls -1 "$MKXP_SRC"/build-ios/libmkxp.a 2>/dev/null || echo NONE)"
+# 二进制级铁闸：源码有补丁不够，必须确认 string literal 真编进 libmkxp.a。
+# 2026-10-22 教训：源码 FATAL 绿、但二进制无 slow decode/buildAtlas 标记 = 补丁没进包。
+for sig in "rgss: slow decode" "rgss: buildAtlas t=" "atlas-cache MISS"; do
+  if ! grep -aqF "$sig" "$MKXP_SRC/build-ios/libmkxp.a"; then
+    echo "FATAL: libmkxp.a 缺少补丁签名: $sig（补丁没编进二进制，禁止出包）"; exit 1
+  fi
+done
+echo "verified: framework patches compiled into libmkxp.a"
 
 # ---------- 5. 合并为静态 framework ----------
 echo "== package MKXP.framework =="
