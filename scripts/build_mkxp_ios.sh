@@ -367,9 +367,11 @@ fi
 #     （pbBGMStop + 视口压暗 51 帧 = “BGM 重启 + 画面闪一下”），mkxp 下时长算不准。
 # 钩子在游戏脚本执行【前】装好，经 method_added 在方法定义完成时即时生效。
 python3 - "$MKXP_SRC/binding/binding-mri.cpp" "$ROOT/scripts/mkxp-framework/ios_hook.rb" <<'PYEOF'
-import sys
+import sys, os
 p = sys.argv[1]
 ruby = open(sys.argv[2], encoding="utf-8").read()
+_sha = os.environ.get('GITHUB_SHA', 'local')[:10]
+ruby = '$stderr.puts "[mkxp-ios] BUILD=' + _sha + ' (atlas per-lane buildAtlas fix)"\n' + ruby
 s = open(p, encoding='utf-8').read()
 anchor = "    while (true) {\n        for (long i = 0; i < scriptCount; ++i) {"
 shim = (
