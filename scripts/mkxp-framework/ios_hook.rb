@@ -120,14 +120,16 @@ def __mkxp_install_tracepoint_profiler
         end
         mid = t.method_id.to_s
         next if mid.start_with?('__mkxp')
+        full = "#{t.defined_class}##{mid}"
         if t.event == :call
-          stack.push([mid, __mkxp_ms])
+          stack.push([full, __mkxp_ms])
         else
           e = stack.pop
           if e
             d = __mkxp_ms - e[1]
             if d > 500
-              $stderr.puts "[tp]#{'  ' * stack.size} #{e[0]} +#{d}ms"
+              chain = stack.map { |m| m[0] }.join(' > ')
+              $stderr.puts "[tp] #{e[0]} +#{d}ms  <= #{chain}"
               found = true if d > 1500  # 定位到即停
             end
           end
