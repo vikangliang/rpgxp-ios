@@ -358,6 +358,15 @@ class << Object
     return if $__mkxp_busy
     $__mkxp_busy = true
     begin
+      # 根治（通用）：每个方法定义完成即强制 public。覆盖 Module#private no-op
+      # 中和未生效的情况（如 Following Pokemon EX 的 has_follower）。Ruby 3.x 严禁
+      # "私有方法+显式接收者"调用 -> NoMethodError -> EventScriptError。强制 public
+      # 后显式接收者调用合法，且不改变任何游戏逻辑（无接收者调用与 send 本就不受
+      # 可见性限制；private 仅是访问控制）。一次性的加载期开销，可忽略。
+      begin
+        self.send(:public, m)
+      rescue StandardError
+      end
       __mkxp_install_autotile_cache if defined?(::TilemapRenderer) && ::TilemapRenderer.const_defined?(:AutotileExpander)
       # 包装一律替换 Object 的【实例】方法（顶层 def 的真实落点），
       # 使 main 上下文与类上下文的所有调用都被拦截；此前定义在
@@ -507,6 +516,13 @@ class << Object
             origP.bind(self).call(bitmap, textpos)
           end
         end
+      elsif m == :has_follower
+        # Following Pokemon EX 跟宠插件用显式接收者调 $game_player.has_follower，
+        # 该方法在插件里是 private；Module#private no-op 中和（8-30 行）竟未覆盖此
+        # 定义（真机日志证实 has_follower 仍 private，且原 public 修复只挂诊断开关下的
+        # 文本包装、生产默认关从不跑）。故改在方法定义完成时显式改 public —— 与
+        # calculate_entry_hazard_damage 同机制，生产构建即生效，不依赖诊断开关。
+        __mkxp_public_has_follower
       elsif m == :calculate_entry_hazard_damage
         # Battle::AI 私有方法被显式接收者调用（Gen 9 Pack + Deluxe Battle Kit 冲突）。
         # 与 Game_Player#has_follower 同根：私有方法+显式接收者 -> Ruby 3.3 NoMethodError。
