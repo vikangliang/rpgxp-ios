@@ -2825,19 +2825,6 @@ index 4b43123..dbfa41d 100644
 +     * upload the whole thing once on first GL use, instead of issuing
 +     * thousands of GPU draw calls (Essentials AutotileExpander does
 +     * 48*frames*4 blits per tileset -> seconds on Metal-GL). */
-+    SDL_Surface *ensureCpuSurface()
-+    {
-+        if (megaSurface) return megaSurface;
-+        if (surface) return surface;
-+        if (animation.enabled) return 0;
-+        allocSurface();
-+        FBO::bind(gl.fbo);
-+        glState.viewport.pushSet(IntRect(0, 0, gl.width, gl.height));
-+        gl.ReadPixels(0, 0, gl.width, gl.height, GL_RGBA, GL_UNSIGNED_BYTE, surface->pixels);
-+        glState.viewport.pop();
-+        return surface;
-+    }
-+
 +    void flushCpuToGL()
 +    {
 +        if (!cpuDirty || !surface) return;
@@ -2859,7 +2846,7 @@ index 4b43123..dbfa41d 100644
 +            allocSurface();
 +            SDL_FillRect(surface, 0, 0);   // 新建位图初始透明
 +        }
-+        SDL_Surface *srcSurf = const_cast<Bitmap&>(source).p->ensureCpuSurface();
++        SDL_Surface *srcSurf = const_cast<Bitmap&>(source).ensureCpuSurface();
 +        if (!srcSurf) return false;
 +        SDL_Rect sr = { (Sint16)sourceRect.x, (Sint16)sourceRect.y, (Uint16)sourceRect.w, (Uint16)sourceRect.h };
 +        SDL_Rect dr = { (Sint16)destRect.x, (Sint16)destRect.y, (Uint16)destRect.w, (Uint16)destRect.h };
@@ -4769,6 +4756,19 @@ index 4b43123..dbfa41d 100644
 +    return p->megaSurface;
 +}
 +
++SDL_Surface *Bitmap::ensureCpuSurface()
++{
++    if (p->megaSurface) return p->megaSurface;
++    if (p->surface) return p->surface;
++    if (p->animation.enabled) return 0;
++    p->allocSurface();
++    FBO::bind(p->gl.fbo);
++    glState.viewport.pushSet(IntRect(0, 0, width(), height()));
++    gl.ReadPixels(0, 0, width(), height(), GL_RGBA, GL_UNSIGNED_BYTE, p->surface->pixels);
++    glState.viewport.pop();
++    return p->surface;
++}
++
 +void Bitmap::ensureNonMega() const
 +{
 +    if (isDisposed())
@@ -5502,6 +5502,18 @@ index 4779221..d7e0394 100644
 +#endif
    SDL_GL_SetSwapInterval(vsync ? 1 : 0);
 +  fprintf(stderr, "[mkxp] swapInterval=%d\n", vsync ? 1 : 0);
- 
+
    // GLDebugLogger dLogger;
    return glCtx;
+
+diff --git a/src/display/bitmap.h b/src/display/bitmap.h
+--- a/src/display/bitmap.h
++++ b/src/display/bitmap.h
+@@ -118,6 +118,7 @@ class Bitmap : public Disposable
+ 	/* <internal> */
+ 	TEXFBO &getGLTypes() const;
+     SDL_Surface *surface() const;
+ 	SDL_Surface *megaSurface() const;
++	SDL_Surface *ensureCpuSurface();
+ 	void ensureNonMega() const;
+     void ensureNonAnimated() const;
