@@ -1443,7 +1443,7 @@ cmake --build "$MKXP_SRC/build-ios" -j"$(sysctl -n hw.ncpu)"
 echo "mkxp static lib: $(ls -1 "$MKXP_SRC"/build-ios/libmkxp.a 2>/dev/null || echo NONE)"
 # 二进制级铁闸：源码有补丁不够，必须确认 string literal 真编进 libmkxp.a。
 # 2026-10-22 教训：源码 FATAL 绿、但二进制无 slow decode/buildAtlas 标记 = 补丁没进包。
-for sig in "rgss: slow decode" "rgss: buildAtlas t=" "atlas-cache MISS"; do
+for sig in "rgss: slow decode" "rgss: buildAtlas t=" "atlas-cache MISS" "rgss: Tilemap.ctor t=" "rgss: Tilemap.setMapData t="; do
   if ! grep -aqF "$sig" "$MKXP_SRC/build-ios/libmkxp.a"; then
     echo "FATAL: libmkxp.a 缺少补丁签名: $sig（补丁没编进二进制，禁止出包）"; exit 1
   fi

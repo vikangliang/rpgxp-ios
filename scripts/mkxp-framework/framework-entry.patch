@@ -766,7 +766,7 @@ index 4b43123..ad5d535 100644
      {
          /* Mega surface */
 diff --git a/src/display/tilemap.cpp b/src/display/tilemap.cpp
-index 475fdea..0396fb3 100644
+index 475fdea..2ecd9d2 100644
 --- a/src/display/tilemap.cpp
 +++ b/src/display/tilemap.cpp
 @@ -47,6 +47,8 @@
@@ -795,6 +795,46 @@ index 475fdea..0396fb3 100644
  	}
  
  	int samplePriority(int tileInd)
+@@ -1203,8 +1208,10 @@ Bitmap *Tilemap::Autotiles::get(int i) const
+ 
+ Tilemap::Tilemap(Viewport *viewport)
+ {
++	uint32_t _tctor = SDL_GetTicks();
+ 	p = new TilemapPrivate(viewport);
+ 	atProxy.p = p;
++	fprintf(stderr, "rgss: Tilemap.ctor t=%ums\n", SDL_GetTicks() - _tctor);
+ }
+ 
+ Tilemap::~Tilemap()
+@@ -1253,6 +1260,7 @@ DEF_ATTR_SIMPLE(Tilemap, Tone,      Tone&,  *p->tone)
+ 
+ void Tilemap::setTileset(Bitmap *value)
+ {
++	uint32_t _tts = SDL_GetTicks();
+ 	guardDisposed();
+ 
+ 	if (p->tileset == value)
+@@ -1269,10 +1277,12 @@ void Tilemap::setTileset(Bitmap *value)
+ 	        (&TilemapPrivate::invalidateAtlasSize, p);
+ 
+ 	p->updateAtlasInfo();
++	fprintf(stderr, "rgss: Tilemap.setTileset t=%ums\n", SDL_GetTicks() - _tts);
+ }
+ 
+ void Tilemap::setMapData(Table *value)
+ {
++	uint32_t _tmd = SDL_GetTicks();
+ 	guardDisposed();
+ 
+ 	if (p->mapData == value)
+@@ -1287,6 +1297,7 @@ void Tilemap::setMapData(Table *value)
+ 	p->mapDataCon.disconnect();
+ 	p->mapDataCon = value->modified.connect
+ 	        (&TilemapPrivate::invalidateBuffers, p);
++	fprintf(stderr, "rgss: Tilemap.setMapData t=%ums\n", SDL_GetTicks() - _tmd);
+ }
+ 
+ void Tilemap::setFlashData(Table *value)
 diff --git a/src/eventthread.cpp b/src/eventthread.cpp
 index 355b698..56ea0fc 100644
 --- a/src/eventthread.cpp
