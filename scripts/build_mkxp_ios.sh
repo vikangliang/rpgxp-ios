@@ -1484,6 +1484,15 @@ while IFS= read -r f; do
 done < <(find "$VCPKG_INSTALL/lib" -name '*.a' ! -name 'libSDL2main.a' | sort)
 
 libtool -static -o "$FW_DIR/MKXP" "${CORE_LIBS[@]}"
+# 二进制铁闸(框架合并后)：App -force_load 的是这个 MKXP 归档。若 libtool -static
+# 合并丢了某些 .o，libmkxp.a 级铁闸查不出来（bitmap.cpp 生效但 tilemap.cpp 计时
+# 从来不打的疑似根因）。这里查最终框架归档，缺签名直接 FATAL，逼出合并问题。
+for sig in "rgss: slow decode" "rgss: buildAtlas t=" "rgss: Tilemap.ctor t=" "atlas-cache MISS"; do
+  if ! grep -aqF "$sig" "$FW_DIR/MKXP"; then
+    echo "FATAL: 合并后 MKXP 框架缺少签名: $sig（libtool -static 合并疑似丢 .o）"; exit 1
+  fi
+done
+echo "verified: framework MKXP archive contains all patch signatures"
 mkdir -p "$FW_DIR/Libs"
 for a in "${DEP_LIBS[@]}"; do cp -f "$a" "$FW_DIR/Libs/$(basename "$a")"; done
 echo "framework core: $(ls -l "$FW_DIR/MKXP" | awk '{print $5}') bytes; deps: ${#DEP_LIBS[@]} 个 .a 进 Libs/"
