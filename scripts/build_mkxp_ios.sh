@@ -1148,10 +1148,14 @@ old_destroy = (
 "        SDL_DestroyWindow(rtData->window);\n")
 new_destroy = (
 "#if defined(__APPLE__)\n"
-"        /* iOS fix (2026-10-20): SDL_DestroyWindow -> UIKit_HideWindow must run\n"
+"        /* iOS fix (2026-10-20/23): SDL_DestroyWindow -> UIKit_HideWindow must run\n"
 "         * on the iOS main thread; otherwise UIKit asserts -> SIGTRAP(5) and\n"
 "         * the process is killed (backtrace: __thread_proxy -> SDL_DestroyWindow\n"
-"         * -> UIKit_HideWindow). Dispatch the destroy on the main queue. */\n"
+"         * -> UIKit_HideWindow). Dispatch the destroy on the main queue.\n"
+"         * 2026-10-23: 真正的断言根因是 SDL_uikitviewcontroller 启动时 appearance\n"
+"         * transition 未配平，exit 时 setHidden:YES 触发断言（前台/后台都触发）。\n"
+"         * ios_embed.mm 的 mkxp_uiwinSetHidden 钩子已直接忽略所有 setHidden:YES，\n"
+"         * 故此处只需保证销毁在主线程，无需额外跨文件符号。 */\n"
 "        __block SDL_Window *winToDestroy = rtData->window;\n"
 "        dispatch_async(dispatch_get_main_queue(), ^{\n"
 "            if (winToDestroy) SDL_DestroyWindow(winToDestroy);\n"

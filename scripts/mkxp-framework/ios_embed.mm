@@ -451,13 +451,20 @@ static void mkxp_onAppLifecycle(NSNotificationName name) {
     }
 }
 
-/* UIWindow setHidden 后台保护：引擎清理期在后台调 SDL_DestroyWindow ->
+/* UIWindow setHidden 保护：引擎清理期调 SDL_DestroyWindow ->
  * UIKit_HideWindow -> [UIWindow setHidden:YES]，iOS 的 FrontBoardServices 直接
- * assert（SIGTRAP，2026-10-18 日志 signal=5 实锤）。后台时忽略藏窗请求即可。 */
+ * assert（SIGTRAP，2026-10-18 日志 signal=5 实锤）。SDL_uikitviewcontroller 在
+ * 启动时 appearance transition 未配平，exit 时 setHidden:YES 触发断言（前台/后台
+ * 退出都会触发）。mkxp 的 SDL 窗口只在启动 show(setHidden:NO)、退出 hide
+ * (setHidden:YES)，运行期不会 hide，故直接忽略所有 setHidden:YES 即可避开断言，
+ * show 不受影响（显示正常）。 */
 static void (*g_origUIWinSetHidden)(id, SEL, BOOL);
 static void mkxp_uiwinSetHidden(id self, SEL _cmd, BOOL hidden)
 {
-    if (hidden && g_appBackgrounded) return;
+    if (hidden) {
+        fprintf(stderr, "[ios-embed] setHidden:YES skipped (appBg=%d)\n", (int)g_appBackgrounded);
+        return;
+    }
     g_origUIWinSetHidden(self, _cmd, hidden);
 }
 
