@@ -392,7 +392,7 @@ diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
 index 4b43123..dbfa41d 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
-@@ -1,2138 +1,2540 @@
+@@ -1,2138 +1,2563 @@
 -/*
 - ** bitmap.cpp
 - **
@@ -3711,6 +3711,24 @@ index 4b43123..dbfa41d 100644
 +    // Don't need this, right? This function is fine with megasurfaces it seems
 +    //GUARD_MEGA;
 +    
++    /* ---- 光标冻结全方位诊断（2026-10-24，诊断完可整段删）----
++     * 一次埋满：入口状态 + 每条路径 + GL 错误，配合 Ruby 侧 blt 前后像素，
++     * 可一锤定音区分「按键/RGSS/路径/像素/上屏」哪一层出问题。
++     * 限频（前 600 次）+ 只 fprintf，不做 ReadPixels（避免干扰被测路径）。 */
++    static int bltDiagN = 0;
++    bool bltDiag = (bltDiagN++ < 600);
++    if (bltDiag) {
++        fprintf(stderr, "[blt-diag] cc IN n=%d dst=%dx%d#%p dstRect=(%d,%d,%d,%d) "
++                "srcRect=(%d,%d,%d,%d) op=%d cpuPend=%d srcMega=%d srcCpu=%d dstCpu=%d\n",
++                bltDiagN, width(), height(), (void*)this,
++                destRect.x, destRect.y, destRect.w, destRect.h,
++                sourceRect.x, sourceRect.y, sourceRect.w, sourceRect.h,
++                opacity, (int)p->cpuPending,
++                source.megaSurface() ? 1 : 0,
++                source.p->surface ? 1 : 0,
++                p->surface ? 1 : 0);
++    }
++    
 +    if (source.isDisposed())
 +        return;
 +    
@@ -3728,6 +3746,7 @@ index 4b43123..dbfa41d 100644
 +        if (opacity == 255 && !source.isDisposed() && p->cpuBlitToPending(destRect, source, sourceRect))
 +        {
 +            p->addTaintedArea(destRect);
++            if (bltDiag) fprintf(stderr, "[blt-diag] cc PATH=A(cpuPending/CPU-blit) n=%d\n", bltDiagN);
 +            return;
 +        }
 +        p->endCpuPending();   // 先 flush CPU 累积，再走 GPU 路径
@@ -3764,6 +3783,7 @@ index 4b43123..dbfa41d 100644
 +        p->addTaintedArea(destRect);
 +        p->onModified();
 +        
++        if (bltDiag) fprintf(stderr, "[blt-diag] cc PATH=B(subImageFix/GPU-shader) n=%d glErr=0x%x\n", bltDiagN, glGetError());
 +        return;
 +    }
 +    else if (srcSurf)
@@ -3810,6 +3830,7 @@ index 4b43123..dbfa41d 100644
 +        SDL_FreeSurface(blitTemp);
 +        
 +        p->onModified();
++        if (bltDiag) fprintf(stderr, "[blt-diag] cc PATH=C(uploadSubImage) n=%d glErr=0x%x\n", bltDiagN, glGetError());
 +        return;
 +    }
 +    
@@ -3820,6 +3841,7 @@ index 4b43123..dbfa41d 100644
 +        GLMeta::blitSource(source.getGLTypes());
 +        GLMeta::blitRectangle(sourceRect, destRect);
 +        GLMeta::blitEnd();
++        if (bltDiag) fprintf(stderr, "[blt-diag] cc PATH=D(fastBlit) n=%d glErr=0x%x\n", bltDiagN, glGetError());
 +    }
 +    else
 +    {
@@ -3855,6 +3877,7 @@ index 4b43123..dbfa41d 100644
 +        p->blitQuad(quad);
 +        
 +        p->popViewport();
++        if (bltDiag) fprintf(stderr, "[blt-diag] cc PATH=E(fragment/BltShader) n=%d glErr=0x%x\n", bltDiagN, glGetError());
 +    }
 +    
 +    p->addTaintedArea(destRect);

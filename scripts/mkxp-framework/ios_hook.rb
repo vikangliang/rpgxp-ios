@@ -641,6 +641,174 @@ end
 __mkxp_wrap_text_method(:draw_text)
 __mkxp_wrap_text_method(:draw_text_ex)
 
+# ============================================================================
+# 光标冻结【全方位】诊断（2026-10-24）——一次埋满，杜绝反复埋点
+#   层1 输入 : [mkxp-key]            引擎已有（按键是否进引擎）
+#   层2 RGSS : [cur-diag]            refresh/draw_cursor 之后采样：index/cursor_rect/
+#                                    contents/spriteBmp/match/sprite 位置/arrowPx
+#   层3 像素 : [blt-diag] rb         blt 调用【前后各一次】目标像素 -> 画没画进去，一锤定音
+#   层4 路径 : [blt-diag] cc         C++ stretchBlt 走 A/B/C/D/E 哪条 + GL 错误码
+#   层5 上屏 : [spr-diag]            Sprite↔bitmap 绑定 + visible/x/y/z/ox/oy/viewport
+# 全部限频 + begin/rescue，绝不影响主流程；诊断完把 $__mkxp_cdiag 改 false 即零开销。
+# ============================================================================
+$__mkxp_cdiag      = true
+$__mkxp_cd_blt_n   = 0
+$__mkxp_cd_blt_max = 900     # blt 像素采样上限
+$__mkxp_cd_win_n   = 0
+$__mkxp_cd_win_max = 700     # 窗口/sprite 日志上限
+
+def __mkxp_cd_px(bm, x, y)
+  return "nil" unless bm.is_a?(::Bitmap)
+  return "disp" if bm.disposed?
+  x = x.to_i; y = y.to_i
+  return "oob" if x < 0 || y < 0 || x >= bm.width || y >= bm.height
+  c = bm.get_pixel(x, y)
+  "(%d,%d,%d,%d)" % [c.red.to_i, c.green.to_i, c.blue.to_i, c.alpha.to_i]
+rescue StandardError => e
+  "err:#{e.class}"
+end
+
+# 找到 window 里那个显示 contents 的 Sprite（上屏层）
+def __mkxp_cd_sprite(win)
+  cands = []
+  (win.instance_variables rescue []).each do |iv|
+    v = (win.instance_variable_get(iv) rescue nil)
+    cands << v if v.is_a?(::Sprite)
+    v.each { |e| cands << e if e.is_a?(::Sprite) } if v.is_a?(::Array)
+    v.each_value { |e| cands << e if e.is_a?(::Sprite) } if v.is_a?(::Hash)
+  end
+  cands.each { |s| return s if (s.bitmap rescue nil) }
+  nil
+rescue StandardError
+  nil
+end
+
+# 包装 Window 子类的方法：在原方法【返回之后】打印，确保 draw_cursor 已画完
+def __mkxp_cd_wrap_window_method(cls, mname)
+  return unless $__mkxp_cdiag
+  key = :"@__mkxp_cd_wrap_#{mname}"
+  return if cls.instance_variable_get(key)
+  cls.instance_variable_set(key, true)
+  orig = cls.instance_method(mname)
+  cls.send(:define_method, mname) do |*a, &b|
+    r = orig.bind(self).call(*a, &b)
+    begin
+      if $__mkxp_cd_win_n < $__mkxp_cd_win_max
+        $__mkxp_cd_win_n += 1
+        ct  = (self.contents rescue nil)
+        sp  = __mkxp_cd_sprite(self)
+        bmp = (sp.bitmap rescue nil)
+        match = (!ct.nil? && !bmp.nil? && ct.__id__ == bmp.__id__)
+        cr = (self.cursor_rect rescue nil)
+        px = "n/a"
+        px = __mkxp_cd_px(ct, (cr.x rescue 0) + 2, (cr.y rescue 0) + 6) if cr && ct
+        $stderr.puts "[cur-diag] #{mname} #{self.class} n=#{$__mkxp_cd_win_n} " \
+                     "index=#{(self.index rescue '?')} item_max=#{(self.item_max rescue '?')} " \
+                     "vis=#{(self.visible rescue '?')} active=#{(self.active rescue '?')} " \
+                     "oy=#{(self.oy rescue '?')} top_row=#{(self.top_row rescue '?')} " \
+                     "cursor=(#{(cr.x rescue '?')},#{(cr.y rescue '?')},#{(cr.width rescue '?')},#{(cr.height rescue '?')}) " \
+                     "contents=#{(ct.width rescue '?')}x#{(ct.height rescue '?')}##{(ct.__id__ rescue -1)} " \
+                     "spriteBmp=#{(bmp.__id__ rescue -1)} match=#{match} " \
+                     "sprVis=#{(sp.visible rescue '?')} sprXY=#{(sp.x rescue '?')},#{(sp.y rescue '?')} " \
+                     "sprZ=#{(sp.z rescue '?')} sprOy=#{(sp.oy rescue '?')} arrowPx=#{px}"
+      end
+    rescue StandardError
+    end
+    r
+  end
+rescue StandardError
+end
+
+def __mkxp_install_cursor_diag
+  return unless $__mkxp_cdiag
+  return unless defined?(::Bitmap)
+
+  # ---- 层3：Bitmap#blt / stretch_blt，调用前后各采一次目标像素 ----
+  unless ::Bitmap.instance_variable_get(:@__mkxp_cd_blt)
+    ::Bitmap.instance_variable_set(:@__mkxp_cd_blt, true)
+    [:blt, :stretch_blt].each do |mname|
+      next unless ::Bitmap.method_defined?(mname)
+      orig = ::Bitmap.instance_method(mname)
+      ::Bitmap.send(:define_method, mname) do |*a, &b|
+        n = nil; dx = 0; dy = 0; op = nil; srcid = -1; before = nil; small = false
+        begin
+          if $__mkxp_cd_blt_n < $__mkxp_cd_blt_max
+            if mname == :blt
+              dx = (a[0].to_i rescue 0); dy = (a[1].to_i rescue 0)
+              src = a[2]; op = (a[4] || 255)
+            else
+              dr = a[0]
+              dx = ((dr.x rescue 0).to_i); dy = ((dr.y rescue 0).to_i)
+              src = a[1]; op = (a[3] || 255)
+            end
+            srcid = (src.__id__ rescue -1)
+            small = (self.width <= 700 && self.height <= 700)
+            before = __mkxp_cd_px(self, dx + 2, dy + 6) if small
+            n = ($__mkxp_cd_blt_n += 1)
+          end
+        rescue StandardError
+        end
+        r = orig.bind(self).call(*a, &b)
+        begin
+          if n && small
+            after = __mkxp_cd_px(self, dx + 2, dy + 6)
+            $stderr.puts "[blt-diag] rb n=#{n} m=#{mname} dst=#{self.width}x#{self.height}##{self.__id__} " \
+                         "src=#{srcid} op=#{op} at=(#{dx},#{dy}) before=#{before} after=#{after} chg=#{before != after}"
+          end
+        rescue StandardError
+        end
+        r
+      end
+    end
+  end
+
+  # ---- 层2：所有 Window 子类的 refresh / draw_cursor（钩子会被子类继承）----
+  if defined?(::Window) && !::Window.instance_variable_get(:@__mkxp_cd_hook)
+    ::Window.instance_variable_set(:@__mkxp_cd_hook, true)
+    begin
+      ::Window.singleton_class.send(:define_method, :method_added) do |m|
+        begin
+          if m == :refresh || m == :draw_cursor || m == :drawCursor
+            __mkxp_cd_wrap_window_method(self, m)
+          end
+        rescue StandardError
+        end
+      end
+    rescue StandardError => e
+      $stderr.puts "[cur-diag] Window.method_added hook failed: #{e.class}"
+    end
+  end
+
+  # ---- 层5：Sprite#bitmap=（上屏绑定）----
+  if defined?(::Sprite) && !::Sprite.instance_variable_get(:@__mkxp_cd_spr)
+    ::Sprite.instance_variable_set(:@__mkxp_cd_spr, true)
+    begin
+      obm = ::Sprite.instance_method(:bitmap=)
+      ::Sprite.send(:define_method, :bitmap=) do |bm|
+        begin
+          if $__mkxp_cd_win_n < $__mkxp_cd_win_max
+            $__mkxp_cd_win_n += 1
+            $stderr.puts "[spr-diag] Sprite##{self.__id__} bitmap=##{(bm.__id__ rescue -1)} " \
+                         "vis=#{(self.visible rescue '?')} xy=#{(self.x rescue '?')},#{(self.y rescue '?')} " \
+                         "z=#{(self.z rescue '?')} oxy=#{(self.ox rescue '?')},#{(self.oy rescue '?')} " \
+                         "vp=#{(self.viewport.__id__ rescue 'nil')}"
+          end
+        rescue StandardError
+        end
+        obm.bind(self).call(bm)
+      end
+    rescue StandardError => e
+      $stderr.puts "[spr-diag] bitmap= wrap failed: #{e.class}"
+    end
+  end
+
+  $stderr.puts "[cdiag] installed: blt-pixel(before/after) + window(refresh/draw_cursor) + sprite-bind"
+rescue StandardError => e
+  $stderr.puts "[cdiag] install failed: #{e.class}: #{e.message}"
+end
+
+__mkxp_install_cursor_diag
+
 class << Kernel
   def method_added(m)
     begin; Kernel.send(:module_function, m); rescue StandardError; end

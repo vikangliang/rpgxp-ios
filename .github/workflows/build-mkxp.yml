@@ -32,6 +32,17 @@ jobs:
           # 不用 restore-keys：脚本变更（如 ASFLAGS 修复）必须逼 Ruby 重建，
           # 否则旧产物里按宿主编成的 macOS 架构对象会污染最终链接。
 
+      # vcpkg 无 SDL2_sound 端口，脚本每次都重新 git clone + cmake 交叉编译。
+      # 2026-10-23 run 304：clone 被 runner 网络抖动掐断(curl 56 Recv failure)，
+      # 配合脚本 set -euo pipefail 直接 exit 128 -> 整条构建红（代码本身无问题）。
+      # 缓存产物后脚本第 101 行 [ ! -f libSDL2_sound.a ] 直接跳过 clone+编译，
+      # 既省时间又消除这个网络单点。key 跟脚本哈希走，脚本改了会自动重建。
+      - name: Cache cross-built SDL2_sound
+        uses: actions/cache@v4
+        with:
+          path: deps/sdl2-sound-ios
+          key: sdlsound-ios-${{ hashFiles('scripts/build_mkxp_ios.sh') }}
+
       - name: Show toolchain
         run: |
           xcodebuild -version
