@@ -862,3 +862,37 @@ def __mkxp_install_lbc_diag
     $stderr.puts "[mkxp-lbc] install failed: #{e.class}: #{e.message}"
   end
 end
+
+# ---- [Bug2] 室外横线取证：检测 self-blit（源=目标的 GPU feedback loop）----
+# scene_dump(512x384 渲染层)证实横线就在 game FBO 里；特征"中午(tone≈0)不出现、
+# 早晚出现"指向随时间变化的 tint/效果路径。GPU 上 src==dst 的 blit 属 feedback
+# loop，Metal-GL 下结果未定义，典型表现正是局部行错乱(横线)。此处只检测+限频
+# 日志(<=30)，不改变任何绘制行为；equal? 判断每帧几次调用可忽略。
+unless defined?($__mkxp_selfblit)
+  $__mkxp_selfblit = true
+  begin
+    if defined?(::Bitmap)
+      { blit: 2, stretch_blt: 1 }.each do |mname, src_idx|
+        next unless ::Bitmap.method_defined?(mname)
+        orig = ::Bitmap.instance_method(mname)
+        ::Bitmap.send(:define_method, mname) do |*a, &b|
+          src = a[src_idx]
+          if src.is_a?(Bitmap) && src.equal?(self) && ($__mkxp_selfblit_n ||= 0) < 30
+            $__mkxp_selfblit_n = ($__mkxp_selfblit_n || 0) + 1
+            desc = a.map { |v|
+              if v.is_a?(Rect) then "[#{v.x},#{v.y},#{v.width},#{v.height}]"
+              elsif v.is_a?(Bitmap) then 'Bitmap'
+              else v.inspect end
+            }.join(',')
+            fc = (Graphics.frame_count rescue '?')
+            $stderr.puts "[mkxp-blit] SELF-BLIT #{mname} bmp=#{width}x#{height} args=#{desc} frame=#{fc}"
+          end
+          orig.bind(self).call(*a, &b)
+        end
+        $stderr.puts "[mkxp-blit] self-blit probe installed: #{mname}"
+      end
+    end
+  rescue StandardError => e
+    $stderr.puts "[mkxp-blit] install failed: #{e.class}: #{e.message}"
+  end
+end
