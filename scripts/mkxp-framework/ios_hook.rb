@@ -795,3 +795,45 @@ unless defined?($__mkxp_fontfix) && $__mkxp_fontfix
     $stderr.puts "[mkxp-fontfix] install failed: #{e.class}: #{e.message}"
   end
 end
+
+# ---- [Bug1] 二次取证：是"上游排版漏字"还是"draw_text 层丢字" ----
+# 已确认 drawText 在 subImageFix=1 走 GPU blitRectangle(自动裁剪, 不整字丢),
+# 故少字不在上传层。本段比较 getLineBrokenChunks 的【输入文本字符数】与
+# 【输出 ret 中各 chunk 字符数之和】：
+#   - 若 out < in -> 上游切片漏字(打印丢失的 codepoint), 根因在 Ruby 排版;
+#   - 若相等   -> 漏字在逐字 draw_text/GPU 层(需另查重叠/裁剪)。
+# 只在出现差异时限频打印, 不影响性能; 不改任何渲染/排版行为。
+unless defined?($__mkxp_lbc)
+  $__mkxp_lbc = true
+  begin
+    if Object.respond_to?(:method_defined?) &&
+       (Object.method_defined?(:getLineBrokenChunks) || Object.private_method_defined?(:getLineBrokenChunks))
+      Object.send(:alias_method, :__mkxp_orig_lbc, :getLineBrokenChunks)
+      Object.send(:define_method, :getLineBrokenChunks) do |*a|
+        res = __mkxp_orig_lbc(*a)
+        begin
+          txt = a[0]
+          in_n  = txt.respond_to?(:codepoints) ? txt.codepoints.length : txt.to_s.length
+          out_n = res.respond_to?(:map) ?
+                  res.map { |c| (c[0].is_a?(String) && !c[5]) ? c[0].codepoints.length : 0 }.inject(0, :+) : 0
+          if out_n != in_n && ($__mkxp_lbc_n ||= 0) < 30
+            $__mkxp_lbc_n = ($__mkxp_lbc_n || 0) + 1
+            in_s  = txt.to_s
+            out_s = res.respond_to?(:map) ?
+                    res.map { |c| (c[0].is_a?(String) && !c[5]) ? c[0] : '' }.join : ''
+            dropped = in_s.codepoints.to_a - out_s.codepoints.to_a
+            $stderr.puts "[mkxp-lbc] MISS in=#{in_n} out=#{out_n} dropped_codepoints=#{dropped.inspect} sample=#{in_s[0,40].inspect}"
+          end
+        rescue StandardError => e
+          $stderr.puts "[mkxp-lbc] err #{e.class}: #{e.message}"
+        end
+        res
+      end
+      $stderr.puts "[mkxp-lbc] installed (compare input vs output char-count on getLineBrokenChunks)"
+    else
+      $stderr.puts "[mkxp-lbc] getLineBrokenChunks not found, skip"
+    end
+  rescue StandardError => e
+    $stderr.puts "[mkxp-lbc] install failed: #{e.class}: #{e.message}"
+  end
+end
