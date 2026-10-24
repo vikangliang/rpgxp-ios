@@ -392,7 +392,7 @@ diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
 index 4b43123..dbfa41d 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
-@@ -1,2138 +1,2595 @@
+@@ -1,2138 +1,2598 @@
 -/*
 - ** bitmap.cpp
 - **
@@ -3719,12 +3719,15 @@ index 4b43123..dbfa41d 100644
 +    static int bltDiagN = 0;
 +    bool bltDiag = (bltDiagN++ < 3000);
 +    if (bltDiag) {
-+        /* src=源位图尺寸；oob=1 表示 sourceRect 越界取样(Bug2 错位行的头号嫌疑)。 */
++        /* 字段：dst=目标位图尺寸 dstRect=目标矩形 src=源位图尺寸 srcRect=源矩形
++         * oob=1 表示源矩形越界。注意参数顺序必须与格式串一致：
++         * dst,dstRect,src,srcRect —— 早前把 src 放在 dstRect 之前导致字段整体错位，
++         * 日志被误读成"源矩形 y=444 越界"，实际源是 408x536 并未越界。 */
 +        fprintf(stderr, "[blt-diag] cc IN n=%d dst=%dx%d#%p dstRect=(%d,%d,%d,%d) src=%dx%d "
 +                "srcRect=(%d,%d,%d,%d) op=%d cpuPend=%d srcMega=%d srcCpu=%d dstCpu=%d oob=%d\n",
 +                bltDiagN, width(), height(), (void*)this,
-+                source.width(), source.height(),
 +                destRect.x, destRect.y, destRect.w, destRect.h,
++                source.width(), source.height(),
 +                sourceRect.x, sourceRect.y, sourceRect.w, sourceRect.h,
 +                opacity, (int)p->cpuPending, source.megaSurface() ? 1 : 0, source.p->surface ? 1 : 0, p->surface ? 1 : 0,
 +                ((sourceRect.x < 0) || (sourceRect.y < 0) || (sourceRect.x + sourceRect.w > source.width()) || (sourceRect.y + sourceRect.h > source.height())) ? 1 : 0);

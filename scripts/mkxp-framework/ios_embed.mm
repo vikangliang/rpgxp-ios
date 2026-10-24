@@ -272,6 +272,52 @@ static void mkxp_softPresent()
             }
             fprintf(stderr, "[ios-embed] red-ish px=%u / %d  (frame #%llu)\n",
                     reddish, sw * sh, (unsigned long long)g_softFrames);
+
+            /* ---- Bug2 取证：让引擎自己算出"横线"的 y 坐标 ----
+             * 已确认横线在 512x384 渲染层(scene dump)里，但本机无法打开玩家截图，
+             * 故改为【引擎内自测】：逐行计算该行与上一行的平均绝对亮度差，
+             * 差异显著的行就是视觉上的"横线/错位行"。
+             * 打印 y、y%%32(=0 说明横线落在 tile 行边界 -> 指向 TilemapRenderer 行复用
+             * 或 autotile 展开错位；非 0 则指向采样/缩放)、以及差异值。
+             * 与 red-ish 同频(约每 600 帧一次)，512x384 遍历约 0.1ms，开销可忽略。 */
+            static double rowDiff[1024];
+            double sum = 0.0;
+            int n = 0;
+            for (int y = 1; y < sh && y < 1024; ++y) {
+                const uint8_t *r0 = g_softBuf + (size_t)(y - 1) * stride;
+                const uint8_t *r1 = g_softBuf + (size_t)y * stride;
+                uint64_t acc = 0;
+                for (int x = 0; x < sw; ++x) {
+                    int l0 = (r0[x * 4] + r0[x * 4 + 1] + r0[x * 4 + 2]) / 3;
+                    int l1 = (r1[x * 4] + r1[x * 4 + 1] + r1[x * 4 + 2]) / 3;
+                    acc += (uint64_t)((l0 > l1) ? (l0 - l1) : (l1 - l0));
+                }
+                rowDiff[y] = (double)acc / (double)sw;
+                sum += rowDiff[y];
+                ++n;
+            }
+            if (n > 0) {
+                double mean = sum / (double)n;
+                double mx = 0.0;
+                for (int y = 1; y < sh && y < 1024; ++y)
+                    if (rowDiff[y] > mx) mx = rowDiff[y];
+                /* 不用 sqrt：本文件未 include math.h（只用除法/比较），避免编译失败。
+                 * 改用"相对均值的倍数"作阈值，同样能挑出显著异常行。 */
+                double thr = mean * 2.5;
+                int printed = 0;
+                for (int y = 1; y < sh && y < 1024 && printed < 15; ++y) {
+                    if (rowDiff[y] > thr) {
+                        fprintf(stderr, "[ios-embed] ROWLINES y=%d diff=%.1f y%%32=%d "
+                                        "(frame #%llu, mean=%.1f max=%.1f thr=%.1f)\n",
+                                y, rowDiff[y], y % 32,
+                                (unsigned long long)g_softFrames, mean, mx, thr);
+                        ++printed;
+                    }
+                }
+                if (printed == 0)
+                    fprintf(stderr, "[ios-embed] ROWLINES none (frame #%llu, mean=%.1f max=%.1f)\n",
+                            (unsigned long long)g_softFrames, mean, mx);
+            }
         }
         mkxp_dumpSceneToDoc(dumpImg, g_softFrames);
         CFRelease(dumpImg);
