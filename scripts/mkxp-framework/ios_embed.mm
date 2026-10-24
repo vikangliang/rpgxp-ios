@@ -142,18 +142,20 @@ static void mkxp_dumpSceneToDoc(CGImageRef cg, uint64_t frameNo)
     }
 }
 
-/* 采样哈希：内容没变就跳过软呈现，省 CPU/内存抖动（标题页静止时几乎全跳） */
+/* 内容哈希：内容没变就跳过软呈现，省 CPU/内存抖动（标题页静止时几乎全跳）。
+ * 【必须全量】旧实现是抽样（每 h/24 行抽 1 行、每行每 97 字节≈24px 抽 1 字节），
+ * 对稀疏小变化（消息框逐字出现的文字、单行 tile 变化）漏检率极高——
+ * 内容变了却哈希相同 -> 跳过上屏 -> 屏幕停留在旧帧。这正是真机二分
+ * （512x384 的 scene dump 里文字完整、屏幕上却"少字"）定位出的根因；
+ * Bug2 的区域残留（横线）同理：局部小变化被抽样漏掉。
+ * 全量 FNV-1a 遍历 786KB(512x384x4) 在现代 ARM 上约 0.03-0.1ms，开销可忽略；
+ * 任何像素变化都必然改变哈希，漏检归零，"静止帧跳过上屏"的优化保留。 */
 static uint32_t mkxp_hashScene(const uint8_t *flip, int w, int h)
 {
     uint32_t hsh = 2166136261u;
-    size_t stride = (size_t)w * 4;
-    int rowStep = h / 24 + 1;
-    for (int y = 0; y < h; y += rowStep) {
-        const uint8_t *row = flip + (size_t)y * stride;
-        for (size_t x = 0; x + 3 < stride; x += 97) {
-            hsh = (hsh ^ row[x]) * 16777619u;
-        }
-    }
+    size_t bytes = (size_t)w * 4 * (size_t)h;
+    for (size_t i = 0; i < bytes; ++i)
+        hsh = (hsh ^ flip[i]) * 16777619u;
     return hsh;
 }
 
@@ -203,6 +205,10 @@ static void mkxp_softPresent()
      * +VSync，无此问题）。glFinish() 强制本帧 GL 命令全部完成后再读回，确保读到
      * 完整一整帧。代价是每帧多等一次 GPU，换取不裂。 */
     glFinish();
+    /* 清掉此前积压的 GL 错误（如启动首帧的 0x502）：glGetError 返回的是全局
+     * 错误标志，不清就会把"历史错误"误判成本次 readback 失败 -> 整帧 return
+     * 丢帧。清空后，只有本次 readback 真正出错才会触发下面的 return。 */
+    while (glGetError() != GL_NO_ERROR) {}
     glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE, g_softBuf);
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 
