@@ -651,6 +651,55 @@ if [ -d "$MKXP_SRC/src" ]; then
   echo "applied framework-entry.patch"
 fi
 
+# ---------- 3a-1.7. 排查埋点(Bug1 少字 / Bug2 横线)：只取证，不改渲染行为 ----------
+# 放在 framework-entry.patch 之后：drawText / mkxp_z_main 的最终形态由该 patch 决定。
+# 用 python 打补丁（绝不动 patch 文件的 @@ 计数，否则会被判 malformed patch 直接 FATAL）。
+# 埋点 1) bitmap.cpp drawText: TTF_RenderUTF8 偶发返回 NULL 时原代码会直接在
+#          txtSurf->h 处空指针崩；这里捕获并记 [drawText] NULL（安全返回，不影响其它字）。
+#          -> 侧载复现少字时若无 [drawText] NULL，说明字形渲染成功、问题在 GPU 上传侧。
+# 埋点 2) main.cpp mkxp_z_main: 启动打印一次 [cfg] subImageFix=值
+#          0 = 走 direct texSubImage 上传(broken GL driver 易竞态上传不全)；
+#          1 = 走软件上传(安全)。
+python3 - "$MKXP_SRC/src/display/bitmap.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+with open(p, 'rb') as f:
+    raw = f.read()
+crlf = b'\r\n' in raw
+s = raw.decode('utf-8').replace('\r\n', '\n')
+old = "        txtSurf = TTF_RenderUTF8_Blended(font, str, c);\n"
+new = ("        txtSurf = TTF_RenderUTF8_Blended(font, str, c);\n"
+"        if (!txtSurf) { fprintf(stderr, \"[drawText] TTF render NULL str=%.40s\\n\", str); return; }\n")
+if old in s:
+    s = s.replace(old, new, 1)
+    out = s.replace('\n', '\r\n').encode('utf-8') if crlf else s.encode('utf-8')
+    with open(p, 'wb') as f:
+        f.write(out)
+    print("patched bitmap.cpp: drawText TTF-NULL guard + [drawText] log")
+else:
+    print("WARN bitmap.cpp: drawText Blended anchor missing (diag skipped)")
+PYEOF
+
+python3 - "$MKXP_SRC/src/main.cpp" <<'PYEOF'
+import sys
+p = sys.argv[1]
+with open(p, 'rb') as f:
+    raw = f.read()
+crlf = b'\r\n' in raw
+s = raw.decode('utf-8').replace('\r\n', '\n')
+old = "      conf.syncToRefreshrate = false;\n"
+new = ("      conf.syncToRefreshrate = false;\n"
+"    fprintf(stderr, \"[cfg] subImageFix=%d\\n\", (int)conf.subImageFix);\n")
+if old in s:
+    s = s.replace(old, new, 1)
+    out = s.replace('\n', '\r\n').encode('utf-8') if crlf else s.encode('utf-8')
+    with open(p, 'wb') as f:
+        f.write(out)
+    print("patched main.cpp: [cfg] subImageFix log")
+else:
+    print("WARN main.cpp: syncToRefreshrate anchor missing (diag skipped)")
+PYEOF
+
 # ---------- 3a-2. iOS 横线修复：tainted 区域非法矩形护栏 ----------
 # 设备日志里反复出现 "pixman_region_union_rect: Invalid rectangle passed"，
 # 来源是 Bitmap::addTaintedArea / substractTaintedArea 收到宽高<=0 或越界的

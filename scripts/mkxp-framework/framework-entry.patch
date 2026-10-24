@@ -4494,14 +4494,7 @@ index 4b43123..dbfa41d 100644
 +        txtSurf = TTF_RenderUTF8_Solid(font, str, c);
 +    else
 +        txtSurf = TTF_RenderUTF8_Blended(font, str, c);
-+
-+    /* 排查点(Bug1 消息框偶发少字): TTF_RenderUTF8 在 iOS 上偶发返回 NULL 会导致
-+     * 下游 txtSurf->h 空指针崩。先捕获并记录(只记事实)，安全返回，不丢其他字。 */
-+    if (!txtSurf) {
-+        fprintf(stderr, "[drawText] TTF render NULL str=%.40s\n", str);
-+        return;
-+    }
-+
++    
 +    p->ensureFormat(txtSurf, SDL_PIXELFORMAT_ABGR8888);
 +    
 +    int rawTxtSurfH = txtSurf->h;
@@ -5362,16 +5355,11 @@ index 4779221..d7e0394 100644
  #ifdef MKXPZ_BUILD_XCODE
      {
          std::string downloadsPath = "/Users/" + mkxp_sys::getUserName() + "/Downloads";
-@@ -414,7 +431,13 @@ int main(int argc, char *argv[]) {
+@@ -414,7 +431,12 @@ int main(int argc, char *argv[]) {
      if (!mode.refresh_rate)
        conf.syncToRefreshrate = false;
-
-     +    /* 排查点(Bug1/Bug2 偶发少字/横线): 打印 iOS 上 subImageFix 实际值。
-     +     * 0=走 direct texSubImage 上传(broken GL driver 易竞态上传不全);
-     +     * 1=走软件上传(安全但略慢)。仅打印事实，不改行为。 */
-     +    fprintf(stderr, "[cfg] subImageFix=%d\n", (int)conf.subImageFix);
-
-     -    EventThread eventThread;
+ 
+-    EventThread eventThread;
 +    // 引擎事件循环（eventThread.process）必须离开主线程：否则 iOS 主线程 run loop
 +    // 被占死，Core Animation 无法上屏（黑屏/界面冻结）。SDL 初始化 + 建窗 + 起
 +    // RGSS 线程都留在主线程（UIKit 安全），循环与终止清理甩到后台线程。状态用堆分配，
