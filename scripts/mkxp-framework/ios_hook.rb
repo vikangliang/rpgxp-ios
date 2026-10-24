@@ -836,6 +836,20 @@ def __mkxp_install_lbc_diag
           dropped = in_s.codepoints.to_a - out_s.codepoints.to_a
           $stderr.puts "[mkxp-lbc] MISS in=#{in_n} out=#{out_n} dropped_codepoints=#{dropped.inspect} sample=#{in_s[0,40].inspect}"
         end
+        # 零宽字检测：某字测宽 ch[3] <= 0 时，drawText 里 squeeze = rect.w/txtSurf->w
+        # 会把该字压成 posRect.w = 0 -> 完全不可见 -> 屏幕表现就是"少字"。
+        # 它既不丢请求也不报错，所以此前所有日志（含 draw_text 入参日志）都抓不到。
+        if res.respond_to?(:each) && ($__mkxp_lbc_z ||= 0) < 30
+          res.each do |c|
+            next unless c[0].is_a?(String) && !c[5]
+            chu = c[0]
+            next if chu == "\n" || chu == "\r" || chu == " "
+            if c[3].to_i <= 0
+              $__mkxp_lbc_z = ($__mkxp_lbc_z || 0) + 1
+              $stderr.puts "[mkxp-lbc] ZEROW char=#{chu.inspect} codepoints=#{chu.codepoints.inspect} width=#{c[3].inspect}"
+            end
+          end
+        end
       rescue StandardError => e
         $stderr.puts "[mkxp-lbc] err #{e.class}: #{e.message}"
       ensure
