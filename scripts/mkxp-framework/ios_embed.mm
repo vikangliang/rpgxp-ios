@@ -109,11 +109,18 @@ static void mkxp_toggleSpng(void) {
  * 在 Documents/scene_dump_N.png 生成 PNG，Flutter 日志页可直接查看/分享。 */
 static void mkxp_dumpSceneToDoc(CGImageRef cg, uint64_t frameNo)
 {
-    static const int marks[] = {42, 600, 3600, 10800};  // ≈0.7s/10s/60s/180s（对齐 %3 节流）
-    static const int nMarks = sizeof(marks) / sizeof(marks[0]);
+    /* Bug1/Bug2 取证：原实现只在 42/600/3600/10800 四个帧点落盘，几乎必然错过
+     * "消息框少字 / 室外横线"的现场。改为【每 kDumpEvery 帧一张、最多 kDumpMax 张】，
+     * 保证玩家在任意一个对话框停留约 1 秒就能被抓到原始分辨率(512x384)的快照。
+     * 二分判据（这是决定下一步改哪一层的关键）：
+     *   - dump 里字完整 -> 少字发生在【上屏缩放/软呈现层】(与 Bug2 同源);
+     *   - dump 里字就少 -> 少字在【游戏渲染层 bitmap 绘制】, 继续往 draw_text 下挖。
+     * 达到上限后彻底不再写盘，稳态性能零影响。 */
+    static const int kDumpEvery = 30;   // ≈0.5s
+    static const int kDumpMax   = 40;   // 最多 40 张(覆盖约 20 秒游戏时间)
     static int next = 0;
-    if (next >= nMarks) return;
-    if ((int)frameNo < marks[next]) return;
+    if (next >= kDumpMax) return;
+    if ((int)frameNo < kDumpEvery * (next + 1)) return;
     int idx = next;
     next = idx + 1;
 
@@ -126,7 +133,7 @@ static void mkxp_dumpSceneToDoc(CGImageRef cg, uint64_t frameNo)
             NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
         if (!docs) return;
         NSString *path = [docs stringByAppendingFormat:
-            @"/scene_dump_%d_f%d.png", idx + 1, marks[idx]];
+            @"/scene_dump_%d_f%llu.png", idx + 1, frameNo];
         [png writeToFile:path atomically:YES];
         fprintf(stderr, "[ios-embed] scene dump #%d (%dx%d) -> %s\n",
                 idx + 1, (int)CGImageGetWidth(cg), (int)CGImageGetHeight(cg),
@@ -200,10 +207,16 @@ static void mkxp_softPresent()
 
     GLenum e = glGetError();
     if (e != GL_NO_ERROR) {
+        /* 取证增强（不改行为，仍 return）：readback 失败会让【整帧完全不上屏】，
+         * 是"少字/横线"这类局部缺失的共同嫌疑。原日志限频仅 3 次且不带帧号，
+         * 无法判断它是否持续发生；这里放开到 30 次并补上帧号/readback 尺寸。 */
         static int errLogged = 0;
-        if (errLogged < 3) {
+        if (errLogged < 30) {
             ++errLogged;
-            fprintf(stderr, "[ios-embed] softPresent readback err=0x%x\n", (unsigned)e);
+            fprintf(stderr, "[ios-embed] softPresent readback err=0x%x prevFbo=%d "
+                            "read=%dx%d (frame #%llu)\n",
+                    (unsigned)e, (int)prevFbo, (int)sw, (int)sh,
+                    (unsigned long long)g_softFrames);
         }
         return;
     }
@@ -226,10 +239,14 @@ static void mkxp_softPresent()
             CGDataProviderRelease(dp);
         }
     }
-    /* 红线诊断只在快照时刻统计（与 dump 同帧号门控），避免每帧全图扫描 */
-    static const int dumpMarks[] = {42, 600, 3600, 10800};
+    /* 红线诊断只在快照时刻统计（与 dump 同帧号门控），避免每帧全图扫描。
+     * 原门控是固定的 42/600/3600/10800 四个帧点 —— 它才真正决定 dump 的触发时机，
+     * 若只改 mkxp_dumpSceneToDoc 内部会被这里架空，几乎必然错过"消息框少字"现场。
+     * 改成与之一致的密集周期（≈0.5s 一张、上限 40 张），保证玩家在任意对话框
+     * 停留约 1 秒就能被抓到 512x384 原始分辨率快照；上限后不再全图扫描、不再写盘。 */
+    static const int dumpEvery = 30;   // ≈0.5s，需与 mkxp_dumpSceneToDoc 的 kDumpEvery 一致
     static int dumpNext = 0;
-    bool dumpNow = (dumpNext < 4) && (int)g_softFrames >= dumpMarks[dumpNext];
+    bool dumpNow = (dumpNext < 40) && (int)g_softFrames >= dumpEvery * (dumpNext + 1);
     if (dumpImg && dumpNow) {
         /* 统计“偏红”像素（R>180 且 R-G>80 且 R-B>80），量化红线体量 */
         uint32_t reddish = 0;
