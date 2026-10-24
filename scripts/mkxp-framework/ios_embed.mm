@@ -372,6 +372,39 @@ static void mkxp_softPresent()
                     fprintf(stderr, "[ios-embed] MONOLINE none (frame #%llu)\n",
                             (unsigned long long)g_softFrames);
             }
+
+            /* ---- 局部水平纯色段检测(SEGLINE) ----
+             * MONOLINE(整行单色)在地图帧均为 none -> 用户看到的"纯色线"不是全屏单色行,
+             * 而是某 tile 行内沿 x 延伸的【局部纯色段】(整行不全纯, 故整行检测漏掉)。
+             * 这正符合 'autotile 16x16 子块取错 / tile 边缘露出纯色' 的画像。
+             * 对每行扫描连续同色(相邻像素差<=8)的最长段, 段长>=64(>=2 tile)即打印:
+             * 段长/起始x/段颜色/y%%32。全图限 12 行; 段长=512 即全屏宽线。 */
+            {
+                int segPrinted = 0;
+                for (int y = 0; y < sh && y < 1024 && segPrinted < 12; ++y) {
+                    const uint8_t *rr = g_softBuf + (size_t)y * stride;
+                    int longest = 1, bestStart = 0, cur = 1, curStart = 0;
+                    for (int x = 1; x < sw; ++x) {
+                        int dr = rr[x * 4] - rr[(x - 1) * 4];
+                        int dg = rr[x * 4 + 1] - rr[(x - 1) * 4 + 1];
+                        int db = rr[x * 4 + 2] - rr[(x - 1) * 4 + 2];
+                        if (dr < 0) dr = -dr;
+                        if (dg < 0) dg = -dg;
+                        if (db < 0) db = -db;
+                        if (dr <= 8 && dg <= 8 && db <= 8) { if (cur == 1) curStart = x - 1; ++cur; }
+                        else { if (cur > longest) { longest = cur; bestStart = curStart; } cur = 1; }
+                    }
+                    if (cur > longest) { longest = cur; bestStart = curStart; }
+                    if (longest >= 64) {
+                        int bx = bestStart * 4;
+                        fprintf(stderr, "[ios-embed] SEGLINE y=%d len=%d startx=%d rgb=(%d,%d,%d) "
+                                        "y%%32=%d (frame #%llu)\n",
+                                y, longest, bestStart, rr[bx], rr[bx + 1], rr[bx + 2], y % 32,
+                                (unsigned long long)g_softFrames);
+                        ++segPrinted;
+                    }
+                }
+            }
         }
         mkxp_dumpSceneToDoc(dumpImg, g_softFrames);
         CFRelease(dumpImg);
