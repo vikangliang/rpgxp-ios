@@ -1366,6 +1366,49 @@ if old2 in s:
 else:
     print("font.cpp: pickExistingFontName anchor missing")
 
+# --- 3a-1.6e (Bug1 根因修复): pickExistingFontName 全候选失败时空名兜底 ---
+# 证据(真机 mkxp.log, 2555434 包): exist(FusionPixelMonoPatched)=true、
+# exist(Fusion Pixel 12px Monospaced zh_hans)=true、exist(Arial)=false；
+# 且 Ruby 层 Font#name= 兜底从未触发替换日志 -> Arial 来自 MKXP 在 C++ 层
+# 初始化 Font.default(默认名 "Arial")，发生在 Ruby hook 注入之前、不经过
+# Ruby 的 name=。原实现所有候选落空返回 out="" -> Font 拿到无效字体 ->
+# 该字体渲染的汉字无字形 -> 消息框/默认字体文本少字(PC 有 Arial 兜底故仅 iOS 复现)。
+# 修法: out 即将为空时，遍历回退到游戏自带、iOS 上确定存在的像素中文字体。
+# 只改"已经失败"的路径；成功路径(out 已赋值)零改动；性能零影响(仅失败路径多几次比较)。
+old3 = (
+"\t\t++_miss;\n"
+"\t}\n"
+"\n"
+"\tout = \"\";\n"
+"}\n")
+new3 = (
+"\t\t++_miss;\n"
+"\t}\n"
+"\n"
+"\t/* iOS fix (Bug1 消息框少字根因): 所有候选 family 都不存在(如 RGSS 默认字体名\n"
+"\t * 'Arial' 在 iOS 上不存在)时, 原实现返回空名 -> Font 拿到无效字体 -> 汉字无字形\n"
+"\t * -> 屏幕上少字。回退到游戏自带、iOS 上确定存在的像素中文字体。\n"
+"\t * 只改'已经失败'的路径, 成功路径(out 已赋值)零改动; 性能零影响。 */\n"
+"\tstatic const char *kIosFallback[] = {\n"
+"\t\t\"FusionPixelMonoPatched\",\n"
+"\t\t\"Fusion Pixel 12px Monospaced zh_hans\",\n"
+"\t\t0\n"
+"\t};\n"
+"\tfor (int k = 0; kIosFallback[k]; ++k) {\n"
+"\t\tif (sfs.fontPresent(kIosFallback[k])) {\n"
+"\t\t\tout = kIosFallback[k];\n"
+"\t\t\tfprintf(stderr, \"[mkxp-font] ios-fallback-picked=[%s]\\n\", out.c_str());\n"
+"\t\t\treturn;\n"
+"\t\t}\n"
+"\t}\n"
+"\tout = \"\";\n"
+"}\n")
+if old3 in s:
+    s = s.replace(old3, new3, 1)
+    print("patched font.cpp: pickExistingFontName ios fallback (Bug1 root cause)")
+else:
+    print("font.cpp: pickExistingFontName tail anchor missing")
+
 if "#include <stdio.h>" not in s:
     s = "#include <stdio.h>\n" + s
 
