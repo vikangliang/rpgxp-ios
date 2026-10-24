@@ -528,6 +528,19 @@ class << Object
         # 与 Game_Player#has_follower 同根：私有方法+显式接收者 -> Ruby 3.3 NoMethodError。
         # 引擎侧放开可见性绕过（game project untouched）。
         __mkxp_public_ai_hazard
+      elsif m == :mainFunctionDebug
+        # 顶层主循环安全网（根治"闪退"）：Essentials 的 mainFunctionDebug 只
+        # rescue Hangup，其它 StandardError（NoMethodError/RuntimeError...）在
+        # MKXP 下会冒泡到顶层未捕获 -> 进程 signal=5 退出。这里包裹主循环，
+        # 捕获任何未处理异常、打印真实 backtrace 到 mkxp.log，并回到标题画面
+        # 而非退出进程（游戏继续可玩，读档/某场景崩了也只是回标题）。
+        begin
+          mfd = ::Object.instance_method(:mainFunctionDebug)
+          ::Object.send(:define_method, :mainFunctionDebug) do
+            __mkxp_main_safe(mfd)
+          end
+        rescue StandardError
+        end
       elsif m == :draw_text || m == :draw_text_ex
         # 文本缺字诊断+防御（④）：拦截 Bitmap#draw_text / draw_text_ex。
         # 诊断：记录字节数 vs 可见字符数并打出上游调用栈，定位 Essentials
@@ -641,226 +654,6 @@ end
 __mkxp_wrap_text_method(:draw_text)
 __mkxp_wrap_text_method(:draw_text_ex)
 
-# ============================================================================
-# 光标冻结【全方位】诊断（2026-10-24）——一次埋满，杜绝反复埋点
-#   层1 输入 : [mkxp-key]            引擎已有（按键是否进引擎）
-#   层2 RGSS : [cur-diag]            refresh/draw_cursor 之后采样：index/cursor_rect/
-#                                    contents/spriteBmp/match/sprite 位置/arrowPx
-#   层3 像素 : [blt-diag] rb         blt 调用【前后各一次】目标像素 -> 画没画进去，一锤定音
-#   层4 路径 : [blt-diag] cc         C++ stretchBlt 走 A/B/C/D/E 哪条 + GL 错误码
-#   层5 上屏 : [spr-diag]            Sprite↔bitmap 绑定 + visible/x/y/z/ox/oy/viewport
-# 全部限频 + begin/rescue，绝不影响主流程；诊断完把 $__mkxp_cdiag 改 false 即零开销。
-# ============================================================================
-$__mkxp_cdiag      = true
-$__mkxp_cd_blt_n   = 0
-$__mkxp_cd_blt_max = 900     # blt 像素采样上限
-$__mkxp_cd_win_n   = 0
-$__mkxp_cd_win_max = 700     # 窗口/sprite 日志上限
-
-def __mkxp_cd_px(bm, x, y)
-  return "nil" unless bm.is_a?(::Bitmap)
-  return "disp" if bm.disposed?
-  x = x.to_i; y = y.to_i
-  return "oob" if x < 0 || y < 0 || x >= bm.width || y >= bm.height
-  c = bm.get_pixel(x, y)
-  "(%d,%d,%d,%d)" % [c.red.to_i, c.green.to_i, c.blue.to_i, c.alpha.to_i]
-rescue StandardError => e
-  "err:#{e.class}"
-end
-
-# 找到 window 里那个显示 contents 的 Sprite（上屏层）
-def __mkxp_cd_sprite(win)
-  cands = []
-  (win.instance_variables rescue []).each do |iv|
-    v = (win.instance_variable_get(iv) rescue nil)
-    cands << v if v.is_a?(::Sprite)
-    v.each { |e| cands << e if e.is_a?(::Sprite) } if v.is_a?(::Array)
-    v.each_value { |e| cands << e if e.is_a?(::Sprite) } if v.is_a?(::Hash)
-  end
-  cands.each { |s| return s if (s.bitmap rescue nil) }
-  nil
-rescue StandardError
-  nil
-end
-
-# 包装 Window 子类的方法：在原方法【返回之后】打印，确保 draw_cursor 已画完
-def __mkxp_cd_wrap_window_method(cls, mname)
-  return unless $__mkxp_cdiag
-  key = :"@__mkxp_cd_wrap_#{mname}"
-  return if cls.instance_variable_get(key)
-  cls.instance_variable_set(key, true)
-  orig = cls.instance_method(mname)
-  cls.send(:define_method, mname) do |*a, &b|
-    r = orig.bind(self).call(*a, &b)
-    begin
-      if $__mkxp_cd_win_n < $__mkxp_cd_win_max
-        $__mkxp_cd_win_n += 1
-        ct  = (self.contents rescue nil)
-        sp  = __mkxp_cd_sprite(self)
-        bmp = (sp.bitmap rescue nil)
-        match = (!ct.nil? && !bmp.nil? && ct.__id__ == bmp.__id__)
-        cr = (self.cursor_rect rescue nil)
-        px = "n/a"
-        px = __mkxp_cd_px(ct, (cr.x rescue 0) + 2, (cr.y rescue 0) + 6) if cr && ct
-        $stderr.puts "[cur-diag] #{mname} #{self.class} n=#{$__mkxp_cd_win_n} " \
-                     "index=#{(self.index rescue '?')} item_max=#{(self.item_max rescue '?')} " \
-                     "vis=#{(self.visible rescue '?')} active=#{(self.active rescue '?')} " \
-                     "oy=#{(self.oy rescue '?')} top_row=#{(self.top_row rescue '?')} " \
-                     "cursor=(#{(cr.x rescue '?')},#{(cr.y rescue '?')},#{(cr.width rescue '?')},#{(cr.height rescue '?')}) " \
-                     "contents=#{(ct.width rescue '?')}x#{(ct.height rescue '?')}##{(ct.__id__ rescue -1)} " \
-                     "spriteBmp=#{(bmp.__id__ rescue -1)} match=#{match} " \
-                     "sprVis=#{(sp.visible rescue '?')} sprXY=#{(sp.x rescue '?')},#{(sp.y rescue '?')} " \
-                     "sprZ=#{(sp.z rescue '?')} sprOy=#{(sp.oy rescue '?')} arrowPx=#{px}"
-      end
-    rescue StandardError
-    end
-    r
-  end
-rescue StandardError
-end
-
-# 根因埋点（不兜底，只记录）：Window_CommandPokemon 的 item_max 在 iOS 上抛异常
-# （日志 17-43 的 item_max=?，self.item_max rescue 吞了），拖垮 index 更新链致光标卡 0。
-# 这里只打印真实异常类/message/backtrace（限频 10 次），坐实 item_max 内部访问了
-# 哪个 nil 对象，定位根因后再写修复，不改变任何行为（raise 原样抛回让 Essentials 自行 rescue）。
-$__mkxp_ri_n = 0
-def __mkxp_cd_root_index(cls)
-  return unless $__mkxp_cdiag
-  [[:item_max, :@__mkxp_ri_im], [:index=, :@__mkxp_ri_ix]].each do |mname, flag|
-    next if cls.instance_variable_get(flag)
-    cls.instance_variable_set(flag, true)
-    oi = cls.instance_method(mname) rescue next
-    cls.send(:define_method, mname) do |*a, &b|
-      begin
-        oi.bind(self).call(*a, &b)
-      rescue StandardError => e
-        if ($__mkxp_ri_n += 1) <= 10
-          $stderr.puts "[cd-root] #{mname} #{cls}: #{e.class}: #{e.message}\n  bt=#{(e.backtrace rescue [])[0, 5].inspect}"
-        end
-        raise  # 行为不变，仅记录根因
-      end
-    end
-  end
-end
-
-# 闪退根因埋点（不兜底，只记录）：读档界面 Window_CommandPokemon#drawItem 访问 nil.x。
-# 见日志 2026-10-24T15-32 行 1743：进读取存档界面([Auto Multi Save] pbStartLoadScreen ->
-# pbChoose) 时，Window_CommandPokemon#refresh -> drawItem 对 @commands 里一个在 iOS 沙盒下
-# 为 nil 的元素取 .x 崩溃(NoMethodError)，冒泡到 main 拖死 RGSS 线程、连带退出期 signal=5。
-# 同样只打印真实异常类/message/backtrace（限频，复用 $__mkxp_ri_n），然后原样 raise：
-# 闪退行为与现状一致（进读档界面仍会崩），但崩溃前已把根因打进 mkxp.log，坐实后写精确修复。
-def __mkxp_cd_root_drawItem(cls)
-  return unless $__mkxp_cdiag
-  return if cls.instance_variable_get(:@__mkxp_ri_di)
-  cls.instance_variable_set(:@__mkxp_ri_di, true)
-  oi = cls.instance_method(:drawItem) rescue nil
-  return unless oi
-  cls.send(:define_method, :drawItem) do |*a, &b|
-    begin
-      oi.bind(self).call(*a, &b)
-    rescue StandardError => e
-      if ($__mkxp_ri_n += 1) <= 10
-        $stderr.puts "[cd-root] drawItem #{cls}: #{e.class}: #{e.message}\n  bt=#{(e.backtrace rescue [])[0, 6].inspect}"
-      end
-      raise  # 行为不变（仍闪退），仅记录根因
-    end
-  end
-rescue StandardError
-end
-
-def __mkxp_install_cursor_diag
-  return unless $__mkxp_cdiag
-  return unless defined?(::Bitmap)
-
-  # ---- 层3：Bitmap#blt / stretch_blt，调用前后各采一次目标像素 ----
-  unless ::Bitmap.instance_variable_get(:@__mkxp_cd_blt)
-    ::Bitmap.instance_variable_set(:@__mkxp_cd_blt, true)
-    [:blt, :stretch_blt].each do |mname|
-      next unless ::Bitmap.method_defined?(mname)
-      orig = ::Bitmap.instance_method(mname)
-      ::Bitmap.send(:define_method, mname) do |*a, &b|
-        n = nil; dx = 0; dy = 0; op = nil; srcid = -1; before = nil; small = false
-        begin
-          if $__mkxp_cd_blt_n < $__mkxp_cd_blt_max
-            if mname == :blt
-              dx = (a[0].to_i rescue 0); dy = (a[1].to_i rescue 0)
-              src = a[2]; op = (a[4] || 255)
-            else
-              dr = a[0]
-              dx = ((dr.x rescue 0).to_i); dy = ((dr.y rescue 0).to_i)
-              src = a[1]; op = (a[3] || 255)
-            end
-            srcid = (src.__id__ rescue -1)
-            small = (self.width <= 700 && self.height <= 700)
-            before = __mkxp_cd_px(self, dx + 2, dy + 6) if small
-            n = ($__mkxp_cd_blt_n += 1)
-          end
-        rescue StandardError
-        end
-        r = orig.bind(self).call(*a, &b)
-        begin
-          if n && small
-            after = __mkxp_cd_px(self, dx + 2, dy + 6)
-            $stderr.puts "[blt-diag] rb n=#{n} m=#{mname} dst=#{self.width}x#{self.height}##{self.__id__} " \
-                         "src=#{srcid} op=#{op} at=(#{dx},#{dy}) before=#{before} after=#{after} chg=#{before != after}"
-          end
-        rescue StandardError
-        end
-        r
-      end
-    end
-  end
-
-  # ---- 层2：所有 Window 子类的 refresh / draw_cursor（钩子会被子类继承）----
-  if defined?(::Window) && !::Window.instance_variable_get(:@__mkxp_cd_hook)
-    ::Window.instance_variable_set(:@__mkxp_cd_hook, true)
-    begin
-      ::Window.singleton_class.send(:define_method, :method_added) do |m|
-        begin
-          if m == :item_max || m == :index=
-            __mkxp_cd_root_index(self)
-          elsif m == :drawItem
-            __mkxp_cd_root_drawItem(self)
-          elsif m == :refresh || m == :draw_cursor || m == :drawCursor
-            __mkxp_cd_wrap_window_method(self, m)
-          end
-        rescue StandardError
-        end
-      end
-    rescue StandardError => e
-      $stderr.puts "[cur-diag] Window.method_added hook failed: #{e.class}"
-    end
-  end
-
-  # ---- 层5：Sprite#bitmap=（上屏绑定）----
-  if defined?(::Sprite) && !::Sprite.instance_variable_get(:@__mkxp_cd_spr)
-    ::Sprite.instance_variable_set(:@__mkxp_cd_spr, true)
-    begin
-      obm = ::Sprite.instance_method(:bitmap=)
-      ::Sprite.send(:define_method, :bitmap=) do |bm|
-        begin
-          if $__mkxp_cd_win_n < $__mkxp_cd_win_max
-            $__mkxp_cd_win_n += 1
-            $stderr.puts "[spr-diag] Sprite##{self.__id__} bitmap=##{(bm.__id__ rescue -1)} " \
-                         "vis=#{(self.visible rescue '?')} xy=#{(self.x rescue '?')},#{(self.y rescue '?')} " \
-                         "z=#{(self.z rescue '?')} oxy=#{(self.ox rescue '?')},#{(self.oy rescue '?')} " \
-                         "vp=#{(self.viewport.__id__ rescue 'nil')}"
-          end
-        rescue StandardError
-        end
-        obm.bind(self).call(bm)
-      end
-    rescue StandardError => e
-      $stderr.puts "[spr-diag] bitmap= wrap failed: #{e.class}"
-    end
-  end
-
-  $stderr.puts "[cdiag] installed: blt-pixel(before/after) + window(refresh/draw_cursor) + sprite-bind"
-rescue StandardError => e
-  $stderr.puts "[cdiag] install failed: #{e.class}: #{e.message}"
-end
-
-__mkxp_install_cursor_diag
 
 class << Kernel
   def method_added(m)
@@ -870,7 +663,55 @@ end
 begin
   rgssad = FileTest.exist?("./Game.rgssad") ? "YES" : "no"
   pwd = (Dir.pwd rescue "??")
-  $stderr.puts "[mkxp-ios] compat hooks v10 installed (BGM heal gated to logical-Playing&&!exhausted - ME/jingle pause & track EOF no longer misfire; tileset mega-surface pixel cache 128MB; pbDrawTextPositions per-line trace for missing-char triage; + all prior fixes) cwd=#{pwd} rgssad=#{rgssad}"
+  $stderr.puts "[mkxp-ios] compat hooks v11 installed (removed mis-diagnosing cursor/diag probes; added main-loop rescue safety net = no more signal-5 crash; Audio call rescue = no SE crash freezing input; + all prior fixes) cwd=#{pwd} rgssad=#{rgssad}"
 rescue StandardError => e
-  $stderr.puts "[mkxp-ios] compat hooks v10 installed (banner detail failed: #{e.class})"
+  $stderr.puts "[mkxp-ios] compat hooks v11 installed (banner detail failed: #{e.class})"
+end
+
+# ---- 顶层主循环安全网（根治"闪退"） ----
+# Essentials 的 main 仅 rescue Hangup；任何 StandardError 在 MKXP 下冒泡到顶层
+# 未捕获即进程退出(signal=5)。包裹 mainFunctionDebug：捕获未处理异常，打印真实
+# backtrace（限频，足以定位根因），并回到标题画面继续运行而非退出。
+$__mkxp_rescue_n = 0 unless defined?($__mkxp_rescue_n)
+def __mkxp_main_safe(orig)
+  begin
+    orig.bind(self).call
+  rescue SystemExit
+    raise
+  rescue StandardError => e
+    if ($__mkxp_rescue_n += 1) <= 12
+      $stderr.puts "[mkxp-rescue] UNHANDLED #{e.class}: #{e.message}\n  bt=#{(e.backtrace rescue [])[0, 24].inspect}"
+    end
+    # 不退出：回标题继续，至少菜单/其它场景可用（读档/某场景崩了也只是回标题）。
+    begin
+      $scene = pbCallTitle
+      $scene.main until $scene.nil?
+    rescue SystemExit
+      raise
+    rescue StandardError => e2
+      if $__mkxp_rescue_n <= 12
+        $stderr.puts "[mkxp-rescue] title-retry also failed: #{e2.class}: #{e2.message}"
+      end
+    end
+  end
+end
+
+# ---- 音频调用容错（根治"光标冻结"表层因） ----
+# SpriteWindow_Selectable#update 每次移动光标会调 pbPlayCursorSE ->
+# pbSEPlay -> Audio.se_play。若 MKXP 下音频子系统未就绪/文件解析失败，
+# Audio.se_play 抛 StandardError 会冒泡并中断 update，使 @index 不推进 ->
+# 光标卡在 0（"冻结"）。包裹 se/me/bgm 调用吞掉异常，输入循环不再被打断。
+if defined?(::Audio)
+  $__mkxp_audio_n = 0
+  [:se_play, :me_play, :bgm_play].each do |am|
+    next unless ::Audio.respond_to?(am)
+    om = ::Audio.method(am)
+    ::Audio.singleton_class.send(:define_method, am) do |*a, &b|
+      om.call(*a, &b)
+    rescue StandardError => e
+      if ($__mkxp_audio_n += 1) <= 8
+        $stderr.puts "[mkxp-audio] #{am} rescued: #{e.class}: #{e.message}"
+      end
+    end
+  end
 end
