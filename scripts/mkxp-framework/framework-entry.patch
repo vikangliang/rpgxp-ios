@@ -392,7 +392,7 @@ diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
 index 4b43123..dbfa41d 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
-@@ -1,2138 +1,2563 @@
+@@ -1,2138 +1,2595 @@
 -/*
 - ** bitmap.cpp
 - **
@@ -3714,21 +3714,53 @@ index 4b43123..dbfa41d 100644
 +    /* ---- 光标冻结全方位诊断（2026-10-24，诊断完可整段删）----
 +     * 一次埋满：入口状态 + 每条路径 + GL 错误，配合 Ruby 侧 blt 前后像素，
 +     * 可一锤定音区分「按键/RGSS/路径/像素/上屏」哪一层出问题。
-+     * 限频（前 600 次）+ 只 fprintf，不做 ReadPixels（避免干扰被测路径）。 */
++     * 限频（前 3000 次，覆盖到登录/标题/菜单的一次性背景）+ 只 fprintf，
++     * 不做 ReadPixels（避免干扰被测路径）。 */
 +    static int bltDiagN = 0;
-+    bool bltDiag = (bltDiagN++ < 600);
++    bool bltDiag = (bltDiagN++ < 3000);
 +    if (bltDiag) {
-+        fprintf(stderr, "[blt-diag] cc IN n=%d dst=%dx%d#%p dstRect=(%d,%d,%d,%d) "
-+                "srcRect=(%d,%d,%d,%d) op=%d cpuPend=%d srcMega=%d srcCpu=%d dstCpu=%d\n",
++        /* src=源位图尺寸；oob=1 表示 sourceRect 越界取样(Bug2 错位行的头号嫌疑)。 */
++        fprintf(stderr, "[blt-diag] cc IN n=%d dst=%dx%d#%p dstRect=(%d,%d,%d,%d) src=%dx%d "
++                "srcRect=(%d,%d,%d,%d) op=%d cpuPend=%d srcMega=%d srcCpu=%d dstCpu=%d oob=%d\n",
 +                bltDiagN, width(), height(), (void*)this,
++                source.width(), source.height(),
 +                destRect.x, destRect.y, destRect.w, destRect.h,
 +                sourceRect.x, sourceRect.y, sourceRect.w, sourceRect.h,
-+                opacity, (int)p->cpuPending,
-+                source.megaSurface() ? 1 : 0,
-+                source.p->surface ? 1 : 0,
-+                p->surface ? 1 : 0);
++                opacity, (int)p->cpuPending, source.megaSurface() ? 1 : 0, source.p->surface ? 1 : 0, p->surface ? 1 : 0,
++                ((sourceRect.x < 0) || (sourceRect.y < 0) || (sourceRect.x + sourceRect.w > source.width()) || (sourceRect.y + sourceRect.h > source.height())) ? 1 : 0);
 +    }
 +    
++    /* ---- Bug2：blit/stretch_blt 矩形越界规范化（RMXP 语义=裁剪）----
++     * MKXP 的 GPU 路径对越界/负尺寸的 sourceRect 不做裁剪，会采到相邻或
++     * 未定义像素 -> 屏幕上出现"错位的一整行"（室外横线）。
++     * Bitmap#blit 内部走的也是本函数，所以这里一处修正同时覆盖
++     * Bitmap#blit 与 Bitmap#stretch_blt 两条路径。
++     * 做法：把 sourceRect 裁剪进源位图范围，目标矩形按同比例缩放后递归
++     * （规范化后不再越界，故不会死循环）；空/负尺寸直接返回（与 RGSS 一致）。 */
++    if (sourceRect.w <= 0 || sourceRect.h <= 0 || destRect.w <= 0 || destRect.h <= 0)
++        return;
++
++    if (sourceRect.x < 0 || sourceRect.y < 0 ||
++        sourceRect.x + sourceRect.w > source.width() ||
++        sourceRect.y + sourceRect.h > source.height())
++    {
++        int sx  = (sourceRect.x > 0) ? sourceRect.x : 0;
++        int sy  = (sourceRect.y > 0) ? sourceRect.y : 0;
++        int sx2 = (sourceRect.x + sourceRect.w < source.width()) ? (sourceRect.x + sourceRect.w) : source.width();
++        int sy2 = (sourceRect.y + sourceRect.h < source.height()) ? (sourceRect.y + sourceRect.h) : source.height();
++        if (sx2 <= sx || sy2 <= sy)
++            return;
++        IntRect sFix(sx, sy, sx2 - sx, sy2 - sy);
++        IntRect dFix(destRect.x + (sx - sourceRect.x) * destRect.w / sourceRect.w,
++                     destRect.y + (sy - sourceRect.y) * destRect.h / sourceRect.h,
++                     (sx2 - sx) * destRect.w / sourceRect.w,
++                     (sy2 - sy) * destRect.h / sourceRect.h);
++        if (dFix.w <= 0 || dFix.h <= 0)
++            return;
++        stretchBlt(dFix, source, sFix, opacity);
++        return;
++    }
++
 +    if (source.isDisposed())
 +        return;
 +    
