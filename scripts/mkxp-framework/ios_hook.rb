@@ -686,9 +686,9 @@ end
 # 包装 Window 子类的方法：在原方法【返回之后】打印，确保 draw_cursor 已画完
 def __mkxp_cd_wrap_window_method(cls, mname)
   return unless $__mkxp_cdiag
-  # 不靠 class 级 flag 防重装：Essentials 常对方法 reopen 重定义，flag 会让重定义直接
-  # 覆盖掉带诊断的包装而漏装。define_method 不触发 method_added，每次重定义都安全重装
-  # （最多多层嵌套，诊断期限频可忽略）。
+  key = :"@__mkxp_cd_wrap_#{mname}"
+  return if cls.instance_variable_get(key)
+  cls.instance_variable_set(key, true)
   orig = cls.instance_method(mname)
   cls.send(:define_method, mname) do |*a, &b|
     r = orig.bind(self).call(*a, &b)
@@ -726,9 +726,9 @@ end
 $__mkxp_ri_n = 0
 def __mkxp_cd_root_index(cls)
   return unless $__mkxp_cdiag
-  # 不靠 flag 防重装：item_max 常被 reopen 重定义，flag 会让重定义覆盖掉 [cd-root]
-  # 包装而漏装。define_method 不触发 method_added，每次重定义都安全重装（最多嵌套，限频可忽略）。
-  [[:item_max], [:index=]].each do |mname|
+  [[:item_max, :@__mkxp_ri_im], [:index=, :@__mkxp_ri_ix]].each do |mname, flag|
+    next if cls.instance_variable_get(flag)
+    cls.instance_variable_set(flag, true)
     oi = cls.instance_method(mname) rescue next
     cls.send(:define_method, mname) do |*a, &b|
       begin
@@ -751,7 +751,8 @@ end
 # 闪退行为与现状一致（进读档界面仍会崩），但崩溃前已把根因打进 mkxp.log，坐实后写精确修复。
 def __mkxp_cd_root_drawItem(cls)
   return unless $__mkxp_cdiag
-  # 不靠 flag 防重装：drawItem 也可能被 reopen 重定义而覆盖掉 [cd-root] 包装。
+  return if cls.instance_variable_get(:@__mkxp_ri_di)
+  cls.instance_variable_set(:@__mkxp_ri_di, true)
   oi = cls.instance_method(:drawItem) rescue nil
   return unless oi
   cls.send(:define_method, :drawItem) do |*a, &b|
