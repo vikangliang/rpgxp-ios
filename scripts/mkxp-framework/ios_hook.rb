@@ -743,6 +743,31 @@ def __mkxp_cd_root_index(cls)
   end
 end
 
+# 闪退根因埋点（不兜底，只记录）：读档界面 Window_CommandPokemon#drawItem 访问 nil.x。
+# 见日志 2026-10-24T15-32 行 1743：进读取存档界面([Auto Multi Save] pbStartLoadScreen ->
+# pbChoose) 时，Window_CommandPokemon#refresh -> drawItem 对 @commands 里一个在 iOS 沙盒下
+# 为 nil 的元素取 .x 崩溃(NoMethodError)，冒泡到 main 拖死 RGSS 线程、连带退出期 signal=5。
+# 同样只打印真实异常类/message/backtrace（限频，复用 $__mkxp_ri_n），然后原样 raise：
+# 闪退行为与现状一致（进读档界面仍会崩），但崩溃前已把根因打进 mkxp.log，坐实后写精确修复。
+def __mkxp_cd_root_drawItem(cls)
+  return unless $__mkxp_cdiag
+  return if cls.instance_variable_get(:@__mkxp_ri_di)
+  cls.instance_variable_set(:@__mkxp_ri_di, true)
+  oi = cls.instance_method(:drawItem) rescue nil
+  return unless oi
+  cls.send(:define_method, :drawItem) do |*a, &b|
+    begin
+      oi.bind(self).call(*a, &b)
+    rescue StandardError => e
+      if ($__mkxp_ri_n += 1) <= 10
+        $stderr.puts "[cd-root] drawItem #{cls}: #{e.class}: #{e.message}\n  bt=#{(e.backtrace rescue [])[0, 6].inspect}"
+      end
+      raise  # 行为不变（仍闪退），仅记录根因
+    end
+  end
+rescue StandardError
+end
+
 def __mkxp_install_cursor_diag
   return unless $__mkxp_cdiag
   return unless defined?(::Bitmap)
@@ -794,6 +819,8 @@ def __mkxp_install_cursor_diag
         begin
           if m == :item_max || m == :index=
             __mkxp_cd_root_index(self)
+          elsif m == :drawItem
+            __mkxp_cd_root_drawItem(self)
           elsif m == :refresh || m == :draw_cursor || m == :drawCursor
             __mkxp_cd_wrap_window_method(self, m)
           end
