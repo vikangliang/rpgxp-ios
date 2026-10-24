@@ -392,7 +392,7 @@ diff --git a/src/display/bitmap.cpp b/src/display/bitmap.cpp
 index 4b43123..dbfa41d 100644
 --- a/src/display/bitmap.cpp
 +++ b/src/display/bitmap.cpp
-@@ -1,2138 +1,2603 @@
+@@ -1,2138 +1,2601 @@
 -/*
 - ** bitmap.cpp
 - **
@@ -3776,12 +3776,10 @@ index 4b43123..dbfa41d 100644
 +     * 避免 AutotileExpander 数千次 GPU draw call（Metal-GL ~1ms/次）。
 +     * 任何不能走 CPU 的情况（源无 CPU 数据、半透明混合）先上传累积
 +     * 内容再走 GPU，避免 CPU 侧结果被 GPU 覆盖后丢失。 */
-+    /* [Bug2 二分诊断] 临时禁用 CPU-pending blit 路径：
-+     * ROWLINES 证实横线精确落在 16px/32px(tile/autotile子块)边界，
-+     * 而 AutotileExpander 的数千次 16x16 子块 blit 全走 cpuBlitToPending(CPU 累积)。
-+     * 禁用后全部走 GPU 原生路径：横线消失 -> 坐实 CPU 路径行错位；仍在 -> 排除。
-+     * 生效证明：blt-diag 不再出现 PATH=A(cpuPending/CPU-blit)。 */
-+    if (p->cpuPending && false)
++    /* CPU 累积路径经二分实验排除：临时禁用后(PATH=A 全部消失、改走 GPU)
++     * 横线依旧存在，且可疑行位置与启用时完全一致 -> 该路径与 Bug2 无关，
++     * 恢复启用（它是 AutotileExpander 数千次子块 blit 的关键性能优化）。 */
++    if (p->cpuPending)
 +    {
 +        if (opacity == 255 && !source.isDisposed() && p->cpuBlitToPending(destRect, source, sourceRect))
 +        {

@@ -311,6 +311,26 @@ static void mkxp_softPresent()
                                         "(frame #%llu, mean=%.1f max=%.1f thr=%.1f)\n",
                                 y, rowDiff[y], y % 32,
                                 (unsigned long long)g_softFrames, mean, mx, thr);
+                        /* 附加该行像素采样（8 个像素 RGB + 行内是否单色）。
+                         * 必要性：仅看行间差异无法区分——16px 子块边界的地形纹理
+                         * 本身就是颜色跳变(开/关 CPU 路径两版尖峰位置完全相同,
+                         * 证明那些尖峰是正常纹理)。必须看到像素内容才能判定：
+                         *   单色(same=1) -> 纯色遮挡/overlay 类横线;
+                         *   与邻行同色但错位 -> 复制错位;
+                         *   纹理多样 -> 正常地形, 该行不是 bug 现场。 */
+                        if (printed < 3) {
+                            const uint8_t *rr = g_softBuf + (size_t)y * stride;
+                            int same = 1;
+                            for (int k = 1; k < sw && k < 64; ++k) {
+                                if (rr[k * 4] != rr[0] || rr[k * 4 + 1] != rr[1] ||
+                                    rr[k * 4 + 2] != rr[2]) { same = 0; break; }
+                            }
+                            fprintf(stderr, "[ios-embed] ROWSAMP y=%d monocolor=%d px=", y, same);
+                            for (int k = 0; k < 8; ++k)
+                                fprintf(stderr, "(%d,%d,%d)",
+                                        rr[k * 4], rr[k * 4 + 1], rr[k * 4 + 2]);
+                            fprintf(stderr, "\n");
+                        }
                         ++printed;
                     }
                 }
