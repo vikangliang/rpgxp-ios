@@ -110,19 +110,19 @@ static void mkxp_toggleSpng(void) {
 static void mkxp_dumpSceneToDoc(CGImageRef cg, uint64_t frameNo)
 {
     /* Bug1/Bug2 取证：原实现只在 42/600/3600/10800 四个帧点落盘，几乎必然错过
-     * "消息框少字 / 室外横线"的现场。改为【每 kDumpEvery 帧一张、最多 kDumpMax 张】，
-     * 保证玩家在任意一个对话框停留约 1 秒就能被抓到原始分辨率(512x384)的快照。
-     * 二分判据（这是决定下一步改哪一层的关键）：
-     *   - dump 里字完整 -> 少字发生在【上屏缩放/软呈现层】(与 Bug2 同源);
-     *   - dump 里字就少 -> 少字在【游戏渲染层 bitmap 绘制】, 继续往 draw_text 下挖。
-     * 达到上限后彻底不再写盘，稳态性能零影响。 */
-    static const int kDumpEvery = 30;   // ≈0.5s
-    static const int kDumpMax   = 40;   // 最多 40 张(覆盖约 20 秒游戏时间)
-    static int next = 0;
-    if (next >= kDumpMax) return;
-    if ((int)frameNo < kDumpEvery * (next + 1)) return;
-    int idx = next;
-    next = idx + 1;
+     * "消息框少字 / 室外横线"的现场。改为【环形持续快照】：约 1 秒一张、文件名
+     * 复用最近 kRing 个槽位 —— 玩家不需要掐时间，只要在有问题的画面停 1~2 秒，
+     * Documents 里按修改时间排序最新的那几张 scene_dump_r*.png 就是现场证据。
+     * 二分判据（决定下一步到底改哪一层）：
+     *   - dump 里字完整 -> 少字在【上屏缩放/软呈现层】(与 Bug2 同源);
+     *   - dump 里字就少 -> 少字在【游戏渲染层 bitmap 绘制】, 继续往 draw_text 下挖。 */
+    /* 环形：文件名复用最近 kRing 个槽位，文件数恒定，不会随时间撑爆存储。
+     * 配合外层约 1 秒的调用频率，等于保留"最近约 20 秒"的连续画面快照。 */
+    static const int kRing = 20;
+    static int seq = 0;
+    int idx = seq % kRing;
+    int no = seq;
+    ++seq;
 
     @autoreleasepool {
         UIImage *img = [UIImage imageWithCGImage:cg];
@@ -133,11 +133,12 @@ static void mkxp_dumpSceneToDoc(CGImageRef cg, uint64_t frameNo)
             NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
         if (!docs) return;
         NSString *path = [docs stringByAppendingFormat:
-            @"/scene_dump_%d_f%llu.png", idx + 1, frameNo];
+            @"/scene_dump_r%02d.png", idx];
         [png writeToFile:path atomically:YES];
-        fprintf(stderr, "[ios-embed] scene dump #%d (%dx%d) -> %s\n",
-                idx + 1, (int)CGImageGetWidth(cg), (int)CGImageGetHeight(cg),
-                path.UTF8String);
+        if ((no % 5) == 0)
+            fprintf(stderr, "[ios-embed] scene dump #%d frame=%llu -> %s (%dx%d)\n",
+                    no, (unsigned long long)frameNo, path.UTF8String,
+                    (int)CGImageGetWidth(cg), (int)CGImageGetHeight(cg));
     }
 }
 
@@ -241,25 +242,31 @@ static void mkxp_softPresent()
     }
     /* 红线诊断只在快照时刻统计（与 dump 同帧号门控），避免每帧全图扫描。
      * 原门控是固定的 42/600/3600/10800 四个帧点 —— 它才真正决定 dump 的触发时机，
-     * 若只改 mkxp_dumpSceneToDoc 内部会被这里架空，几乎必然错过"消息框少字"现场。
-     * 改成与之一致的密集周期（≈0.5s 一张、上限 40 张），保证玩家在任意对话框
-     * 停留约 1 秒就能被抓到 512x384 原始分辨率快照；上限后不再全图扫描、不再写盘。 */
-    static const int dumpEvery = 30;   // ≈0.5s，需与 mkxp_dumpSceneToDoc 的 kDumpEvery 一致
+     * 若只改 mkxp_dumpSceneToDoc 内部会被这里架空（几乎必然错过"消息框少字"现场）。
+     * 现改为约每 1 秒一次、长期持续；内层用环形槽位使文件数恒定（20 个），
+     * 等于常驻保留"最近约 20 秒"的画面快照，随时可取证而不必掐时间。 */
+    static const int dumpEvery = 60;   // ≈1s；配合内层环形槽位，文件数恒定可长期持续
     static int dumpNext = 0;
-    bool dumpNow = (dumpNext < 40) && (int)g_softFrames >= dumpEvery * (dumpNext + 1);
+    bool dumpNow = (int)g_softFrames >= dumpEvery * (dumpNext + 1);
     if (dumpImg && dumpNow) {
-        /* 统计“偏红”像素（R>180 且 R-G>80 且 R-B>80），量化红线体量 */
-        uint32_t reddish = 0;
-        for (int y = 0; y < sh; ++y) {
-            const uint8_t *row = g_softBuf + (size_t)y * stride;
-            for (int x = 0; x < sw; ++x) {
-                uint8_t R = row[x * 4], G = row[x * 4 + 1], B = row[x * 4 + 2];
-                if (R > 180 && (int)R - G > 80 && (int)R - B > 80) ++reddish;
-            }
-        }
         ++dumpNext;
-        fprintf(stderr, "[ios-embed] red-ish px=%u / %d  (frame #%llu)\n",
-                reddish, sw * sh, (unsigned long long)g_softFrames);
+        /* 红色统计低频化（约每 600 帧一次）：原本与 dump 同频，改成每秒一次后
+         * 会导致每秒一次全图扫描 + 每秒一行日志，属无用开销。 */
+        static int redNext = 0;
+        if ((int)g_softFrames >= 600 * (redNext + 1)) {
+            ++redNext;
+            /* 统计“偏红”像素（R>180 且 R-G>80 且 R-B>80），量化红线体量 */
+            uint32_t reddish = 0;
+            for (int y = 0; y < sh; ++y) {
+                const uint8_t *row = g_softBuf + (size_t)y * stride;
+                for (int x = 0; x < sw; ++x) {
+                    uint8_t R = row[x * 4], G = row[x * 4 + 1], B = row[x * 4 + 2];
+                    if (R > 180 && (int)R - G > 80 && (int)R - B > 80) ++reddish;
+                }
+            }
+            fprintf(stderr, "[ios-embed] red-ish px=%u / %d  (frame #%llu)\n",
+                    reddish, sw * sh, (unsigned long long)g_softFrames);
+        }
         mkxp_dumpSceneToDoc(dumpImg, g_softFrames);
         CFRelease(dumpImg);
     } else if (dumpImg) {
