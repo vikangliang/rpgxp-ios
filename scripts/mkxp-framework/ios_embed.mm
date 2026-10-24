@@ -338,6 +338,40 @@ static void mkxp_softPresent()
                     fprintf(stderr, "[ios-embed] ROWLINES none (frame #%llu, mean=%.1f max=%.1f)\n",
                             (unsigned long long)g_softFrames, mean, mx);
             }
+
+            /* ---- 用户确认：横线是【纯色线】且相对地图固定(随地图滚动) ----
+             * ROWSAMP 已否证原检测目标：ROWLINES 抓到的 top 行 monocolor=0(有纹理,
+             * 实测是草地 tile 上/下 16px 子块的正常交界, 暗绿->亮绿), 说明
+             * "行间差异最大"抓的是正常地形边界, 根本不是 bug 现场。
+             * 故改为直接检测【整行近乎单色】= 用户亲眼看到的纯色横线。
+             * 判据: y%32 接近 0/31 -> tile 之间的缝隙(透出底色);
+             *       y%16 接近 0/15 -> autotile 16px 子块之间的缝隙。
+             * 与 ROWLINES 同频(约每 600 帧一次), 开销 ~0.1ms。 */
+            {
+                int monoPrinted = 0;
+                for (int y = 0; y < sh && y < 1024 && monoPrinted < 12; ++y) {
+                    const uint8_t *rr = g_softBuf + (size_t)y * stride;
+                    int r0 = rr[0], g0 = rr[1], b0 = rr[2];
+                    int same = 1;
+                    for (int x = 1; x < sw; ++x) {
+                        int dr = rr[x * 4] - r0, dg = rr[x * 4 + 1] - g0, db = rr[x * 4 + 2] - b0;
+                        if (dr < 0) dr = -dr;
+                        if (dg < 0) dg = -dg;
+                        if (db < 0) db = -db;
+                        if (dr <= 10 && dg <= 10 && db <= 10) ++same;
+                    }
+                    if (same * 10 > sw * 8) {
+                        fprintf(stderr, "[ios-embed] MONOLINE y=%d rgb=(%d,%d,%d) "
+                                        "same=%d/%d y%%32=%d y%%16=%d (frame #%llu)\n",
+                                y, r0, g0, b0, same, sw, y % 32, y % 16,
+                                (unsigned long long)g_softFrames);
+                        ++monoPrinted;
+                    }
+                }
+                if (monoPrinted == 0)
+                    fprintf(stderr, "[ios-embed] MONOLINE none (frame #%llu)\n",
+                            (unsigned long long)g_softFrames);
+            }
         }
         mkxp_dumpSceneToDoc(dumpImg, g_softFrames);
         CFRelease(dumpImg);
