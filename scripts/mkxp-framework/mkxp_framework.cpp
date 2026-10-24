@@ -36,6 +36,7 @@
 
 #include "filesystem/filesystem.h"
 #include "input/input.h"
+#include "eventthread.h"  // 直接写 EventThread::keyStates 注入虚拟键（绕过 SDL 事件队列）
 
 /* 由 framework-entry.patch 改名的原 main() */
 extern "C" int mkxp_z_main(int argc, char *argv[]);
@@ -175,6 +176,13 @@ void mkxp_key(int rgssKey, int down)
     e.key.keysym.scancode = scan;
     e.key.keysym.sym = SDL_GetKeyFromScancode(scan);
     SDL_PushEvent(&e);
+
+    /* iOS 虚拟按键：直接写 EventThread::keyStates，绕过 SDL 事件队列。
+     * uikit 后端丢弃合成 SDL 事件，导致 PushEvent 无效、虚拟键全无反应
+     * （"光标不动"的真正根因）。iOS 无物理键盘，keyStates 仅由虚拟键维护，
+     * 无竞争。Input::update 的 pollBindings 经 KbBinding::sourceActive 读它，
+     * 整条 pressed/triggered/repeated/released 管线自动工作（含光标 repeat）。 */
+    EventThread::keyStates[scan] = down ? 1 : 0;
 }
 
 /* 请求关机：SDL_QUIT -> EventThread::process 置 terminate -> 引擎走完清理
