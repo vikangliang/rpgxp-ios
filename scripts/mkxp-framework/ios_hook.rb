@@ -719,6 +719,30 @@ def __mkxp_cd_wrap_window_method(cls, mname)
 rescue StandardError
 end
 
+# 根因埋点（不兜底，只记录）：Window_CommandPokemon 的 item_max 在 iOS 上抛异常
+# （日志 17-43 的 item_max=?，self.item_max rescue 吞了），拖垮 index 更新链致光标卡 0。
+# 这里只打印真实异常类/message/backtrace（限频 10 次），坐实 item_max 内部访问了
+# 哪个 nil 对象，定位根因后再写修复，不改变任何行为（raise 原样抛回让 Essentials 自行 rescue）。
+$__mkxp_ri_n = 0
+def __mkxp_cd_root_index(cls)
+  return unless $__mkxp_cdiag
+  [[:item_max, :@__mkxp_ri_im], [:index=, :@__mkxp_ri_ix]].each do |mname, flag|
+    next if cls.instance_variable_get(flag)
+    cls.instance_variable_set(flag, true)
+    oi = cls.instance_method(mname) rescue next
+    cls.send(:define_method, mname) do |*a, &b|
+      begin
+        oi.bind(self).call(*a, &b)
+      rescue StandardError => e
+        if ($__mkxp_ri_n += 1) <= 10
+          $stderr.puts "[cd-root] #{mname} #{cls}: #{e.class}: #{e.message}\n  bt=#{(e.backtrace rescue [])[0, 5].inspect}"
+        end
+        raise  # 行为不变，仅记录根因
+      end
+    end
+  end
+end
+
 def __mkxp_install_cursor_diag
   return unless $__mkxp_cdiag
   return unless defined?(::Bitmap)
@@ -768,7 +792,9 @@ def __mkxp_install_cursor_diag
     begin
       ::Window.singleton_class.send(:define_method, :method_added) do |m|
         begin
-          if m == :refresh || m == :draw_cursor || m == :drawCursor
+          if m == :item_max || m == :index=
+            __mkxp_cd_root_index(self)
+          elsif m == :refresh || m == :draw_cursor || m == :drawCursor
             __mkxp_cd_wrap_window_method(self, m)
           end
         rescue StandardError
