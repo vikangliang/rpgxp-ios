@@ -715,3 +715,83 @@ if defined?(::Audio)
     end
   end
 end
+
+# ---- [Bug1] 消息框偶尔少字：iOS 上不存在的字体名兜底 ----
+# 证据链（真机 mkxp.log + 源码定位，均为事实，非推断）：
+#   1) 日志每 run 一次 "mkxp-font: FALLBACK requested=[Arial] -> out=''"
+#      —— iOS 无 Arial，且候选列表里只有 Arial，说明请求名本身就是 Arial/空。
+#   2) 上游脚本两处都会退回 "Arial"：
+#        Plugins/中文文本处理/Tools.rb:225-228 与
+#        Data/Scripts/007_Objects and windows/010_DrawText.rb:143-147
+#          defaultfontname = defaultfontname.find { |i| Font.exist?(i) } || "Arial"
+#          elsif !Font.exist?(defaultfontname) -> defaultfontname = "Arial"
+#   3) MKXP pickExistingFontName 全部候选落空 -> out="" -> 交给上层的是
+#      【无效字体】-> 用它渲染的汉字没有字形 -> 屏幕上表现为"少字"。
+#      PC 上有 Arial 兜底，所以只在 iOS 复现。
+#   4) 已排除：4 个 Fusion Pixel 字体的字形覆盖完整（含"前/年/五/宝/可/梦"，
+#      glyphs 29929/31367，无缺失）；上游排版用 each_char（字符安全，非按字节切片）。
+# 修法：把"本机不存在"的字体名映射到游戏自带的 FusionPixelMonoPatched
+#      （31367 字形，完整简体汉字）。只改变"本来就会失败"的赋值，成功路径零改动；
+#      映射结果缓存进 Hash，每帧每字只多一次 Hash 查找，不影响性能。
+unless defined?($__mkxp_fontfix) && $__mkxp_fontfix
+  $__mkxp_fontfix = true
+  begin
+    $__mkxp_font_map = {}
+    $__mkxp_font_n = 0
+    # 优先用游戏自带的像素中文字体（family 在 iOS 上确实存在，扫描日志可见）
+    $__mkxp_font_cands = ["FusionPixelMonoPatched",
+                           "Fusion Pixel 12px Monospaced zh_hans"]
+    def __mkxp_font_repl(name)
+      return name unless name.is_a?(String)
+      cached = $__mkxp_font_map[name]
+      return cached if cached
+      exist = (Font.exist?(name) rescue false)
+      repl = name
+      unless exist
+        $__mkxp_font_cands.each do |c|
+          ok = (Font.exist?(c) rescue false)
+          if ok
+            repl = c
+            break
+          end
+        end
+        if ($__mkxp_font_n += 1) <= 20
+          $stderr.puts "[mkxp-fontfix] font '#{name}' not present on iOS -> use '#{repl}'"
+        end
+      end
+      $__mkxp_font_map[name] = repl
+      repl
+    end
+    # 路径 1：脚本给 Font 对象设名（Tools.rb / 010_DrawText.rb 走这条）
+    if defined?(::Font) && ::Font.method_defined?(:name=)
+      ::Font.send(:alias_method, :__mkxp_orig_name=, :name=)
+      ::Font.send(:define_method, :name=) do |v|
+        v = __mkxp_font_repl(v)
+        send(:__mkxp_orig_name=, v)
+      end
+    end
+    # 路径 2：原生构造 Font.new("Arial")（不经过 name=）
+    if defined?(::Font) && ::Font.respond_to?(:new)
+      om = ::Font.method(:new)
+      ::Font.singleton_class.send(:define_method, :new) do |*a, &b|
+        if a[0].is_a?(String)
+          ok = (Font.exist?(a[0]) rescue false)
+          a[0] = __mkxp_font_repl(a[0]) unless ok
+        end
+        om.call(*a, &b)
+      end
+    end
+    # 一次性取证：关键字体是否存在 + 默认字体名（决定少字是否走本修复路径）
+    begin
+      $stderr.puts "[mkxp-fontfix] exist(FusionPixelMonoPatched)=#{Font.exist?('FusionPixelMonoPatched')} " \
+                  "exist(Fusion Pixel 12px Monospaced zh_hans)=#{Font.exist?('Fusion Pixel 12px Monospaced zh_hans')} " \
+                  "exist(Arial)=#{Font.exist?('Arial')} " \
+                  "default=#{(Font.default.name.inspect rescue 'n/a')}"
+    rescue StandardError => e
+      $stderr.puts "[mkxp-fontfix] probe failed: #{e.class}: #{e.message}"
+    end
+    $stderr.puts "[mkxp-fontfix] installed (missing font name -> FusionPixelMonoPatched)"
+  rescue StandardError => e
+    $stderr.puts "[mkxp-fontfix] install failed: #{e.class}: #{e.message}"
+  end
+end
