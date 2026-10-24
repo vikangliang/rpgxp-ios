@@ -548,6 +548,11 @@ class << Object
         # UTF-8 尾部字节安全剥离，避免末尾多字节被切半产生乱码；合法 UTF-8
         # 字符串完全不受影响。
         __mkxp_wrap_text_method(m)
+      elsif m == :getLineBrokenChunks
+        # [Bug1] 二次取证：该方法此刻才刚被 Essentials 定义完成（ios_hook 注入时
+        # 它还不存在，早前装在文件末尾会 skip），且会被 Plugins/中文文本处理
+        # /Tools.rb 二次覆盖 —— 每次定义都重新包一层，确保最终包住生效版本。
+        __mkxp_install_lbc_diag
       elsif m != :method_added
         k = ::Kernel
         unless k.respond_to?(m)
@@ -803,36 +808,42 @@ end
 #   - 若 out < in -> 上游切片漏字(打印丢失的 codepoint), 根因在 Ruby 排版;
 #   - 若相等   -> 漏字在逐字 draw_text/GPU 层(需另查重叠/裁剪)。
 # 只在出现差异时限频打印, 不影响性能; 不改任何渲染/排版行为。
-unless defined?($__mkxp_lbc)
-  $__mkxp_lbc = true
+# 挂载时机很关键：这个方法由 Essentials 脚本定义（010_DrawText.rb 先、
+# Plugins/中文文本处理/Tools.rb 后覆盖），ios_hook 注入时它还不存在，
+# 所以必须由 class << Object 的 method_added 在"方法刚定义完"时调用本函数，
+# 且每次重定义都要重新包一层，才能最终包住真正生效的那个版本。
+# 只做计数 + 限频日志，不改任何渲染/排版行为。
+def __mkxp_install_lbc_diag
+  return unless ::Object.method_defined?(:getLineBrokenChunks) ||
+                ::Object.private_method_defined?(:getLineBrokenChunks)
   begin
-    if Object.respond_to?(:method_defined?) &&
-       (Object.method_defined?(:getLineBrokenChunks) || Object.private_method_defined?(:getLineBrokenChunks))
-      Object.send(:alias_method, :__mkxp_orig_lbc, :getLineBrokenChunks)
-      Object.send(:define_method, :getLineBrokenChunks) do |*a|
-        res = __mkxp_orig_lbc(*a)
-        begin
-          txt = a[0]
-          in_n  = txt.respond_to?(:codepoints) ? txt.codepoints.length : txt.to_s.length
-          out_n = res.respond_to?(:map) ?
-                  res.map { |c| (c[0].is_a?(String) && !c[5]) ? c[0].codepoints.length : 0 }.inject(0, :+) : 0
-          if out_n != in_n && ($__mkxp_lbc_n ||= 0) < 30
-            $__mkxp_lbc_n = ($__mkxp_lbc_n || 0) + 1
-            in_s  = txt.to_s
-            out_s = res.respond_to?(:map) ?
-                    res.map { |c| (c[0].is_a?(String) && !c[5]) ? c[0] : '' }.join : ''
-            dropped = in_s.codepoints.to_a - out_s.codepoints.to_a
-            $stderr.puts "[mkxp-lbc] MISS in=#{in_n} out=#{out_n} dropped_codepoints=#{dropped.inspect} sample=#{in_s[0,40].inspect}"
-          end
-        rescue StandardError => e
-          $stderr.puts "[mkxp-lbc] err #{e.class}: #{e.message}"
+    orig = ::Object.instance_method(:getLineBrokenChunks)
+    ::Object.send(:define_method, :getLineBrokenChunks) do |*a, &b|
+      res = orig.bind(self).call(*a, &b)
+      # 重入保护：同名方法被二次定义(覆盖)时会形成包装链，内层不再重复统计
+      next res if $__mkxp_lbc_busy
+      begin
+        $__mkxp_lbc_busy = true
+        txt = a[0]
+        in_n  = txt.respond_to?(:codepoints) ? txt.codepoints.length : txt.to_s.length
+        out_n = res.respond_to?(:map) ?
+                res.map { |c| (c[0].is_a?(String) && !c[5]) ? c[0].codepoints.length : 0 }.inject(0, :+) : 0
+        if out_n != in_n && ($__mkxp_lbc_n ||= 0) < 30
+          $__mkxp_lbc_n = ($__mkxp_lbc_n || 0) + 1
+          in_s  = txt.to_s
+          out_s = res.respond_to?(:map) ?
+                  res.map { |c| (c[0].is_a?(String) && !c[5]) ? c[0] : '' }.join : ''
+          dropped = in_s.codepoints.to_a - out_s.codepoints.to_a
+          $stderr.puts "[mkxp-lbc] MISS in=#{in_n} out=#{out_n} dropped_codepoints=#{dropped.inspect} sample=#{in_s[0,40].inspect}"
         end
-        res
+      rescue StandardError => e
+        $stderr.puts "[mkxp-lbc] err #{e.class}: #{e.message}"
+      ensure
+        $__mkxp_lbc_busy = false
       end
-      $stderr.puts "[mkxp-lbc] installed (compare input vs output char-count on getLineBrokenChunks)"
-    else
-      $stderr.puts "[mkxp-lbc] getLineBrokenChunks not found, skip"
+      res
     end
+    $stderr.puts "[mkxp-lbc] installed (input vs output char-count on getLineBrokenChunks)"
   rescue StandardError => e
     $stderr.puts "[mkxp-lbc] install failed: #{e.class}: #{e.message}"
   end
