@@ -20,6 +20,7 @@ enum MkxpBridge {
   /// 注入 RGSS 按键（Input::ButtonCode：下=2 左=4 右=6 上=8，
   /// A=11 B=12 C=13 X=14 Y=15 Z=16 L=17 R=18 F5=25…）。down 为是否按下。
   static func key(_ rgssKey: Int, down: Bool) {
+    MkxpLog.append("[key] k=\(rgssKey) down=\(down)")
     mkxp_key(Int32(rgssKey), down ? 1 : 0)
   }
 

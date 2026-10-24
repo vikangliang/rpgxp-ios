@@ -114,7 +114,10 @@ final class MkxpTouchOverlay: NSObject {
       .first { $0.activationState == .foregroundActive } as? UIWindowScene)
       ?? (UIApplication.shared.connectedScenes.first as? UIWindowScene)
       ?? UIApplication.shared.windows.first?.windowScene
-    guard let scene else { return }   // 无可用 scene（极少见）：下次 show() 重试
+    guard let scene else {
+      MkxpLog.append("[overlay] show FAILED: no active scene")
+      return
+    }   // 无可用 scene（极少见）：下次 show() 重试
     let win = UIWindow(windowScene: scene)
     win.windowLevel = UIWindow.Level.alert + 2   // 高于 SDL 与 Flutter 窗口
     let vc = UIViewController()
@@ -139,6 +142,7 @@ final class MkxpTouchOverlay: NSObject {
     window = win
     win.isHidden = false
     win.makeKeyAndVisible()
+    MkxpLog.append("[overlay] show OK level=\(win.windowLevel.rawValue)")
   }
 
   func hide() {
@@ -169,7 +173,7 @@ final class MkxpTouchOverlay: NSObject {
   private func buildDpad(in ctl: UIView) {
     let side: CGFloat = 204      // 圆盘直径
     let cx: CGFloat = 104        // 盘心 x（左侧偏下，少挡画面）
-    let h = max(ctl.bounds.height, UIScreen.main.bounds.height)
+    let h = ctl.bounds.height   // 用真实窗口高度（横屏时≠UIScreen.main.bounds）
     let cy = h - 150             // 盘心 y
     let pad = MkxpDpadView(frame: CGRect(
         x: cx - side / 2, y: cy - side / 2, width: side, height: side))
@@ -186,8 +190,8 @@ final class MkxpTouchOverlay: NSObject {
     ]
     let d: CGFloat = 72, gap: CGFloat = 14
     let block = d * 2 + gap
-    let w = max(root.bounds.width, UIScreen.main.bounds.width)
-    let h = max(root.bounds.height, UIScreen.main.bounds.height)
+    let w = root.bounds.width    // 用真实窗口尺寸（横屏时 w=896 h=414）
+    let h = root.bounds.height
     let x0 = w - block - 22
     let y0 = h - block - 36
     let positions: [CGRect] = [
@@ -210,7 +214,7 @@ final class MkxpTouchOverlay: NSObject {
 
   private func buildMenuButton(in ctl: UIView, root: UIView) {
     let b = makeGlassButton(title: "⋯")
-    let w = max(root.bounds.width, UIScreen.main.bounds.width)
+    let w = root.bounds.width
     b.frame = CGRect(x: w - 56, y: 28, width: 44, height: 44)
     b.autoresizingMask = [.flexibleLeftMargin, .flexibleBottomMargin]
     b.addTarget(self, action: #selector(menuTap), for: .touchUpInside)
