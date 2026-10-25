@@ -1668,6 +1668,8 @@ void mkxp_key(int rgssKey, int down);
 void mkxp_quit(void);
 // >0 = 引擎已把第一帧画面送上屏（Flutter 加载提示据此收起）
 int mkxp_ios_firstFrameShown(void);
+// 实时平均帧率（约 0.5s 窗口），供原生 FPS 角标显示
+double mkxp_get_avg_fps(void);
 #ifdef __cplusplus
 }
 #endif

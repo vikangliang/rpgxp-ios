@@ -30,6 +30,9 @@ final class MkxpTouchOverlay: NSObject {
   /// 创建后立刻以纯黑盖住 Flutter，Flutter 侧的加载提示根本看不见。
   private var loadingWindow: UIWindow?
   private var loadingTimer: Timer?
+  private var fpsWindow: UIWindow?
+  private var fpsLabel: UILabel?
+  private var fpsTimer: Timer?
 
   // MARK: - 加载 HUD
 
@@ -101,6 +104,56 @@ final class MkxpTouchOverlay: NSObject {
     loadingWindow = nil
   }
 
+  // MARK: - FPS 角标（m4 优化：实时显示帧率诊断流畅度）
+
+  /// 在 SDL 引擎窗口(1999)之上建一个非交互原生窗口，右上角显示实时 FPS；
+  /// 由 0.5s 轮询 MkxpBridge.fps() 更新，引擎退出时 hide() 调 hideFps() 收起。
+  func showFps() {
+    guard fpsWindow == nil else { return }
+    guard let scene = (UIApplication.shared.connectedScenes
+      .first { $0.activationState == .foregroundActive } as? UIWindowScene)
+      ?? (UIApplication.shared.connectedScenes.first as? UIWindowScene) else { return }
+    let win = UIWindow(windowScene: scene)
+    win.windowLevel = UIWindow.Level(rawValue: 2004)  // 高于 SDL 引擎窗(1999)，低于加载 HUD(2005)
+    win.backgroundColor = .clear
+    win.isUserInteractionEnabled = false
+    let vc = UIViewController()
+    vc.view.backgroundColor = .clear
+    let label = UILabel()
+    label.text = "-- FPS"
+    label.textColor = UIColor(white: 1, alpha: 0.9)
+    label.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
+    label.textAlignment = .right
+    label.translatesAutoresizingMaskIntoConstraints = false
+    vc.view.addSubview(label)
+    NSLayoutConstraint.activate([
+      label.topAnchor.constraint(equalTo: vc.view.safeAreaLayoutGuide.topAnchor, constant: 6),
+      label.trailingAnchor.constraint(equalTo: vc.view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+    ])
+    win.rootViewController = vc
+    win.isHidden = false
+    fpsWindow = win
+    fpsLabel = label
+    fpsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+      let f = MkxpBridge.fps()
+      guard let s = self, let lbl = s.fpsLabel else { return }
+      let v = Int(f.rounded())
+      let color: UIColor = f >= 55 ? UIColor(red: 0.20, green: 0.78, blue: 0.35, alpha: 1)
+                    : f >= 30 ? UIColor(red: 1.0, green: 0.84, blue: 0.20, alpha: 1)
+                    : UIColor(red: 1.0, green: 0.27, blue: 0.23, alpha: 1)
+      lbl.text = "\(v) FPS"
+      lbl.textColor = color
+    }
+  }
+
+  func hideFps() {
+    fpsTimer?.invalidate()
+    fpsTimer = nil
+    fpsWindow?.isHidden = true
+    fpsWindow = nil
+    fpsLabel = nil
+  }
+
   // MARK: - 生命周期
 
   /// 引擎启动后调用：创建并展示浮层（幂等）。
@@ -108,6 +161,7 @@ final class MkxpTouchOverlay: NSObject {
     if let win = window {
       win.isHidden = false
       actionHaptic.prepare()   // 切回前台/重新显示时补一次预热
+      showFps()
       return
     }
     let scene = (UIApplication.shared.connectedScenes
@@ -143,11 +197,13 @@ final class MkxpTouchOverlay: NSObject {
     win.isHidden = false
     win.makeKeyAndVisible()
     MkxpLog.append("[overlay] show OK level=\(win.windowLevel.rawValue)")
+    showFps()
   }
 
   func hide() {
     window?.isHidden = true
     hideLoading()
+    hideFps()
   }
 
   /// 切换整体可见性（同时恢复 key window 到 Flutter，避免遮挡返回手势）。

@@ -35,6 +35,11 @@ enum MkxpBridge {
     mkxp_ios_firstFrameShown() != 0
   }
 
+  /// 实时平均帧率（FPS 角标用）。
+  static func fps() -> Double {
+    mkxp_get_avg_fps()
+  }
+
   /// 相对路径统一解析到 App 沙盒 Documents 下。
   static func resolve(_ path: String) -> String {
     if path.hasPrefix("/") { return path }

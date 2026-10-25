@@ -133,6 +133,15 @@ class Mkxp {
     }
   }
 
+  /// 实时平均帧率（FPS 角标/流畅度诊断用；原生侧已直接显示，此通道供日志/调试）。
+  static Future<double> getFps() async {
+    try {
+      return await _ch.invokeMethod('getFps') ?? 0.0;
+    } catch (_) {
+      return 0.0;
+    }
+  }
+
   /// 场景快照列表（引擎落盘的 Documents/scene_dump_*.png，用于无 Mac 调试）。
   static Future<List<SceneDump>> listSceneDumps() async {
     try {
