@@ -49,38 +49,73 @@ extern "C" void mkxp_ios_getScene(GLuint *tex, GLuint *fbo, int *sw, int *sh,
  *      所以 readback 的行序恰好就是显示行序；真机实测再翻一次会上下颠倒。 */
 static UIImageView *g_softView = nil;
 
-/* ---- 软呈现布局(平滑填满) ----
- * 【重要结论，2026-10-25 桌面对照实测】
- * iOS 的 scene(512x384) 与桌面渲染【结构完全一致】: 每 32px 一条 autotile
- * 16px 子块的明暗硬边(素材固有: Graphics/Autotiles/Land.png 每 32x32 块
- * 上半亮度 ~126 / 下半 ~158, 差 31)。实测对照:
- *   iOS scene 1:1   -> 强边界 10 行, 全部 y%32==16, 幅度 107~166
- *   桌面 768x576 显示 -> 强边界 0 行, 幅度仅 14~33
- * 差异并非渲染不同, 而是【Windows 150% DPI 缩放用双线性插值把硬边柔化了】。
- * 因此:
- *   - 用整数倍(2x 最近邻)缩放 -> 硬边被完整保留并加粗成 32 物理像素粗带,
- *     反而比桌面更刺眼(实测用户反馈"还是有");
- *   - 用 ScaleAspectFit 非整数缩放(828/384=2.15625x) -> CoreAnimation 双线性
- *     把硬边抹成柔和过渡带, 观感与桌面一致, 画面还填满。
- * 故采用平滑填满。诊断打印缩放比例便于真机核对。 */
+/* ---- 软呈现布局 + 最近邻上采样 ----
+ * 【为什么自己做上采样，而不是靠 layer.magnificationFilter】
+ * 画面是 512x384 的帧经 glReadPixels 读回后包成 CGImage 交给 UIImageView。
+ * retina 屏上 UIImageView 把 512x384 放大到 ~1572x1179 物理像素是 3x 放大，
+ * CoreAnimation 用双线性插值把精灵图/文字抹糊——比 PC(1.5x)糊。
+ * 之前试过直接设 layer.magnificationFilter=kCAFilterNearest，但 UIImageView 从
+ * 小尺寸源放大时并不吃这个过滤(实测仍糊)，故改为【自己用最近邻把帧放大到屏幕
+ * 实际像素分辨率】，再由 UIImageView 1:1 呈现(CoreAnimation 不做任何重采样)，
+ * 必然锐利、像素网格均匀。 */
+static uint8_t *g_upBuf[2] = {NULL, NULL};  // 上采样乒乓缓冲，避免显示侧异步读时写冲突
+static int g_upW = 0, g_upH = 0;
+static int g_upIdx = 0;
+static int g_softW = 0, g_softH = 0;        // 场景尺寸(读回缓冲宽高)，布局按 AspectFit 计算用
+
+/* 最近邻上采样：把 src(sw x sh) 画到 dw x dh 的位图上下文(kCGInterpolationNone
+ * = 最近邻)。返回新建的 CGImage(引用 g_upBuf[idx])，调用方包成 UIImage 后由
+ * UIImageView 1:1 呈现。乒乓：上一张图仍被显示侧持有，下帧写另一块避免撕裂。 */
+static CGImageRef mkxp_upscaleNearest(CGImageRef src, int sw, int sh, int dw, int dh) {
+    if (dw <= 0 || dh <= 0) return NULL;
+    int idx = g_upIdx;
+    if (g_upW != dw || g_upH != dh) {
+        free(g_upBuf[0]); g_upBuf[0] = NULL;
+        free(g_upBuf[1]); g_upBuf[1] = NULL;
+        g_upW = dw; g_upH = dh;
+    }
+    if (!g_upBuf[idx]) g_upBuf[idx] = (uint8_t *)malloc((size_t)dw * (size_t)dh * 4);
+    if (!g_upBuf[idx]) return NULL;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(g_upBuf[idx], dw, dh, 8, (size_t)dw * 4, cs,
+                                              kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast);
+    CGImageRef out = NULL;
+    if (ctx) {
+        CGContextSetInterpolationQuality(ctx, kCGInterpolationNone);
+        CGContextSetBlendMode(ctx, kCGBlendModeCopy);
+        CGContextDrawImage(ctx, CGRectMake(0, 0, dw, dh), src);
+        out = CGBitmapContextCreateImage(ctx);
+        CGContextRelease(ctx);
+    }
+    CGColorSpaceRelease(cs);
+    g_upIdx = idx ^ 1;
+    return out;
+}
+
+/* 按 AspectFit 把软呈现视图定位到屏幕中心(4:3 居中留黑边)；配合上面的最近邻
+ * 上采样，视图尺寸 == 上采样后的图像尺寸，UIImageView 以 ScaleToFill 1:1 呈现，
+ * CoreAnimation 不做重采样。尺寸未知时兜底 AspectFit。 */
 static void mkxp_layoutSoftView(void) {
     if (!g_softView) return;
     UIView *parent = g_softView.superview;
     if (!parent) return;
     CGRect b = parent.bounds;
     if (b.size.width < 1.0 || b.size.height < 1.0) return;
-    /* 平滑填满：保持 4:3 比例居中留黑边，缩放走双线性插值(见上方说明) */
-    g_softView.contentMode = UIViewContentModeScaleAspectFit;
-    g_softView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
-                                  UIViewAutoresizingFlexibleHeight;
-    double k = (b.size.height > 0.0) ? ((double)b.size.height / 384.0) : 1.0;
-    static int s_last = -1;
-    int ki = (int)(k * 1000.0);
-    if (ki != s_last) {
-        s_last = ki;
-        fprintf(stderr, "[ios-embed] soft view fill scale=%.4f (parent=%.0fx%.0f pt, "
-                        "non-integer -> bilinear softens autotile 16px sub-block edges)\n",
-                k, (double)b.size.width, (double)b.size.height);
+    int sw = g_softW, sh = g_softH;
+    if (sw > 0 && sh > 0) {
+        CGFloat kw = b.size.width / (CGFloat)sw;
+        CGFloat kh = b.size.height / (CGFloat)sh;
+        CGFloat k = (kw < kh) ? kw : kh;
+        CGFloat fw = (CGFloat)sw * k, fh = (CGFloat)sh * k;
+        g_softView.frame = CGRectMake((b.size.width - fw) * 0.5,
+                                      (b.size.height - fh) * 0.5, fw, fh);
+        g_softView.contentMode = UIViewContentModeScaleToFill;
+        g_softView.autoresizingMask = UIViewAutoresizingNone;
+        g_softView.layer.magnificationFilter = kCAFilterNearest;
+    } else {
+        g_softView.contentMode = UIViewContentModeScaleAspectFit;
+        g_softView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                      UIViewAutoresizingFlexibleHeight;
     }
 }
 static uint8_t *g_softBuf = NULL;    // 读回缓冲（行序 = 显示行序，见上）
@@ -89,7 +124,6 @@ static uint8_t *g_softBuf = NULL;    // 读回缓冲（行序 = 显示行序，�
  * 下一帧，就会出现横向断纹（撕裂）。两块缓冲交替写，被引用的那块隔帧才复用。 */
 static uint8_t *g_softDisp[2] = {NULL, NULL};
 static int g_dispIdx = 0;
-static int g_softW = 0, g_softH = 0;
 static uint64_t g_softFrames = 0;
 /* 主线程上屏合并标志：避免主线程被 Flutter 浮层占满时，dispatch_async 的
  * UIImage 更新 block 堆积（每个持 ~786KB → 几秒内存爆掉被系统 jetsam 杀）。
@@ -611,9 +645,22 @@ static void mkxp_softPresent()
         @autoreleasepool {
             CFTimeInterval t0 = CFAbsoluteTimeGetCurrent();
             if (g_softView) {
-                UIImage *img = [UIImage imageWithCGImage:cg];
-                g_softView.image = img;
-                mkxp_layoutSoftView();   /* 旋转/尺寸变化后保持整数倍居中 */
+                /* 自己用最近邻把 512x384 的帧放大到屏幕实际像素分辨率，再 1:1 呈现，
+                 * 绕过 UIImageView 不吃 layer.magnificationFilter 的问题，保证锐利。 */
+                CGFloat dscale = (CGFloat)[UIScreen mainScreen].scale;
+                CGRect pb = g_softView.superview.bounds;
+                CGFloat kw = (pb.size.width > 0) ? (pb.size.width / (CGFloat)sw) : 1e9;
+                CGFloat kh = (pb.size.height > 0) ? (pb.size.height / (CGFloat)sh) : 1e9;
+                CGFloat k = (kw < kh) ? kw : kh;
+                int dispW = (int)((CGFloat)sw * k * dscale);
+                int dispH = (int)((CGFloat)sh * k * dscale);
+                CGImageRef up = mkxp_upscaleNearest(cg, sw, sh, dispW, dispH);
+                if (up) {
+                    UIImage *img = [UIImage imageWithCGImage:up];
+                    g_softView.image = img;
+                    CGImageRelease(up);
+                    mkxp_layoutSoftView();   /* 按 AspectFit 居中定位(1:1 呈现) */
+                }
             }
             CGImageRelease(cg);
             /* 主线程显示开销（CGImage 解码 + UIKit 侧成本），卡顿定位数据 */
@@ -772,6 +819,15 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
      * （= 来回旋转闪退 / BGM+画面突然重启，2026-10-18 日志两次同址崩溃实锤）。 */
     BOOL ok = g_origPresent(self, _cmd, target);
     double presentMs = CFAbsoluteTimeGetCurrent() - hookT0;
+
+    /* 旋转后窗口 bounds 变化 → 软呈现视图需按新的 AspectFit 重新布局(旋转当帧
+     * 读回被跳过，画面不更新；这里延迟一点等 UIKit 完成旋转)。 */
+    if (rotateFrame) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (g_softView) mkxp_layoutSoftView();
+        });
+    }
 
     double softMs = 0;
     if (!rotateFrame) {
