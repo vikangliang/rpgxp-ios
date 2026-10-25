@@ -1,0 +1,5 @@
+# CI applies these patches with `git apply`; they MUST keep LF line endings.
+# core.autocrlf=true converts LF -> CRLF in the working copy, which breaks
+# `git apply` context matching on the CI runner (hunks get silently dropped).
+# -text disables all eol conversion: what is committed is exactly what CI uses.
+scripts/mkxp-framework/*.patch -text
