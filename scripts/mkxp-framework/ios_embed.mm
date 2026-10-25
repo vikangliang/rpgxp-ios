@@ -18,7 +18,6 @@
 #import <OpenGLES/ES2/glext.h>
 #import <stdio.h>
 #import <sys/stat.h>
-#import <string>
 #import <stdlib.h>
 #import <unistd.h>
 #import <signal.h>
@@ -655,36 +654,40 @@ static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id dra
 }
 
 /* 日志轮转：mkxp.log 经 freopen 持续 append，历史/长会话会无限增长；
- * 文件过大时 Flutter 日志页整文件读内存会 OOM 闪退。超过上限时截断保留末尾。 */
+ * 文件过大时 Flutter 日志页整文件读内存会 OOM 闪退。超过上限时截断保留末尾。
+ * 用纯 C 实现（避免 std::string / MAX 宏等潜在坑）；忽略返回值的 stdio 调用加
+ * (void) 以兼容 -Werror（freopen 等标了 warn_unused_result）。 */
 extern "C" void mkxp_ios_trim_log(void) {
     const char *home = getenv("HOME");
     if (!home || !home[0]) return;
-    std::string path = std::string(home) + "/Documents/mkxp.log";
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/Documents/mkxp.log", home);
     struct stat st;
-    if (stat(path.c_str(), &st) != 0) return;
-    static const long long MAX = 4LL * 1024 * 1024;    // 4MB 上限
-    static const long long KEEP = 1LL * 1024 * 1024;   // 保留末尾 1MB
-    if (st.st_size <= MAX) return;
-    long start = (long)st.st_size - (long)KEEP;
+    if (stat(path, &st) != 0) return;
+    static const long long kMaxLogBytes = 4LL * 1024 * 1024;  // 4MB 上限
+    static const long long kKeepLogBytes = 1LL * 1024 * 1024; // 保留末尾 1MB
+    if (st.st_size <= kMaxLogBytes) return;
+    long start = (long)st.st_size - (long)kKeepLogBytes;
     if (start < 0) start = 0;
-    FILE *f = fopen(path.c_str(), "rb");
+    FILE *f = fopen(path, "rb");
     if (!f) return;
-    fseek(f, start, SEEK_SET);
+    (void)fseek(f, start, SEEK_SET);
     long remain = (long)st.st_size - start;
-    std::string buf;
-    buf.resize((size_t)remain);
-    size_t got = fread(&buf[0], 1, (size_t)remain, f);
-    fclose(f);
-    if (got == 0) return;
-    FILE *w = fopen(path.c_str(), "wb");
-    if (!w) return;
-    fwrite(buf.data(), 1, got, w);
-    fclose(w);
+    char *buf = (char *)malloc((size_t)remain);
+    if (!buf) { (void)fclose(f); return; }
+    size_t got = fread(buf, 1, (size_t)remain, f);
+    (void)fclose(f);
+    if (got == 0) { free(buf); return; }
+    FILE *w = fopen(path, "wb");
+    if (!w) { free(buf); return; }
+    (void)fwrite(buf, 1, got, w);
+    (void)fclose(w);
+    free(buf);
     /* stdout/stderr 句柄重新指向新文件(append)，否则还停在旧 inode 偏移 */
-    freopen(path.c_str(), "a", stdout);
-    freopen(path.c_str(), "a", stderr);
-    setvbuf(stdout, nullptr, _IOLBF, 0);
-    setvbuf(stderr, nullptr, _IONBF, 0);
+    (void)freopen(path, "a", stdout);
+    (void)freopen(path, "a", stderr);
+    (void)setvbuf(stdout, nullptr, _IOLBF, 0);
+    (void)setvbuf(stderr, nullptr, _IONBF, 0);
     fprintf(stderr, "\n[log] rotated: was %lld bytes, kept last %lld\n",
             (long long)st.st_size, (long long)got);
 }
