@@ -53,7 +53,7 @@ class MkxpMethodHandler: NSObject {
     case "listGames":
       result([]) // M2 扫描 Documents/games
     case "readLog":
-      result(MkxpLog.readBootstrapLog())
+      result(MkxpLog.readTail())
     case "listSceneDumps":
       result(MkxpSceneDumps.list())
     case "readSceneDump":

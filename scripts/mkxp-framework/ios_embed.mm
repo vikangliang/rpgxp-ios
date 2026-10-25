@@ -17,6 +17,7 @@
 #import <OpenGLES/ES2/gl.h>
 #import <OpenGLES/ES2/glext.h>
 #import <stdio.h>
+#import <sys/stat.h>
 #import <stdlib.h>
 #import <unistd.h>
 #import <signal.h>
@@ -652,6 +653,41 @@ static void swz_renderbufferStorage(id self, SEL _cmd, NSUInteger target, id dra
     g_origRBS(self, _cmd, target, drawable);
 }
 
+/* 日志轮转：mkxp.log 经 freopen 持续 append，历史/长会话会无限增长；
+ * 文件过大时 Flutter 日志页整文件读内存会 OOM 闪退。超过上限时截断保留末尾。 */
+extern "C" void mkxp_ios_trim_log(void) {
+    const char *home = getenv("HOME");
+    if (!home || !home[0]) return;
+    std::string path = std::string(home) + "/Documents/mkxp.log";
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return;
+    static const long long MAX = 4LL * 1024 * 1024;    // 4MB 上限
+    static const long long KEEP = 1LL * 1024 * 1024;   // 保留末尾 1MB
+    if (st.st_size <= MAX) return;
+    long start = (long)st.st_size - (long)KEEP;
+    if (start < 0) start = 0;
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return;
+    fseek(f, start, SEEK_SET);
+    long remain = (long)st.st_size - start;
+    std::string buf;
+    buf.resize((size_t)remain);
+    size_t got = fread(&buf[0], 1, (size_t)remain, f);
+    fclose(f);
+    if (got == 0) return;
+    FILE *w = fopen(path.c_str(), "wb");
+    if (!w) return;
+    fwrite(buf.data(), 1, got, w);
+    fclose(w);
+    /* stdout/stderr 句柄重新指向新文件(append)，否则还停在旧 inode 偏移 */
+    freopen(path.c_str(), "a", stdout);
+    freopen(path.c_str(), "a", stderr);
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+    fprintf(stderr, "\n[log] rotated: was %lld bytes, kept last %lld\n",
+            (long long)st.st_size, (long long)got);
+}
+
 static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
     /* 后台禁止一切 GPU 提交：iOS 会拒绝（kIOGPUCommandBufferCallbackError
      * BackgroundExecutionNotPermitted），实测退后台瞬间刷出数百条
@@ -664,8 +700,10 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
         fprintf(stderr, "[ios-embed] present #%llu (drawablePx=%dx%d)\n",
                 (unsigned long long)n, g_drawW, g_drawH);
     }
-    if (n % 600 == 1)
+    if (n % 600 == 1) {
         mkxp_logMemoryFootprint(n);
+        mkxp_ios_trim_log();   // 长会话中持续限制 mkxp.log 体积，避免日志页 OOM 闪退
+    }
 
     /* 旋转当帧（drawable 尺寸与上帧不同）跳过读回，让 EAGL 重建 drawable 后先稳定 */
     static int s_lastW = 0, s_lastH = 0;

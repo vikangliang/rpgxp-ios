@@ -82,6 +82,7 @@ int mkxp_run(const char *gamePath)
     setenv("RUBY_GC_MALLOC_LIMIT", "67108864", 0);
     setenv("RUBY_GC_OLDMALLOC_LIMIT", "134217728", 0);
 
+    extern "C" void mkxp_ios_trim_log(void);  // 见 ios_embed.mm：mkxp.log 超过上限时轮转截断
     /* stdout/stderr → Documents/mkxp.log：引擎 C++ 日志、Ruby/Essentials 启动报错、
      * shader 编译错误全部落盘，供 App 内日志页读取（无 Mac 环境的唯一调试通道）。
      * 沙盒进程 HOME 即 App 沙盒根。stderr 不缓冲，崩溃前也能看到已写内容。 */
@@ -97,6 +98,7 @@ int mkxp_run(const char *gamePath)
             fprintf(stderr, "\n===== mkxp engine start: %s =====\n", gamePath);
         }
     }
+    mkxp_ios_trim_log();  // 启动即裁剪：历史会话可能已把 mkxp.log 撑到很大
 
     /* 工作目录 = 游戏目录。配合 WORKDIR_CURRENT，mkxp_z_main 不会再 chdir。 */
     if (!mkxp_fs::setCurrentDirectory(gamePath))

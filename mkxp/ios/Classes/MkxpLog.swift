@@ -31,6 +31,27 @@ struct MkxpLog {
     return (try? String(contentsOf: url, encoding: .utf8)) ?? "（无日志文件）"
   }
 
+  /// 读取日志【末尾】最多 maxBytes 字节（避免大文件整文件读入内存导致闪退）。
+  /// 用 FileHandle 只 seek 末尾一段，即使 mkxp.log 被撑到很大也只加载尾部。
+  static func readTail(maxBytes: Int = 256 * 1024) -> String {
+    let url = docsURL().appendingPathComponent(fileName)
+    guard let fh = try? FileHandle(forReadingFrom: url) else { return "（无日志文件）" }
+    defer { try? fh.close() }
+    let total = (try? fh.seekToEnd()) ?? 0
+    guard total > 0 else { return "（日志为空）" }
+    let skip = max(0, Int(total) - maxBytes)
+    fh.seek(toFileOffset: UInt64(skip))
+    let len = Int(total) - skip
+    guard let chunk = try? fh.read(upToCount: len), chunk.count > 0 else { return "（日志为空）" }
+    // 跳过首个可能不完整的行
+    var s = chunk.startIndex
+    if let nl = chunk.firstIndex(of: 10) { s = chunk.index(after: nl) }
+    let tail = chunk.subdata(in: s..<chunk.endIndex)
+    var str = String(data: tail, encoding: .utf8) ?? "（日志解码失败）"
+    if skip > 0 { str = "…（已省略早期 \(skip) 字节，仅显示末尾）…\n" + str }
+    return str
+  }
+
   /// 清空日志（日志页"清空"按钮）。引擎的 stderr 重定向持有已打开的文件句柄，
   /// 删除文件不会断开它——所以用截断（写入空内容）而非删除，保证引擎继续追加。
   static func clear() {
