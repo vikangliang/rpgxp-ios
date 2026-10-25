@@ -11,6 +11,7 @@ import MKXP
 /// 键位映射（用户指定）：
 ///   方向：Up=8 / Down=2 / Left=4 / Right=6（Input::ButtonCode）
 ///   动作：C 确定=13 / ✕ 取消=12 / Z=电脑键盘Z（RGSS A）=11 / ☰ 菜单=电脑键盘D（RGSS Z）=16
+///   肩键：L=电脑键盘A（RGSS X）=14 / R=电脑键盘S（RGSS Y）=15（mkxp-z 默认键表：A→X、S→Y）
 final class MkxpTouchOverlay: NSObject {
   static let shared = MkxpTouchOverlay()
 
@@ -191,6 +192,7 @@ final class MkxpTouchOverlay: NSObject {
 
     buildDpad(in: ctl)
     buildActionButtons(in: ctl, root: root)
+    buildShoulderButtons(in: ctl, root: root)
     buildMenuButton(in: ctl, root: root)
     actionHaptic.prepare()   // 预热 Taptic Engine：首次按动作键时不掉反馈
 
@@ -269,11 +271,44 @@ final class MkxpTouchOverlay: NSObject {
     }
   }
 
-  private func buildMenuButton(in ctl: UIView, root: UIView) {
-    let b = makeGlassButton(title: "⋯")
+  /// 肩键 L / R：参考掌机顶部 L/R 造型，做成宽圆角胶囊，置于左右黑边顶部。
+  /// 键位映射（与现有动作键注释同属 mkxp-z 默认键表）：
+  ///   L = 电脑键盘 A → Input::X(14)
+  ///   R = 电脑键盘 S → Input::Y(15)
+  private func buildShoulderButtons(in ctl: UIView, root: UIView) {
+    let items: [(String, Int32, Bool)] = [
+      ("L", 14, false),   // 左肩：靠左
+      ("R", 15, true),    // 右肩：靠右
+    ]
     let w = root.bounds.width
-    b.frame = CGRect(x: w - 56, y: 28, width: 44, height: 44)
-    b.autoresizingMask = [.flexibleLeftMargin, .flexibleBottomMargin]
+    let bw: CGFloat = 140, bh: CGFloat = 40
+    let top: CGFloat = 34   // 在右上 FPS 角标(顶部)下方，避免与 R 肩键重叠
+    for (label, key, right) in items {
+      let b = makeShoulderButton(title: label)
+      let x = right ? (w - bw - 14) : 14
+      b.frame = CGRect(x: x, y: top, width: bw, height: bh)
+      b.autoresizingMask = right
+        ? [.flexibleLeftMargin, .flexibleBottomMargin]
+        : [.flexibleRightMargin, .flexibleBottomMargin]
+      b.addTarget(self, action: #selector(actionDown(_:)), for: .touchDown)
+      b.addTarget(self, action: #selector(actionUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+      b.tag = Int(key)
+      ctl.addSubview(b)
+    }
+  }
+
+  private func buildMenuButton(in ctl: UIView, root: UIView) {
+    // 菜单按钮改放到左侧黑边的竖向中部：上方是 L 肩键(top=34, 底≈74)，
+    // 下方是方向圆盘(盘心 cy=h-150, 顶=h-252)，中间一段空闲且远离右上 R 肩键与 FPS，
+    // 既不被新肩键遮挡，也便于左手拇指从圆盘上抬时点到。
+    let b = makeGlassButton(title: "⋯")
+    let h = root.bounds.height
+    let dpadTop = h - 150 - 102   // 方向圆盘上沿
+    let yTop = 34 + 40 + 8        // L 肩键底 + 间距
+    let yBot = dpadTop - 44 - 8   // 方向圆盘上沿 - 按钮高 - 间距
+    let y = max(yTop, min(yBot, (yTop + yBot) / 2))
+    b.frame = CGRect(x: 16, y: y, width: 44, height: 44)
+    b.autoresizingMask = [.flexibleRightMargin, .flexibleBottomMargin]
     b.addTarget(self, action: #selector(menuTap), for: .touchUpInside)
     ctl.addSubview(b)
     menuButton = b
@@ -327,6 +362,21 @@ final class MkxpTouchOverlay: NSObject {
     b.layer.cornerRadius = b.frame.height == 0 ? 36 : min(b.frame.width, b.frame.height) / 2
     b.layer.borderWidth = 1
     b.layer.borderColor = UIColor(white: 1, alpha: 0.25).cgColor
+    b.clipsToBounds = true
+    return b
+  }
+
+  /// 肩键胶囊按钮：半透明玻璃 + 细白描边，圆角=高度一半 → 胶囊形（L/R 造型），
+  /// 与动作键同款玻璃拟态，整体视觉一致。
+  private func makeShoulderButton(title: String) -> UIButton {
+    let b = UIButton(type: .system)
+    b.setTitle(title, for: .normal)
+    b.setTitleColor(.white, for: .normal)
+    b.titleLabel?.font = .systemFont(ofSize: 20, weight: .bold)
+    b.backgroundColor = UIColor(white: 1, alpha: 0.08)
+    b.layer.cornerRadius = 20   // == 高度/2 → 胶囊
+    b.layer.borderWidth = 1
+    b.layer.borderColor = UIColor(white: 1, alpha: 0.22).cgColor
     b.clipsToBounds = true
     return b
   }
