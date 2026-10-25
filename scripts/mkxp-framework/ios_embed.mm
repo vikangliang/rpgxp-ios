@@ -46,6 +46,40 @@ extern "C" void mkxp_ios_getScene(GLuint *tex, GLuint *fbo, int *sw, int *sh,
  *      坐标系（它自己上屏时由 metaBlitBufferFlippedScaled 再翻一次），
  *      所以 readback 的行序恰好就是显示行序；真机实测再翻一次会上下颠倒。 */
 static UIImageView *g_softView = nil;
+
+/* ---- 整数倍像素对齐布局 ----
+ * 软呈现的 CGImage 是 512x384(游戏逻辑分辨率)。原先用 ScaleAspectFit 填满
+ * 屏幕，缩放系数 = 物理高/384 = 828/384 = 2.15625(非整数) -> 每个源像素被拉成
+ * 2 或 3 个物理像素, 行宽参差 -> autotile 16px 子块的明暗硬边(素材固有,
+ * Land.png 上下 16px 亮度差 ~32)被放大成参差不齐的粗横带, 即用户报的"横线"
+ * (每个 tile 行一条, 与 RGSS 的 y 轴对齐)。
+ * 这里改为按【整数倍】缩放并居中: 512x384 points 在 2x 屏上恰为 1024x768
+ * 物理像素, 每源像素严格 2x2, 像素网格完全对齐, 硬边变回规整的 32 物理像素
+ * 带(与桌面 1:1 观感一致)。
+ * 代价: 比填满时小约 7%(2x vs 2.156x), 四周留黑边 —— 对像素游戏这是正确取舍。 */
+static void mkxp_layoutSoftView(void) {
+    if (!g_softView) return;
+    UIView *parent = g_softView.superview;
+    if (!parent) return;
+    CGRect b = parent.bounds;
+    if (b.size.width < 1.0 || b.size.height < 1.0) return;
+    int scale = (int)(b.size.width / 512.0);
+    int sy = (int)(b.size.height / 384.0);
+    if (scale > sy) scale = sy;
+    if (scale < 1) scale = 1;
+    CGFloat w = 512.0 * scale, h = 384.0 * scale;
+    g_softView.frame = CGRectMake(roundf((b.size.width - w) * 0.5f),
+                                   roundf((b.size.height - h) * 0.5f), w, h);
+    g_softView.contentMode = UIViewContentModeScaleToFill;
+    /* 布局变化时打印一次，便于真机确认是否整数倍(每源像素 2x2) */
+    static CGRect s_last = {{0,0},{0,0}};
+    if (!CGRectEqualToRect(s_last, g_softView.frame)) {
+        s_last = g_softView.frame;
+        fprintf(stderr, "[ios-embed] soft view layout frame=%s scale=%d (parent=%.0fx%.0f pt)\n",
+                NSStringFromCGRect(g_softView.frame).UTF8String, scale,
+                (double)b.size.width, (double)b.size.height);
+    }
+}
 static uint8_t *g_softBuf = NULL;    // 读回缓冲（行序 = 显示行序，见上）
 /* 双缓冲乒乓：显示侧 CA 光栅化是【异步】的——pending 清零只代表 image 已设置，
  * render server 可能仍在读上一块缓冲的像素。若引擎线程立刻往同一块 memcpy
@@ -511,6 +545,7 @@ static void mkxp_softPresent()
             if (g_softView) {
                 UIImage *img = [UIImage imageWithCGImage:cg];
                 g_softView.image = img;
+                mkxp_layoutSoftView();   /* 旋转/尺寸变化后保持整数倍居中 */
             }
             CGImageRelease(cg);
             /* 主线程显示开销（CGImage 解码 + UIKit 侧成本），卡顿定位数据 */
@@ -819,9 +854,11 @@ extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
         if (g_softView) return;
         UIImageView *iv = [[UIImageView alloc] initWithFrame:sdlWin.bounds];
         iv.backgroundColor = [UIColor blackColor];
-        iv.contentMode = UIViewContentModeScaleAspectFit;
-        iv.autoresizingMask = UIViewAutoresizingFlexibleWidth |
-                              UIViewAutoresizingFlexibleHeight;
+        /* 整数倍缩放 + 居中(见 mkxp_layoutSoftView): 不用 ScaleAspectFit 填满,
+         * 那会得到非整数缩放(2.156x), 使 autotile 16px 子块硬边被放大成参差不齐
+         * 的粗横带(用户报的"横线")。 */
+        iv.contentMode = UIViewContentModeScaleToFill;
+        iv.autoresizingMask = UIViewAutoresizingNone;   /* 手动布局, 不随父视图拉伸 */
         iv.opaque = YES;
         iv.userInteractionEnabled = YES;
         {
@@ -833,6 +870,7 @@ extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
         }
         [sdlWin addSubview:iv];
         g_softView = iv;   /* 生命期与 App 一致，故意不释放 */
+        mkxp_layoutSoftView();   /* 立即按整数倍居中(autoresizingMask=None, 需手动布局) */
         fprintf(stderr, "[ios-embed] soft view created frame=%s\n",
                 NSStringFromCGRect(sdlWin.bounds).UTF8String);
     });
