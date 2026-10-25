@@ -335,7 +335,7 @@ final class MkxpTouchOverlay: NSObject {
       self?.toggle()
     })
     alert.addAction(UIAlertAction(title: "退出游戏", style: .destructive) { [weak self] _ in
-      self?.exitGame()
+      self?.confirmExit(vc: vc)
     })
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
     if let pop = alert.popoverPresentationController {
@@ -343,6 +343,16 @@ final class MkxpTouchOverlay: NSObject {
       pop.sourceRect = CGRect(x: vc.view.bounds.midX, y: 30, width: 1, height: 1)
     }
     vc.present(alert, animated: true)
+  }
+
+  /// 退出前二次确认，避免误触「退出游戏」直接关掉引擎。
+  private func confirmExit(vc: UIViewController) {
+    let a = UIAlertController(title: "确定退出游戏？", message: nil, preferredStyle: .alert)
+    a.addAction(UIAlertAction(title: "取消", style: .cancel))
+    a.addAction(UIAlertAction(title: "确定退出", style: .destructive) { [weak self] _ in
+      self?.exitGame()
+    })
+    vc.present(a, animated: true)
   }
 
   /// 退出游戏：收浮层 → 转回竖屏 → 引擎走 SDL_QUIT 清理（窗口销毁后露出 Flutter）。
