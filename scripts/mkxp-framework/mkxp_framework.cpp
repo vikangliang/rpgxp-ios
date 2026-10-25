@@ -65,6 +65,8 @@ extern "C" {
 
 /* 启动引擎。gamePath 指向游戏目录（含 Game.ini / Data/）。
  * 返回：0 成功（已派发到主线程）；-1 参数为空；-2 引擎已在运行；-3 游戏目录不存在。 */
+void mkxp_ios_trim_log(void);  // 见 ios_embed.mm：mkxp.log 超过上限时轮转截断（在 extern "C" { 块内，自动 C 链接）
+
 int mkxp_run(const char *gamePath)
 {
     if (!gamePath || !gamePath[0])
@@ -82,7 +84,6 @@ int mkxp_run(const char *gamePath)
     setenv("RUBY_GC_MALLOC_LIMIT", "67108864", 0);
     setenv("RUBY_GC_OLDMALLOC_LIMIT", "134217728", 0);
 
-    extern "C" void mkxp_ios_trim_log(void);  // 见 ios_embed.mm：mkxp.log 超过上限时轮转截断
     /* stdout/stderr → Documents/mkxp.log：引擎 C++ 日志、Ruby/Essentials 启动报错、
      * shader 编译错误全部落盘，供 App 内日志页读取（无 Mac 环境的唯一调试通道）。
      * 沙盒进程 HOME 即 App 沙盒根。stderr 不缓冲，崩溃前也能看到已写内容。 */
