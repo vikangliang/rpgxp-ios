@@ -437,6 +437,31 @@ static void mkxp_softPresent()
                     fprintf(stderr, "[ios-embed] COPYLINE2 none (frame #%llu)\n",
                             (unsigned long long)g_softFrames);
             }
+
+            /* ---- 垂直 2x 复制覆盖率(VREP) ----
+             * COPYLINE2(#600) 已抓到连续偶数行隔行复制, y=96(y%%32=0) diff=0.00。
+             * 为区分【全屏每2行条纹】(屏幕固定, 不可能随地图滚动/tone 变)
+             * 与【局部 tile 行错位】(随地图滚动, 能解释 tone 时出现),
+             * 统计偶数行 y 与上行(y-1)几乎相同(diff<2)的比例。
+             * 高比例(>50%) -> 全屏性垂直 2x 复制; 低比例 -> 局部错位。 */
+            {
+                int sameCnt = 0, tot = 0;
+                for (int y = 2; y < sh && y < 1024; y += 2) {
+                    const uint8_t *r0 = g_softBuf + (size_t)(y - 1) * stride;
+                    const uint8_t *r1 = g_softBuf + (size_t)y * stride;
+                    uint64_t acc = 0;
+                    for (int x = 0; x < sw; ++x) {
+                        int l0 = (r0[x * 4] + r0[x * 4 + 1] + r0[x * 4 + 2]) / 3;
+                        int l1 = (r1[x * 4] + r1[x * 4 + 1] + r1[x * 4 + 2]) / 3;
+                        acc += (uint64_t)((l0 > l1) ? (l0 - l1) : (l1 - l0));
+                    }
+                    ++tot;
+                    if ((double)acc / (double)sw < 2.0) ++sameCnt;
+                }
+                fprintf(stderr, "[ios-embed] VREP evenRowsSame=%.1f%% (%d/%d) (frame #%llu)\n",
+                        tot ? 100.0 * sameCnt / tot : 0.0, sameCnt, tot,
+                        (unsigned long long)g_softFrames);
+            }
         }
         mkxp_dumpSceneToDoc(dumpImg, g_softFrames);
         CFRelease(dumpImg);
