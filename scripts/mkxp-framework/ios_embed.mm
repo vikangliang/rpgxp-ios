@@ -258,32 +258,38 @@ extern "C" void mkxp_ios_inject_mouse(float nx, float ny, int down) {
     }
     int mx = (int)(rx * (float)winW);
     int my = (int)(ry * (float)winH);
-    // 取证: 首帧打印窗口几何, 每次按下打印最终坐标(供真机核对偏移是否消除)
+    // 取证: 首帧打印窗口几何与 SDL_GetMouseState(看 warp 是否生效)
     static int g_geo = 0;
-    if (!g_geo) { g_geo = 1; fprintf(stderr,
-        "[mouse-geo] SDL_GetWindowSize=%dx%d sdlWin.frame=%.0f,%.0f %.0fx%.0f\n",
-        winW, winH, fr.origin.x, fr.origin.y, fr.size.width, fr.size.height); }
+    if (!g_geo) { g_geo = 1; int mxp = 0, myp = 0; Uint32 mst = SDL_GetMouseState(&mxp, &myp);
+        (void)mst; fprintf(stderr,
+        "[mouse-geo] SDL_GetWindowSize=%dx%d sdlWin.frame=%.0f,%.0f %.0fx%.0f getMouseState=%d,%d\n",
+        winW, winH, fr.origin.x, fr.origin.y, fr.size.width, fr.size.height, mxp, myp); }
     if (down && !g_down) fprintf(stderr,
         "[mouse-down] nx=%.4f ny=%.4f -> mx=%d my=%d\n", nx, ny, mx, my);
-    // 位置：warp 更新 SDL 内部鼠标状态（覆盖轮询消费）并合成 SDL_MOUSEMOTION；
-    // 同时显式再推一条【带正确按键掩码(state)】的 SDL_MOUSEMOTION——
-    // mkxp-z 的 Mouse 模块从 motion.state 读按键状态，若拖动时只靠 warp 合成的
-    // motion(state=0) 会把按键复位成抬起，导致"按住拖动"(如拿食物)失效。真实鼠标
-    // 按住拖动时 motion 也带 state，这里照做，按键状态在拖动全程保持。
-    if (g_win) SDL_WarpMouseInWindow(g_win, (float)mx, (float)my);
+
+    // 位置必须在按钮之前更新: mkxp-z 只在 SDL_MOUSEMOTION(eventthread.cpp:439)里写
+    // mouseState.x/y, MOUSEBUTTONDOWN 不写位置。iOS 上 SDL_WarpMouseInWindow 对无系统光标
+    // 常是空操作(位置停在旧值), 且其异步生成的 motion 会搅乱顺序, 导致按钮落在旧坐标(
+    // 现象: 先点旧处再移到新处)。故【去掉 warp】, 只推一条 MOUSEMOTION(带真实鼠标 ID=1,
+    // 避免被 eventthread 的 SDL_TOUCH_MOUSEID 丢弃分支误伤)更新位置, 随后推 MOUSEBUTTON。
+    // xrel 用上一帧位置算, 确保这条 motion 被 mkxp 当作有效移动处理。
+    static int g_lx = 0, g_ly = 0;
     SDL_Event ev;
     SDL_zero(ev);
     ev.type = SDL_MOUSEMOTION;
+    ev.motion.which = 1;
+    ev.motion.state = down ? SDL_BUTTON_LMASK : 0;
     ev.motion.x = mx;
     ev.motion.y = my;
-    ev.motion.xrel = 0;
-    ev.motion.yrel = 0;
-    ev.motion.state = down ? SDL_BUTTON_LMASK : 0;
+    ev.motion.xrel = mx - g_lx;
+    ev.motion.yrel = my - g_ly;
     ev.motion.windowID = g_iosWinId;
     SDL_PushEvent(&ev);
+    g_lx = mx; g_ly = my;
     if (down != g_down) {
         SDL_zero(ev);
         ev.type = down ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+        ev.button.which = 1;
         ev.button.button = SDL_BUTTON_LEFT;
         ev.button.state = down ? SDL_PRESSED : SDL_RELEASED;
         ev.button.x = mx;
