@@ -1,14 +1,16 @@
+diff --git a/shader/common.h b/shader/common.h
+index 16704c4..33b1686 100644
 --- a/shader/common.h
 +++ b/shader/common.h
-@@ -1,10 +1,10 @@
- #ifdef GLSL_ES
+@@ -1,6 +1,10 @@
+ #ifdef GLSLES
+ 
 -precision mediump float;
++#ifdef GL_FRAGMENT_PRECISION_HIGH
 +precision highp float; /* iOS: highp for GLES (shader-precision.patch) */
++#else
++precision mediump float; /* iOS: highp for GLES (shader-precision.patch) */
++#endif
  
  #else
- // Desktop GLSL doesn't know about these *
- #define highp
- #define mediump
- #define lowp
  
- #endif
