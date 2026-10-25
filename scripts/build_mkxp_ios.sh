@@ -1670,6 +1670,11 @@ void mkxp_quit(void);
 int mkxp_ios_firstFrameShown(void);
 // 实时平均帧率（约 0.5s 窗口），供原生 FPS 角标显示
 double mkxp_get_avg_fps(void);
+// iOS 触摸→鼠标注入：原生浮层空白区捕获触摸后调用，驱动 RGSS Mouse 模块
+// （Pokémon Amie 等依赖鼠标的插件在 iOS 上才能用触摸）。
+void mkxp_ios_inject_mouse(int x, int y, int down);
+// 三指截屏(spng 快速路径)切换，供原生浮层转发。
+void mkxp_ios_toggle_spng(void);
 #ifdef __cplusplus
 }
 #endif

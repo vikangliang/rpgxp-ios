@@ -1,4 +1,5 @@
 import UIKit
+import MKXP
 
 /// 原生触摸控制浮层（M2 阶段二）。
 ///
@@ -331,12 +332,51 @@ final class MkxpTouchOverlay: NSObject {
   }
 }
 
-/// 穿透视图：命中自身（即空白区域）时返回 nil，让触摸落到下层 SDL 窗口；
-/// 命中子按钮（方向键/动作键）时正常返回按钮。解决“按钮收不到触摸”。
+/// 穿透视图：空白区命中自身时返回 self（【捕获】触摸并转成 SDL 鼠标事件注入引擎），
+/// 命中子按钮（方向键/动作键/菜单）时正常返回按钮（走键盘注入）。
+/// 原实现返回 nil 让触摸穿透到下层 SDL 窗口，但 SDL 窗口上的 g_softView 会吞掉所有触摸，
+/// 导致 RGSS Mouse 模块永远收不到输入——Pokémon Amie 等依赖鼠标的插件在 iOS 上失效。
 final class MkxpPassthroughView: UIView {
+  private var mouseTouch: UITouch?
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    backgroundColor = .clear
+    isMultipleTouchEnabled = true
+    let spng = UITapGestureRecognizer(target: self, action: #selector(spngTap(_:)))
+    spng.numberOfTouchesRequired = 3
+    spng.numberOfTapsRequired = 1
+    addGestureRecognizer(spng)
+  }
+  required init?(coder: NSCoder) { fatalError() }
+
   override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
     let v = super.hitTest(point, with: event)
-    return v === self ? nil : v
+    return v === self ? self : v
+  }
+
+  // MARK: - 空白区触摸 → SDL 鼠标（驱动 RGSS Mouse 模块）
+  override func touchesBegan(_ t: Set<UITouch>, with e: UIEvent?) {
+    if mouseTouch == nil, let touch = t.first { mouseTouch = touch; inject(touch, down: true) }
+  }
+  override func touchesMoved(_ t: Set<UITouch>, with e: UIEvent?) {
+    if let touch = mouseTouch, t.contains(touch) { inject(touch, down: true) }
+  }
+  override func touchesEnded(_ t: Set<UITouch>, with e: UIEvent?) {
+    if let touch = mouseTouch, t.contains(touch) { inject(touch, down: false); mouseTouch = nil }
+  }
+  override func touchesCancelled(_ t: Set<UITouch>, with e: UIEvent?) {
+    if let touch = mouseTouch, t.contains(touch) { inject(touch, down: false); mouseTouch = nil }
+  }
+
+  private func inject(_ touch: UITouch, down: Bool) {
+    let p = touch.location(in: self)
+    mkxp_ios_inject_mouse(Int32(p.x), Int32(p.y), down ? Int32(1) : Int32(0))
+  }
+
+  /// 三指轻点：切换 spng 快速路径截屏（原挂在 g_softView，现浮层接管空白区触摸后转挂此处）。
+  @objc private func spngTap(_ g: UITapGestureRecognizer) {
+    if g.state == .ended { mkxp_ios_toggle_spng() }
   }
 }
 

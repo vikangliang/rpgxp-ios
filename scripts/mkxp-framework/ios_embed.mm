@@ -28,6 +28,7 @@
 
 static UIView *g_hostView = nil;
 static SDL_Window *g_win = NULL;
+static Uint32 g_iosWinId = 0;   // mkxp_ios_embedIntoView 取 SDL 窗口 ID，鼠标注入事件用
 static UIWindow *g_sdlWin = nil;
 static int g_drawW = 0, g_drawH = 0;   // renderbufferStorage 时记录的 drawable 像素尺寸
 
@@ -156,6 +157,34 @@ static void mkxp_toggleSpng(void) {
     fprintf(stderr,
         "[ios-embed] spng A/B: 三指轻点再次切换；观察画面颜色块是否随切换变化\n");
 }
+
+/* iOS 触摸→鼠标注入：原生浮层(MkxpPassthroughView)在空白区捕获触摸后调用，
+ * 把触摸转成 SDL 鼠标事件推入队列，驱动 RGSS Mouse 模块
+ * （Pokémon Amie 等依赖鼠标的插件在 iOS 上才能用触摸）。
+ * 位置用 SDL_WarpMouseInWindow：既更新 SDL 内部鼠标状态（覆盖事件驱动与轮询两种
+ * 消费方式），又自动合成 SDL_MOUSEMOTION 事件；按键用 SDL_PushEvent 推
+ * SDL_MOUSEBUTTONDOWN/UP（按钮状态 mkxp-z 走事件）。坐标用 UIKit 点(与 UITouch 一致)，
+ * SDL UIKit 后端窗口尺寸即点，1:1 对应。 */
+extern "C" void mkxp_ios_inject_mouse(int x, int y, int down) {
+    static int g_down = 0;
+    if (g_win) SDL_WarpMouseInWindow(g_win, (float)x, (float)y);
+    if (down != g_down) {
+        SDL_Event ev;
+        SDL_zero(ev);
+        ev.type = down ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+        ev.button.button = SDL_BUTTON_LEFT;
+        ev.button.state = down ? SDL_PRESSED : SDL_RELEASED;
+        ev.button.x = x;
+        ev.button.y = y;
+        ev.button.windowID = g_iosWinId;
+        SDL_PushEvent(&ev);
+        g_down = down;
+    }
+}
+
+/* 三指截屏(spng 快速路径)切换：mkxp_toggleSpng 是 static，包一层 extern "C"
+ * 供 Swift 浮层在接管空白区触摸后转发。 */
+extern "C" void mkxp_ios_toggle_spng(void) { mkxp_toggleSpng(); }
 
 /* 场景快照落盘：无 Mac 环境下定位“画面内容对不对”的铁证。
  * 在 Documents/scene_dump_N.png 生成 PNG，Flutter 日志页可直接查看/分享。 */
@@ -901,6 +930,7 @@ extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
     UIWindow *sdlWin = (UIWindow *)wm.info.uikit.window;
     if (!sdlWin) { fprintf(stderr, "[ios-embed] sdlWin nil\n"); return; }
     g_win = win;
+    g_iosWinId = SDL_GetWindowID(g_win);
     g_sdlWin = sdlWin;
     fprintf(stderr, "[ios-embed] embedIntoView: win=%p scene=%p\n", (void *)sdlWin, (void *)sdlWin.windowScene);
 
