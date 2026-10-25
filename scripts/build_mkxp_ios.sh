@@ -1531,6 +1531,27 @@ git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/ios-winsize.patch" 2>/dev
  || { echo "FATAL: ios-winsize.patch 应用失败（v2.4.2 源码对不上？）"; exit 1; }
 echo "applied ios-winsize.patch (iOS 黑屏修复：winSize 同步真实窗口尺寸)"
 
+# shader-precision.patch：iOS(GLES) 纹理采样精度修复。
+# 根因：mkxp-z 的 shader/common.h 在 GLES 分支声明 `precision mediump float;`
+#   桌面 OpenGL 走 `#define mediump`(空) 即等同 highp；而 iOS 的 GLES/Metal 严格
+#   执行 mediump（仅 10 位有效位）-> 归一化纹理坐标误差 ~2^-10 -> 对 1056 宽的
+#   autotile 展开纹理相当于 1 像素偏移 -> 16x16 子块边界处采到【相邻子块】的颜色，
+#   表现为每 32 像素一条错色横线（桌面 OpenGL 无此问题）。
+# 改为 highp 即消除。iOS 的 GLES 3.0 必需支持 fragment highp，且这些着色器只是一次
+# texture2D，性能影响可忽略。
+git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/shader-precision.patch" 2>/dev/null \
+  || patch -p1 -f --no-backup-if-mismatch -d "$MKXP_SRC" \
+       < "$ROOT/scripts/mkxp-framework/shader-precision.patch" \
+  || { echo "FATAL: shader-precision.patch apply failed"; exit 1; }
+echo "applied shader-precision.patch (GLES mediump -> highp texture coords)"
+
+# 签名自证：hunk 被 `patch -p1 -f` 静默丢弃时（源码对不上）必须直接 FATAL，
+# 否则会出「以为修了其实没修」的包（与 framework-entry.patch 同款铁律）。
+if ! grep -rqF "iOS: highp for GLES" "$MKXP_SRC/shader/common.h" 2>/dev/null; then
+  echo "FATAL: shader-precision.patch signature missing (shader/common.h not patched)"; exit 1
+fi
+echo "verified: shader-precision.patch signature present"
+
 cp -f "$ROOT/scripts/mkxp-framework/mkxp_framework.cpp" "$MKXP_SRC/src/mkxp_framework.cpp"
 echo "installed mkxp_framework.cpp"
 cp -f "$ROOT/scripts/mkxp-framework/ios_embed.mm" "$MKXP_SRC/src/ios_embed.mm"

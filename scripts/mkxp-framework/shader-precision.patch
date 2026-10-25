@@ -1,0 +1,14 @@
+--- a/shader/common.h
++++ b/shader/common.h
+@@ -1,10 +1,10 @@
+ #ifdef GLSL_ES
+-precision mediump float;
++precision highp float; /* iOS: highp for GLES (shader-precision.patch) */
+ 
+ #else
+ // Desktop GLSL doesn't know about these *
+ #define highp
+ #define mediump
+ #define lowp
+ 
+ #endif
