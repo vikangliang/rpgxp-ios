@@ -257,7 +257,6 @@ index 64dc47f..c48543b 100644
 +static int g_iosSceneW = 0, g_iosSceneH = 0;
 +static int g_iosOx = 0, g_iosOy = 0, g_iosSw = 0, g_iosSh = 0;
 +static int g_iosWw = 0, g_iosWh = 0;
-+extern "C" void mkxp_ios_onFramePresented(void);
 +
 +extern "C" void mkxp_ios_getScene(GLuint *tex, GLuint *fbo, int *sw, int *sh,
 +                                  int *ox, int *oy, int *ww, int *wh)
@@ -452,7 +451,6 @@ index 64dc47f..c48543b 100644
          GLMeta::blitEnd();
          
 +        probeScreenPixels();
-+        mkxp_ios_onFramePresented();
 +        
          swapGLBuffer();
          

@@ -102,14 +102,13 @@ static volatile sig_atomic_t g_appBackgrounded = 0;
  * 不加会被 C++ 改名，Swift 按纯 C 符号链接会报 Undefined symbol。 */
 extern "C" int mkxp_ios_firstFrameShown(void) { return atomic_load(&g_firstFrameShown); }
 
-/* FPS 角标：每 RGSS 帧由 ios-winsize.patch 的 redrawScreen 调 mkxp_ios_onFramePresented
- * 计数；这里按 ~0.5s 窗口算平均帧率，供 MkxpTouchOverlay 原生角标显示。 */
-static uint64_t g_iosFrameCount = 0;
-extern "C" void mkxp_ios_onFramePresented(void) { g_iosFrameCount++; }
+/* FPS 角标：每帧 EAGL present 钩子(swz_presentRenderbuffer)自增 g_presentTotal，
+ * 这里按 ~0.5s 窗口算平均帧率，供 MkxpTouchOverlay 原生角标显示。
+ * 复用既有 g_presentTotal（presentRenderbuffer: 每帧必触发），无需改 graphics.cpp。 */
 extern "C" double mkxp_get_avg_fps(void) {
     static uint64_t lastCount = 0;
     static double lastTime = 0;
-    uint64_t now = g_iosFrameCount;
+    uint64_t now = g_presentTotal;
     double t = [[NSDate date] timeIntervalSince1970];
     if (lastTime == 0) { lastCount = now; lastTime = t; return 0.0; }
     double dt = t - lastTime;
