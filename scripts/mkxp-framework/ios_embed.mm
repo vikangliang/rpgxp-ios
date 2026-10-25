@@ -63,28 +63,62 @@ static int g_upW = 0, g_upH = 0;
 static int g_upIdx = 0;
 static int g_softW = 0, g_softH = 0;        // 场景尺寸(读回缓冲宽高)，布局按 AspectFit 计算用
 
-/* 最近邻上采样：把 src(sw x sh) 画到 dw x dh 的位图上下文(kCGInterpolationNone
- * = 最近邻)。返回新建的 CGImage(引用 g_upBuf[idx])，调用方包成 UIImage 后由
- * UIImageView 1:1 呈现。乒乓：上一张图仍被显示侧持有，下帧写另一块避免撕裂。 */
+/* 最近邻上采样：手写逐像素最近邻拷贝到 dw x dh，再包成 CGImage 交给 UIImageView
+ * 1:1 呈现(CoreAnimation 不再做任何重采样)。
+ * 【为什么不用 CGContextDrawImage + kCGInterpolationNone】
+ * iOS 上 CoreGraphics 对 CGContextDrawImage 的插值质量常被静默忽略、回退双线性——
+ * 这正是 54fa1be(CA magnificationFilter) 与 e702867(CG DrawImage) 两次“最近邻”都仍糊
+ * 的统一根因。这里直接逐像素取源像素 = floor(dst*src/dst)，100% 最近邻，不依赖任何
+ * CG 插值设置。乒乓缓冲(2块)避免显示侧异步读时写冲突；x/y 映射表按尺寸缓存避免每帧重算。 */
+static int *g_mapX = NULL, *g_mapY = NULL;
+static int g_mapW = 0, g_mapH = 0;
+
 static CGImageRef mkxp_upscaleNearest(CGImageRef src, int sw, int sh, int dw, int dh) {
-    if (dw <= 0 || dh <= 0) return NULL;
+    if (dw <= 0 || dh <= 0 || !src) return NULL;
     int idx = g_upIdx;
     if (g_upW != dw || g_upH != dh) {
         free(g_upBuf[0]); g_upBuf[0] = NULL;
         free(g_upBuf[1]); g_upBuf[1] = NULL;
         g_upW = dw; g_upH = dh;
+        free(g_mapX); free(g_mapY);
+        g_mapX = (int *)malloc((size_t)dw * sizeof(int));
+        g_mapY = (int *)malloc((size_t)dh * sizeof(int));
+        if (g_mapX && g_mapY) {
+            for (int x = 0; x < dw; ++x) g_mapX[x] = (int)((long long)x * sw / dw);
+            for (int y = 0; y < dh; ++y) g_mapY[y] = (int)((long long)y * sh / dh);
+        }
+        g_mapW = dw; g_mapH = dh;
     }
     if (!g_upBuf[idx]) g_upBuf[idx] = (uint8_t *)malloc((size_t)dw * (size_t)dh * 4);
-    if (!g_upBuf[idx]) return NULL;
+    if (!g_upBuf[idx] || !g_mapX || !g_mapY) return NULL;
+
+    /* 取源像素(RGBA, 4 字节/像素; stride 用 CGImageGetBytesPerRow 含对齐) */
+    CGDataProviderRef dp = CGImageGetDataProvider(src);
+    CFDataRef data = dp ? CGDataProviderCopyData(dp) : NULL;
+    if (!data) return NULL;
+    const uint8_t *sp = CFDataGetBytePtr(data);
+    size_t sbpr = CGImageGetBytesPerRow(src);
+    uint8_t *dpix = g_upBuf[idx];
+    for (int y = 0; y < dh; ++y) {
+        const uint8_t *srow = sp + (size_t)g_mapY[y] * sbpr;
+        uint8_t *drow = dpix + (size_t)y * (size_t)dw * 4;
+        for (int x = 0; x < dw; ++x) {
+            const uint8_t *s = srow + (size_t)g_mapX[x] * 4;
+            size_t o = (size_t)x * 4;
+            drow[o]   = s[0];
+            drow[o+1] = s[1];
+            drow[o+2] = s[2];
+            drow[o+3] = s[3];
+        }
+    }
+    CFRelease(data);
+
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGContextRef ctx = CGBitmapContextCreate(g_upBuf[idx], dw, dh, 8, (size_t)dw * 4, cs,
-                                              kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast);
+                                             kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast);
     CGImageRef out = NULL;
     if (ctx) {
-        CGContextSetInterpolationQuality(ctx, kCGInterpolationNone);
-        CGContextSetBlendMode(ctx, kCGBlendModeCopy);
-        CGContextDrawImage(ctx, CGRectMake(0, 0, dw, dh), src);
-        out = CGBitmapContextCreateImage(ctx);
+        out = CGBitmapContextCreateImage(ctx);   /* 引用 g_upBuf[idx]，显示侧隔帧才复用 -> 安全 */
         CGContextRelease(ctx);
     }
     CGColorSpaceRelease(cs);
