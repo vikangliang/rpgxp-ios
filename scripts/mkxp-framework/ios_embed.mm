@@ -235,13 +235,36 @@ static void mkxp_toggleSpng(void) {
  * SDL UIKit 后端窗口尺寸即点，1:1 对应。 */
 extern "C" void mkxp_ios_inject_mouse(float nx, float ny, int down) {
     static int g_down = 0;
-    // nx,ny 为触摸在浮层(全屏)内的归一化坐标 0..1。SDL 窗口在 iOS 上按像素(retina)计，
-    // 直接用 UIKit 点当坐标会整体缩到 ~1/3，小目标(如食物格)点不中。乘 SDL 窗口尺寸
-    // 得到正确窗口坐标，point/pixel 两种单位都兼容。
+    // 坐标映射修正（喂食栏点不中）: 浮层是全屏, 但 SDL 窗口在 iOS 上常被建成 4:3 并水平
+    // 居中(左右黑边), 其 UIKit frame 原点≠浮层原点。若按全屏归一化直接 nx*winW, 偏离中心
+    // 的点击会整体左移→食物格点不中→被游戏判为"点外面"收起喂食栏。这里先把触摸点还原到
+    // SDL 窗口局部坐标(去水平/垂直居中偏移)再乘窗口尺寸; 假设窗口在屏内居中(全屏尺寸=
+    // 2*origin+窗口尺寸)。SDL_GetWindowSize 的单位(点/像素)与窗口内部坐标一致, 合成事件
+    // 与真实鼠标等价。
     int winW = 0, winH = 0;
     if (g_win) SDL_GetWindowSize(g_win, &winW, &winH);
-    int mx = (int)(nx * (float)winW);
-    int my = (int)(ny * (float)winH);
+    CGRect fr = g_sdlWin ? g_sdlWin.frame : CGRectZero;
+    CGFloat rx, ry;
+    if (fr.size.width > 0 && fr.size.height > 0) {
+        CGFloat fullW = fr.origin.x * 2 + fr.size.width;   // 居中假设下的全屏宽
+        CGFloat fullH = fr.origin.y * 2 + fr.size.height;   // 居中假设下的全屏高
+        CGFloat px = nx * fullW, py = ny * fullH;           // 触摸在全屏的点坐标
+        rx = (px - fr.origin.x) / fr.size.width;            // 窗口局部归一化 0..1
+        ry = (py - fr.origin.y) / fr.size.height;
+        if (rx < 0) rx = 0; else if (rx > 1) rx = 1;        // 点黑边时夹紧, 不越界
+        if (ry < 0) ry = 0; else if (ry > 1) ry = 1;
+    } else {
+        rx = nx; ry = ny;
+    }
+    int mx = (int)(rx * (float)winW);
+    int my = (int)(ry * (float)winH);
+    // 取证: 首帧打印窗口几何, 每次按下打印最终坐标(供真机核对偏移是否消除)
+    static int g_geo = 0;
+    if (!g_geo) { g_geo = 1; fprintf(stderr,
+        "[mouse-geo] SDL_GetWindowSize=%dx%d sdlWin.frame=%.0f,%.0f %.0fx%.0f\n",
+        winW, winH, fr.origin.x, fr.origin.y, fr.size.width, fr.size.height); }
+    if (down && !g_down) fprintf(stderr,
+        "[mouse-down] nx=%.4f ny=%.4f -> mx=%d my=%d\n", nx, ny, mx, my);
     // 位置：warp 更新 SDL 内部鼠标状态（覆盖轮询消费）并合成 SDL_MOUSEMOTION；
     // 同时显式再推一条【带正确按键掩码(state)】的 SDL_MOUSEMOTION——
     // mkxp-z 的 Mouse 模块从 motion.state 读按键状态，若拖动时只靠 warp 合成的
