@@ -406,18 +406,18 @@ static void mkxp_softPresent()
                 }
             }
 
-            /* ---- 行复制检测(COPYLINE) ----
-             * 用户澄清"纯色线"是肉眼主观, 客观检测(MONOLINE/SEGLINE)在地图帧
-             * 均未抓到纯色线, 只抓到正常草地绿段 -> 真实 bug 是【行错位/复制】。
-             * 最可能是 tone!=0 时 shader 绘制路径对某 tile 行的底部 1px 采样成
-             * 上一 tile 内容 -> 视觉上是一条线; 且相对地图固定(对齐 tile 网格)。
-             * 检测: 与上一行几乎完全相同(diff<2.0)的行。正常地形相邻行差很大
-             * (草地上下半差~40), 若某行与上行几乎相同即"该行复制了上行内容"。
-             * 打印 y/与上行差/y%%32(对齐0/31即坐实 tile 行边界错位)。 */
+            /* ---- 行复制检测(COPYLINE2) ----
+             * 修正: red-ish 确认 dump = 512x384(游戏逻辑分辨率, sw*sh=196608)。
+             * 原 COPYLINE 抓到 y=1,3,5..全奇数行与上行几乎相同 -> 渲染层
+             * 【垂直相邻行相同】(每 2 行一组重复), 这是全屏性行复制, 不是单条 bug 线。
+             * 为排除"每 2 行复制"全屏条纹, 改测【偶数行 y 与隔一行 y-2】是否几乎相同:
+             * 若某偶数行与 y-2(真实上一行)相同 -> 真正的隔行复制错位
+             * (tone 路径 1px 偏差使某 tile 行复制上行内容)。
+             * 对齐 y%%64==0/63(tile 行边界) 或 y%%32==0/31(16px 子块边界) 即坐实。 */
             {
                 int copyPrinted = 0;
-                for (int y = 1; y < sh && y < 1024 && copyPrinted < 12; ++y) {
-                    const uint8_t *r0 = g_softBuf + (size_t)(y - 1) * stride;
+                for (int y = 2; y < sh && y < 1024 && copyPrinted < 12; y += 2) {
+                    const uint8_t *r0 = g_softBuf + (size_t)(y - 2) * stride;
                     const uint8_t *r1 = g_softBuf + (size_t)y * stride;
                     uint64_t acc = 0;
                     for (int x = 0; x < sw; ++x) {
@@ -426,15 +426,15 @@ static void mkxp_softPresent()
                         acc += (uint64_t)((l0 > l1) ? (l0 - l1) : (l1 - l0));
                     }
                     double d = (double)acc / (double)sw;
-                    if (d < 2.0) {
-                        fprintf(stderr, "[ios-embed] COPYLINE y=%d diffVSup=%.2f y%%32=%d "
-                                        "(frame #%llu)\n",
-                                y, d, y % 32, (unsigned long long)g_softFrames);
+                    if (d < 2.5) {
+                        fprintf(stderr, "[ios-embed] COPYLINE2 y=%d diffVSup2=%.2f "
+                                        "y%%64=%d y%%32=%d (frame #%llu)\n",
+                                y, d, y % 64, y % 32, (unsigned long long)g_softFrames);
                         ++copyPrinted;
                     }
                 }
                 if (copyPrinted == 0)
-                    fprintf(stderr, "[ios-embed] COPYLINE none (frame #%llu)\n",
+                    fprintf(stderr, "[ios-embed] COPYLINE2 none (frame #%llu)\n",
                             (unsigned long long)g_softFrames);
             }
         }
