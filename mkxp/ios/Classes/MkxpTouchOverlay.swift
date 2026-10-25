@@ -303,9 +303,9 @@ final class MkxpTouchOverlay: NSObject {
     // 既不被新肩键遮挡，也便于左手拇指从圆盘上抬时点到。
     let b = makeGlassButton(title: "⋯")
     let h = root.bounds.height
-    let dpadTop = h - 150 - 102   // 方向圆盘上沿
-    let yTop = 34 + 40 + 8        // L 肩键底 + 间距
-    let yBot = dpadTop - 44 - 8   // 方向圆盘上沿 - 按钮高 - 间距
+    let dpadTop: CGFloat = h - 150 - 102   // 方向圆盘上沿
+    let yTop: CGFloat = 34 + 40 + 8        // L 肩键底 + 间距
+    let yBot: CGFloat = dpadTop - 44 - 8   // 方向圆盘上沿 - 按钮高 - 间距
     let y = max(yTop, min(yBot, (yTop + yBot) / 2))
     b.frame = CGRect(x: 16, y: y, width: 44, height: 44)
     b.autoresizingMask = [.flexibleRightMargin, .flexibleBottomMargin]
