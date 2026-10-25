@@ -18,6 +18,7 @@
 #import <OpenGLES/ES2/glext.h>
 #import <stdio.h>
 #import <sys/stat.h>
+#import <string>
 #import <stdlib.h>
 #import <unistd.h>
 #import <signal.h>
