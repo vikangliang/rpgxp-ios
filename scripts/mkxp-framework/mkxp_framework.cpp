@@ -114,6 +114,14 @@ int mkxp_run(const char *gamePath)
      * 写死单一朝向会导致"设置选竖屏/系统解锁旋转也不生效"。 */
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait LandscapeLeft LandscapeRight");
 
+    /* iOS 触摸→鼠标合成：MKXP 的 RGSS Mouse 模块只读 SDL 鼠标事件；而 iOS 上 SDL
+     * 把触摸发成手指(finger)事件，导致依赖 Mouse 的插件（如 Pokémon Amie 用的
+     * Easy Mouse System）触摸完全无反应。开启这两个 hint 让 SDL 把触摸合成成鼠标
+     * 移动/按键事件，Mouse.x/y/button? 才能工作。必须在 SDL_Init 前设置。
+     * 用字符串字面量而非宏，规避个别 SDL 版本宏名差异导致的编译错。 */
+    SDL_SetHint("SDL_TOUCH_MOUSE_EVENTS", "1");
+    SDL_SetHint("SDL_TOUCH_MOUSE_BUTTONS", "1");
+
     /* Ruby GC 调优（iOS 无 JIT，Ruby 只能纯解释执行）：Essentials 启动期要
      * 解释 1MB 脚本并定义上万对象（宝可梦/技能/道具…），默认 GC 阈值会触发
      * 海量 GC，是启动慢的主因。放大堆初始槽位与 malloc 阈值可显著缩短启动时间。
