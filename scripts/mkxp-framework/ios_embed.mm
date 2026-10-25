@@ -47,37 +47,38 @@ extern "C" void mkxp_ios_getScene(GLuint *tex, GLuint *fbo, int *sw, int *sh,
  *      所以 readback 的行序恰好就是显示行序；真机实测再翻一次会上下颠倒。 */
 static UIImageView *g_softView = nil;
 
-/* ---- 整数倍像素对齐布局 ----
- * 软呈现的 CGImage 是 512x384(游戏逻辑分辨率)。原先用 ScaleAspectFit 填满
- * 屏幕，缩放系数 = 物理高/384 = 828/384 = 2.15625(非整数) -> 每个源像素被拉成
- * 2 或 3 个物理像素, 行宽参差 -> autotile 16px 子块的明暗硬边(素材固有,
- * Land.png 上下 16px 亮度差 ~32)被放大成参差不齐的粗横带, 即用户报的"横线"
- * (每个 tile 行一条, 与 RGSS 的 y 轴对齐)。
- * 这里改为按【整数倍】缩放并居中: 512x384 points 在 2x 屏上恰为 1024x768
- * 物理像素, 每源像素严格 2x2, 像素网格完全对齐, 硬边变回规整的 32 物理像素
- * 带(与桌面 1:1 观感一致)。
- * 代价: 比填满时小约 7%(2x vs 2.156x), 四周留黑边 —— 对像素游戏这是正确取舍。 */
+/* ---- 软呈现布局(平滑填满) ----
+ * 【重要结论，2026-10-25 桌面对照实测】
+ * iOS 的 scene(512x384) 与桌面渲染【结构完全一致】: 每 32px 一条 autotile
+ * 16px 子块的明暗硬边(素材固有: Graphics/Autotiles/Land.png 每 32x32 块
+ * 上半亮度 ~126 / 下半 ~158, 差 31)。实测对照:
+ *   iOS scene 1:1   -> 强边界 10 行, 全部 y%32==16, 幅度 107~166
+ *   桌面 768x576 显示 -> 强边界 0 行, 幅度仅 14~33
+ * 差异并非渲染不同, 而是【Windows 150% DPI 缩放用双线性插值把硬边柔化了】。
+ * 因此:
+ *   - 用整数倍(2x 最近邻)缩放 -> 硬边被完整保留并加粗成 32 物理像素粗带,
+ *     反而比桌面更刺眼(实测用户反馈"还是有");
+ *   - 用 ScaleAspectFit 非整数缩放(828/384=2.15625x) -> CoreAnimation 双线性
+ *     把硬边抹成柔和过渡带, 观感与桌面一致, 画面还填满。
+ * 故采用平滑填满。诊断打印缩放比例便于真机核对。 */
 static void mkxp_layoutSoftView(void) {
     if (!g_softView) return;
     UIView *parent = g_softView.superview;
     if (!parent) return;
     CGRect b = parent.bounds;
     if (b.size.width < 1.0 || b.size.height < 1.0) return;
-    int scale = (int)(b.size.width / 512.0);
-    int sy = (int)(b.size.height / 384.0);
-    if (scale > sy) scale = sy;
-    if (scale < 1) scale = 1;
-    CGFloat w = 512.0 * scale, h = 384.0 * scale;
-    g_softView.frame = CGRectMake(roundf((b.size.width - w) * 0.5f),
-                                   roundf((b.size.height - h) * 0.5f), w, h);
-    g_softView.contentMode = UIViewContentModeScaleToFill;
-    /* 布局变化时打印一次，便于真机确认是否整数倍(每源像素 2x2) */
-    static CGRect s_last = {{0,0},{0,0}};
-    if (!CGRectEqualToRect(s_last, g_softView.frame)) {
-        s_last = g_softView.frame;
-        fprintf(stderr, "[ios-embed] soft view layout frame=%s scale=%d (parent=%.0fx%.0f pt)\n",
-                NSStringFromCGRect(g_softView.frame).UTF8String, scale,
-                (double)b.size.width, (double)b.size.height);
+    /* 平滑填满：保持 4:3 比例居中留黑边，缩放走双线性插值(见上方说明) */
+    g_softView.contentMode = UIViewContentModeScaleAspectFit;
+    g_softView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                  UIViewAutoresizingFlexibleHeight;
+    double k = (b.size.height > 0.0) ? ((double)b.size.height / 384.0) : 1.0;
+    static int s_last = -1;
+    int ki = (int)(k * 1000.0);
+    if (ki != s_last) {
+        s_last = ki;
+        fprintf(stderr, "[ios-embed] soft view fill scale=%.4f (parent=%.0fx%.0f pt, "
+                        "non-integer -> bilinear softens autotile 16px sub-block edges)\n",
+                k, (double)b.size.width, (double)b.size.height);
     }
 }
 static uint8_t *g_softBuf = NULL;    // 读回缓冲（行序 = 显示行序，见上）
@@ -857,8 +858,9 @@ extern "C" void mkxp_ios_embedIntoView(SDL_Window *win) {
         /* 整数倍缩放 + 居中(见 mkxp_layoutSoftView): 不用 ScaleAspectFit 填满,
          * 那会得到非整数缩放(2.156x), 使 autotile 16px 子块硬边被放大成参差不齐
          * 的粗横带(用户报的"横线")。 */
-        iv.contentMode = UIViewContentModeScaleToFill;
-        iv.autoresizingMask = UIViewAutoresizingNone;   /* 手动布局, 不随父视图拉伸 */
+        iv.contentMode = UIViewContentModeScaleAspectFit;
+        iv.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                              UIViewAutoresizingFlexibleHeight;
         iv.opaque = YES;
         iv.userInteractionEnabled = YES;
         {
