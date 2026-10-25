@@ -317,10 +317,11 @@ final class MkxpTouchOverlay: NSObject {
   // MARK: - 交互
 
   @objc private func actionDown(_ s: UIButton) {
-    // 按下即刻给轻触感（与圆盘方向键一致），再 prepare 为下一次按下预热。
+    // 先发键码再给轻触感：输入响应优先于反馈，避免触感调用排在按键前造成可感延迟
+    // （与圆盘方向键一致的手感仍保留）。
+    MkxpBridge.key(s.tag, down: true)
     actionHaptic.impactOccurred()
     actionHaptic.prepare()
-    MkxpBridge.key(s.tag, down: true)
   }
   @objc private func actionUp(_ s: UIButton)   { MkxpBridge.key(s.tag, down: false) }
 

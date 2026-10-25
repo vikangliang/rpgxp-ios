@@ -20,7 +20,9 @@ enum MkxpBridge {
   /// 注入 RGSS 按键（Input::ButtonCode：下=2 左=4 右=6 上=8，
   /// A=11 B=12 C=13 X=14 Y=15 Z=16 L=17 R=18 F5=25…）。down 为是否按下。
   static func key(_ rgssKey: Int, down: Bool) {
-    MkxpLog.append("[key] k=\(rgssKey) down=\(down)")
+    // 注意：此函数是所有输入的【热路径】（方向键拖动、动作键、肩键每按一次都走这里），
+    // 切勿在此同步写日志——MkxpLog.append 是同步文件 I/O，会卡住触摸线程造成可感延迟。
+    // 调试日志改到 ios_embed.mm 的 mkxp_key（已限频，仅前若干次打印）。
     mkxp_key(Int32(rgssKey), down ? 1 : 0)
   }
 
