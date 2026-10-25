@@ -405,6 +405,38 @@ static void mkxp_softPresent()
                     }
                 }
             }
+
+            /* ---- 行复制检测(COPYLINE) ----
+             * 用户澄清"纯色线"是肉眼主观, 客观检测(MONOLINE/SEGLINE)在地图帧
+             * 均未抓到纯色线, 只抓到正常草地绿段 -> 真实 bug 是【行错位/复制】。
+             * 最可能是 tone!=0 时 shader 绘制路径对某 tile 行的底部 1px 采样成
+             * 上一 tile 内容 -> 视觉上是一条线; 且相对地图固定(对齐 tile 网格)。
+             * 检测: 与上一行几乎完全相同(diff<2.0)的行。正常地形相邻行差很大
+             * (草地上下半差~40), 若某行与上行几乎相同即"该行复制了上行内容"。
+             * 打印 y/与上行差/y%%32(对齐0/31即坐实 tile 行边界错位)。 */
+            {
+                int copyPrinted = 0;
+                for (int y = 1; y < sh && y < 1024 && copyPrinted < 12; ++y) {
+                    const uint8_t *r0 = g_softBuf + (size_t)(y - 1) * stride;
+                    const uint8_t *r1 = g_softBuf + (size_t)y * stride;
+                    uint64_t acc = 0;
+                    for (int x = 0; x < sw; ++x) {
+                        int l0 = (r0[x * 4] + r0[x * 4 + 1] + r0[x * 4 + 2]) / 3;
+                        int l1 = (r1[x * 4] + r1[x * 4 + 1] + r1[x * 4 + 2]) / 3;
+                        acc += (uint64_t)((l0 > l1) ? (l0 - l1) : (l1 - l0));
+                    }
+                    double d = (double)acc / (double)sw;
+                    if (d < 2.0) {
+                        fprintf(stderr, "[ios-embed] COPYLINE y=%d diffVSup=%.2f y%%32=%d "
+                                        "(frame #%llu)\n",
+                                y, d, y % 32, (unsigned long long)g_softFrames);
+                        ++copyPrinted;
+                    }
+                }
+                if (copyPrinted == 0)
+                    fprintf(stderr, "[ios-embed] COPYLINE none (frame #%llu)\n",
+                            (unsigned long long)g_softFrames);
+            }
         }
         mkxp_dumpSceneToDoc(dumpImg, g_softFrames);
         CFRelease(dumpImg);
