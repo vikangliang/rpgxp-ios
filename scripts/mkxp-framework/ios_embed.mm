@@ -165,19 +165,26 @@ static void mkxp_toggleSpng(void) {
  * 消费方式），又自动合成 SDL_MOUSEMOTION 事件；按键用 SDL_PushEvent 推
  * SDL_MOUSEBUTTONDOWN/UP（按钮状态 mkxp-z 走事件）。坐标用 UIKit 点(与 UITouch 一致)，
  * SDL UIKit 后端窗口尺寸即点，1:1 对应。 */
-extern "C" void mkxp_ios_inject_mouse(int x, int y, int down) {
+extern "C" void mkxp_ios_inject_mouse(float nx, float ny, int down) {
     static int g_down = 0;
+    // nx,ny 为触摸在浮层(全屏)内的归一化坐标 0..1。SDL 窗口在 iOS 上按像素(retina)计，
+    // 直接用 UIKit 点当坐标会整体缩到 ~1/3，小目标(如食物格)点不中。乘 SDL 窗口尺寸
+    // 得到正确窗口坐标，point/pixel 两种单位都兼容。
+    int winW = 0, winH = 0;
+    if (g_win) SDL_GetWindowSize(g_win, &winW, &winH);
+    int mx = (int)(nx * (float)winW);
+    int my = (int)(ny * (float)winH);
     // 位置：warp 更新 SDL 内部鼠标状态（覆盖轮询消费）并合成 SDL_MOUSEMOTION；
     // 同时显式再推一条【带正确按键掩码(state)】的 SDL_MOUSEMOTION——
     // mkxp-z 的 Mouse 模块从 motion.state 读按键状态，若拖动时只靠 warp 合成的
     // motion(state=0) 会把按键复位成抬起，导致"按住拖动"(如拿食物)失效。真实鼠标
     // 按住拖动时 motion 也带 state，这里照做，按键状态在拖动全程保持。
-    if (g_win) SDL_WarpMouseInWindow(g_win, (float)x, (float)y);
+    if (g_win) SDL_WarpMouseInWindow(g_win, (float)mx, (float)my);
     SDL_Event ev;
     SDL_zero(ev);
     ev.type = SDL_MOUSEMOTION;
-    ev.motion.x = x;
-    ev.motion.y = y;
+    ev.motion.x = mx;
+    ev.motion.y = my;
     ev.motion.xrel = 0;
     ev.motion.yrel = 0;
     ev.motion.state = down ? SDL_BUTTON_LMASK : 0;
@@ -188,8 +195,8 @@ extern "C" void mkxp_ios_inject_mouse(int x, int y, int down) {
         ev.type = down ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
         ev.button.button = SDL_BUTTON_LEFT;
         ev.button.state = down ? SDL_PRESSED : SDL_RELEASED;
-        ev.button.x = x;
-        ev.button.y = y;
+        ev.button.x = mx;
+        ev.button.y = my;
         ev.button.windowID = g_iosWinId;
         SDL_PushEvent(&ev);
         g_down = down;

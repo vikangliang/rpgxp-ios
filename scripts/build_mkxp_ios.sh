@@ -1672,7 +1672,9 @@ int mkxp_ios_firstFrameShown(void);
 double mkxp_get_avg_fps(void);
 // iOS 触摸→鼠标注入：原生浮层空白区捕获触摸后调用，驱动 RGSS Mouse 模块
 // （Pokémon Amie 等依赖鼠标的插件在 iOS 上才能用触摸）。
-void mkxp_ios_inject_mouse(int x, int y, int down);
+// nx,ny 为触摸在浮层(全屏)内的归一化坐标 0..1，内部乘 SDL 窗口尺寸映射到窗口坐标，
+// 以兼容 SDL 窗口用 point 或 pixel 为单位的两种情况（避免坐标偏移导致小目标点不中）。
+void mkxp_ios_inject_mouse(float nx, float ny, int down);
 // 三指截屏(spng 快速路径)切换，供原生浮层转发。
 void mkxp_ios_toggle_spng(void);
 #ifdef __cplusplus

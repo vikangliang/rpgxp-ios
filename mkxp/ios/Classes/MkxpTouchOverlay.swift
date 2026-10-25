@@ -371,7 +371,11 @@ final class MkxpPassthroughView: UIView {
 
   private func inject(_ touch: UITouch, down: Bool) {
     let p = touch.location(in: self)
-    mkxp_ios_inject_mouse(Int32(p.x), Int32(p.y), down ? Int32(1) : Int32(0))
+    // 归一化到 0..1（浮层即全屏），由 C 侧乘 SDL 窗口尺寸映射到正确坐标，
+    // 修正 retina 下 UIKit 点→SDL 像素的偏移，避免小目标(食物格)点不中。
+    let nx = Float(p.x / max(self.bounds.width, 1))
+    let ny = Float(p.y / max(self.bounds.height, 1))
+    mkxp_ios_inject_mouse(nx, ny, Int32(down ? 1 : 0))
   }
 
   /// 三指轻点：切换 spng 快速路径截屏（原挂在 g_softView，现浮层接管空白区触摸后转挂此处）。
