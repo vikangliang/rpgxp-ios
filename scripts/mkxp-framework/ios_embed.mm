@@ -167,9 +167,23 @@ static void mkxp_toggleSpng(void) {
  * SDL UIKit 后端窗口尺寸即点，1:1 对应。 */
 extern "C" void mkxp_ios_inject_mouse(int x, int y, int down) {
     static int g_down = 0;
+    // 位置：warp 更新 SDL 内部鼠标状态（覆盖轮询消费）并合成 SDL_MOUSEMOTION；
+    // 同时显式再推一条【带正确按键掩码(state)】的 SDL_MOUSEMOTION——
+    // mkxp-z 的 Mouse 模块从 motion.state 读按键状态，若拖动时只靠 warp 合成的
+    // motion(state=0) 会把按键复位成抬起，导致"按住拖动"(如拿食物)失效。真实鼠标
+    // 按住拖动时 motion 也带 state，这里照做，按键状态在拖动全程保持。
     if (g_win) SDL_WarpMouseInWindow(g_win, (float)x, (float)y);
+    SDL_Event ev;
+    SDL_zero(ev);
+    ev.type = SDL_MOUSEMOTION;
+    ev.motion.x = x;
+    ev.motion.y = y;
+    ev.motion.xrel = 0;
+    ev.motion.yrel = 0;
+    ev.motion.state = down ? SDL_BUTTON_LMASK : 0;
+    ev.motion.windowID = g_iosWinId;
+    SDL_PushEvent(&ev);
     if (down != g_down) {
-        SDL_Event ev;
         SDL_zero(ev);
         ev.type = down ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
         ev.button.button = SDL_BUTTON_LEFT;
