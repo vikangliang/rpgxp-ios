@@ -22,6 +22,7 @@ final class MkxpTouchOverlay: NSObject {
   private var controlsView: UIView?
   private var actionButtons: [UIButton] = []
   private var menuButton: UIButton?
+  private var leftShoulderButton: UIButton?   // L 肩键（"⋯"菜单按钮据此贴其下方定位）
   private var controlsHidden = false
 
   /// 动作键触感。与圆盘方向键同为 .light，保持手感一致。
@@ -129,8 +130,11 @@ final class MkxpTouchOverlay: NSObject {
     label.translatesAutoresizingMaskIntoConstraints = false
     vc.view.addSubview(label)
     NSLayoutConstraint.activate([
-      label.topAnchor.constraint(equalTo: vc.view.safeAreaLayoutGuide.topAnchor, constant: 6),
-      label.trailingAnchor.constraint(equalTo: vc.view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+        // 固定在肩键行(y 34..74)【下方】而不是贴着安全区顶：竖屏时 safeAreaInsets.top
+        // 被状态栏顶高，贴在安全区顶会与右上角 R 肩键重叠（"0 FPS" 直接印在 R 键上）。
+        // 用固定偏移 80 则横竖屏都不会压到肩键。
+        label.topAnchor.constraint(equalTo: vc.view.topAnchor, constant: 80),
+        label.trailingAnchor.constraint(equalTo: vc.view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
     ])
     win.rootViewController = vc
     win.isHidden = false
@@ -282,7 +286,7 @@ final class MkxpTouchOverlay: NSObject {
     ]
     let w = root.bounds.width
     let bw: CGFloat = 140, bh: CGFloat = 40
-    let top: CGFloat = 34   // 在右上 FPS 角标(顶部)下方，避免与 R 肩键重叠
+    let top: CGFloat = 34   // 肩键行贴顶；FPS 角标已下移到 y=80，不与之重叠
     for (label, key, right) in items {
       let b = makeShoulderButton(title: label)
       let x = right ? (w - bw - 14) : 14
@@ -294,20 +298,16 @@ final class MkxpTouchOverlay: NSObject {
       b.addTarget(self, action: #selector(actionUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
       b.tag = Int(key)
       ctl.addSubview(b)
+      if !right { leftShoulderButton = b }
     }
   }
 
   private func buildMenuButton(in ctl: UIView, root: UIView) {
-    // 菜单按钮改放到左侧黑边的竖向中部：上方是 L 肩键(top=34, 底≈74)，
-    // 下方是方向圆盘(盘心 cy=h-150, 顶=h-252)，中间一段空闲且远离右上 R 肩键与 FPS，
-    // 既不被新肩键遮挡，也便于左手拇指从圆盘上抬时点到。
+    // 菜单按钮贴【L 肩键正下方】并与 L 左边缘对齐（用户指定位置）。
+    // 用 L 键的实际 frame 推算，横竖屏自动一致：L 底 + 12pt 间距。
     let b = makeGlassButton(title: "⋯")
-    let h = root.bounds.height
-    let dpadTop: CGFloat = h - 150 - 102   // 方向圆盘上沿
-    let yTop: CGFloat = 34 + 40 + 8        // L 肩键底 + 间距
-    let yBot: CGFloat = dpadTop - 44 - 8   // 方向圆盘上沿 - 按钮高 - 间距
-    let y = max(yTop, min(yBot, (yTop + yBot) / 2))
-    b.frame = CGRect(x: 16, y: y, width: 44, height: 44)
+    let lf = leftShoulderButton?.frame ?? CGRect(x: 14, y: 34, width: 140, height: 40)
+    b.frame = CGRect(x: lf.minX, y: lf.maxY + 12, width: 44, height: 44)
     b.autoresizingMask = [.flexibleRightMargin, .flexibleBottomMargin]
     b.addTarget(self, action: #selector(menuTap), for: .touchUpInside)
     ctl.addSubview(b)
