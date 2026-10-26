@@ -348,6 +348,33 @@ if [ -f "$MKXP_SRC/src/display/font.h" ]; then
   echo "patched _TTF_Font -> TTF_Font (SDL2_ttf >= 2.20 opaque struct rename)"
 fi
 
+# iOS 精灵锐化：强制所有位图纹理最近邻采样（GL_NEAREST），消除宝可梦正/背面等
+# 放大精灵在 512x384 帧缓冲里被 GL_LINEAR 平滑导致的模糊（PC 官方 RMXP 为最近邻，故清晰）。
+# 根因：mkxp-z v2.4.2 默认 TEX::setSmooth(false) 已是 NEAREST，但游戏（Essentials 21.1）
+# 对精灵 bitmap 调了 smooth=true（或特效）会切到 LINEAR；scene_dump 与屏上均糊。这里把
+# setSmooth 的 MIN/MAG 两分支都改死成 GL_NEAREST，让 iOS 渲染与 PC 一致锐利。
+# 副作用：辐射模糊等特效也变锐，对像素风 RPG 反而更干净；screen blit 在 smoothScaling:false
+# 下本就是 NEAREST，不受影响。
+if [ -f "$MKXP_SRC/src/display/gl/gl-util.h" ]; then
+  python3 - "$MKXP_SRC/src/display/gl/gl-util.h" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+changed = False
+if "mode ? GL_LINEAR : GL_NEAREST" in s:
+    s = s.replace("mode ? GL_LINEAR : GL_NEAREST", "GL_NEAREST")
+    changed = True
+if "void setSmooth(bool mode)" in s:
+    s = s.replace("void setSmooth(bool mode)", "void setSmooth(bool /*mode*/)")
+    changed = True
+if changed:
+    open(p, 'w', encoding='utf-8', newline='\n').write(s)
+    print("patched gl-util.h: TEX::setSmooth forced to GL_NEAREST (iOS sprite sharpen)")
+else:
+    print("gl-util.h: setSmooth anchor missing (already patched or version mismatch?)")
+PYEOF
+fi
+
 # iOS 禁用 system()：binding-mri.cpp 的「打开 URL」绑定用 std::system 拼 OPENCMD
 # 启动外部程序（open/xdg-open/start），iPhone 上既无对应语义也编译不过
 # （'system' is unavailable: not available on iOS）。与坑 #4 的 Ruby vm_dump.c
