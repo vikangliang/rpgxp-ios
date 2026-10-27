@@ -1279,29 +1279,39 @@ else:
 #       -> SIGTRAP(5) 杀进程（深灰市跟宠脚本报错后退出/切后台即触发）。
 # 修法：SDL_Quit 用 dispatch_sync 推主线程，与上面的窗口销毁同队列串行，
 #       先销毁窗口再 quit 视频子系统，无双释放。
-# 修法（已修正）：原先固定 8 空格锚点 "        SDL_Quit();\n" 与 v2.4.2 main.cpp
-# 实际缩进不符 -> old_quit 不在 s 中 -> 走 else 分支静默跳过 -> 真机仍 signal=5 闪退
-# （2026-10-27 日志实锤：SDL_Quit 在 engineLoop 后台线程直接调用，栈无 dispatch_sync）。
-# 改为正则匹配任意缩进的 SDL_Quit(); 并整体包进 dispatch_sync(main_queue)，确保命中。
+# 修法（v2，已坐实）：main.cpp 有 6 处 SDL_Quit();（初始化早退 + 收尾各若干），且全部在
+# engineLoop 后台线程跑。上一版 re.search 只命中第一处（Steam 早退分支，非 Steam 构建
+# 编译期裁掉），收尾 SDL_Quit(502 行，正常关机路径) 仍裸奔 -> 真机 signal=5 照崩
+# （2026-10-27 21:32 日志栈 SDL_Quit 之下无 dispatch_sync 实锤）。
+# 改用 re.sub 把【所有】SDL_Quit(); 都包进 dispatch_sync(main_queue)，确保收尾路径主线程化。
 import re
-_m = re.search(r'^(?P<ind>[ \t]*)SDL_Quit\(\);\s*$', s, re.M)
-if _m:
-    _ind = _m.group('ind')
-    _block = (
+def _wrap_quit(m):
+    ind = m.group('ind')
+    return (
         "#if defined(__APPLE__)\n"
-        + _ind + "/* iOS fix: SDL_Quit -> SDL_VideoQuit -> UIKit_SuspendScreenSaver must\n"
-        + _ind + " * run on the iOS main thread; dispatch it synchronously to the main queue. */\n"
-        + _ind + "dispatch_sync(dispatch_get_main_queue(), ^{\n"
-        + _ind + "    SDL_Quit();\n"
-        + _ind + "});\n"
+        + ind + "/* iOS fix: SDL_Quit -> SDL_VideoQuit -> UIKit_SuspendScreenSaver must\n"
+        + ind + " * run on the iOS main thread; dispatch it synchronously to the main queue. */\n"
+        + ind + "dispatch_sync(dispatch_get_main_queue(), ^{\n"
+        + ind + "    SDL_Quit();\n"
+        + ind + "});\n"
         + "#else\n"
-        + _ind + "SDL_Quit();\n"
+        + ind + "SDL_Quit();\n"
         + "#endif\n"
     )
-    s = s[:_m.start()] + _block + s[_m.end():]
-    print("patched main.cpp: SDL_Quit dispatched to iOS main thread (signal=5 fix part 2)")
+_n = len(re.findall(r'^(?P<ind>[ \t]*)SDL_Quit\(\);\s*$', s, re.M))
+if _n:
+    s = re.sub(r'^(?P<ind>[ \t]*)SDL_Quit\(\);\s*$', _wrap_quit, s, flags=re.M)
+    print("patched main.cpp: %d SDL_Quit dispatched to iOS main thread (signal=5 fix part 2)" % _n)
 else:
     print("main.cpp: SDL_Quit anchor missing")
+
+# 关键：文件写入必须放在【所有】main.cpp patch（含上面的 3a-1.6c）之后，否则 3a-1.6c
+# 对 s 的修改不会落盘——前面 SDL_DestroyWindow 的写入已在 1269 行发生，导致 3a-1.6c
+# 静默失效、真机 signal=5 照崩（2026-10-27 两版日志实锤）。这里统一把最终 s 写回文件。
+raw = s.replace('\n', '\r\n').encode('utf-8')
+with open(p, 'wb') as f:
+    f.write(raw)
+print("patched main.cpp: written (SDL_DestroyWindow + SDL_Quit on main thread)")
 PYEOF
 
   # ---------- 3a-1.6d. 字体查找诊断：iOS 消息框少字定位 ----------
