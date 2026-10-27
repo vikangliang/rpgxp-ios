@@ -1279,21 +1279,26 @@ else:
 #       -> SIGTRAP(5) 杀进程（深灰市跟宠脚本报错后退出/切后台即触发）。
 # 修法：SDL_Quit 用 dispatch_sync 推主线程，与上面的窗口销毁同队列串行，
 #       先销毁窗口再 quit 视频子系统，无双释放。
-old_quit = (
-"        SDL_Quit();\n")
-new_quit = (
-"#if defined(__APPLE__)\n"
-"        /* iOS fix: SDL_Quit -> SDL_VideoQuit -> UIKit_SuspendScreenSaver must\n"
-"         * run on the iOS main thread; the cleanup runs on the engineLoop\n"
-"         * (background) thread, so dispatch it synchronously to the main queue. */\n"
-"        dispatch_sync(dispatch_get_main_queue(), ^{\n"
-"            SDL_Quit();\n"
-"        });\n"
-"#else\n"
-"        SDL_Quit();\n"
-"#endif\n")
-if old_quit in s:
-    s = s.replace(old_quit, new_quit, 1)
+# 修法（已修正）：原先固定 8 空格锚点 "        SDL_Quit();\n" 与 v2.4.2 main.cpp
+# 实际缩进不符 -> old_quit 不在 s 中 -> 走 else 分支静默跳过 -> 真机仍 signal=5 闪退
+# （2026-10-27 日志实锤：SDL_Quit 在 engineLoop 后台线程直接调用，栈无 dispatch_sync）。
+# 改为正则匹配任意缩进的 SDL_Quit(); 并整体包进 dispatch_sync(main_queue)，确保命中。
+import re
+_m = re.search(r'^(?P<ind>[ \t]*)SDL_Quit\(\);\s*$', s, re.M)
+if _m:
+    _ind = _m.group('ind')
+    _block = (
+        "#if defined(__APPLE__)\n"
+        + _ind + "/* iOS fix: SDL_Quit -> SDL_VideoQuit -> UIKit_SuspendScreenSaver must\n"
+        + _ind + " * run on the iOS main thread; dispatch it synchronously to the main queue. */\n"
+        + _ind + "dispatch_sync(dispatch_get_main_queue(), ^{\n"
+        + _ind + "    SDL_Quit();\n"
+        + _ind + "});\n"
+        + "#else\n"
+        + _ind + "SDL_Quit();\n"
+        + "#endif\n"
+    )
+    s = s[:_m.start()] + _block + s[_m.end():]
     print("patched main.cpp: SDL_Quit dispatched to iOS main thread (signal=5 fix part 2)")
 else:
     print("main.cpp: SDL_Quit anchor missing")
