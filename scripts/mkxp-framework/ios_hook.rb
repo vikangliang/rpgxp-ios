@@ -553,6 +553,33 @@ class << Object
         # 它还不存在，早前装在文件末尾会 skip），且会被 Plugins/中文文本处理
         # /Tools.rb 二次覆盖 —— 每次定义都重新包一层，确保最终包住生效版本。
         __mkxp_install_lbc_diag
+      elsif m == :execute_script
+        # [诊断] 战斗/事件脚本 command_111 抛 EventScriptError 时，Interpreter#execute_script
+        # 内部 rescue 会把原始异常包成 EventScriptError 并把真实消息吞掉（日志只剩空壳
+        # 'EventScriptError (EventScriptError)'），无从定位根因。这里包一层：一旦它抛
+        # EventScriptError，把正在 eval 的脚本原文(@parameters[0])打出来——下次日志带
+        # [mkxp-ess] 行即能看到具体哪句报错，从而从根上修掉（让游戏不再 error，而非吞错
+        # 继续）。纯日志、零逻辑改动；begin/rescue 不抛异常时开销可忽略；不影响 sp4 行为。
+        if defined?(::Interpreter) && ::Interpreter.method_defined?(:execute_script)
+          im = ::Interpreter.instance_method(:execute_script)
+          unless ::Interpreter.instance_variable_get(:@__mkxp_es_wrapped)
+            ::Interpreter.instance_variable_set(:@__mkxp_es_wrapped, true)
+            ::Interpreter.send(:define_method, :execute_script) do |*a, &b|
+              begin
+                im.bind(self).call(*a, &b)
+              rescue EventScriptError => e
+                begin
+                  params = self.instance_variable_get(:@parameters)
+                  script = params.is_a?(Array) ? (params[0].to_s rescue "") : (params.to_s rescue "")
+                  $stderr.puts "[mkxp-ess] EventScriptError in execute_script: " \
+                               "script=#{script[0, 500].inspect}\n  at=#{(e.backtrace rescue [])[0, 6].inspect}"
+                rescue StandardError
+                end
+                raise
+              end
+            end
+          end
+        end
       elsif m != :method_added
         k = ::Kernel
         unless k.respond_to?(m)
