@@ -322,6 +322,22 @@ fi
 # (浅克隆/索引异常) 时回退 reset --hard HEAD, 双保险; 两者都不该失败, 但绝不能用 ||true 静默吞掉。
 git -C "$MKXP_SRC" checkout -- . 2>/dev/null || git -C "$MKXP_SRC" reset --hard HEAD 2>/dev/null || true
 
+# ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库）----------
+# 必须在【任何】后续源码改动之前 apply: 该 patch 的 12 个文件 hunk 全部基于 pristine
+# v2.4.2 生成(binding-mri.cpp / bitmap.cpp / tilemap.cpp / main.cpp / bitmap.h ...)。
+# 原先它排在 3a-1.6(binding-mri.cpp showExc python 注入)之后, 而 binding-mri.cpp 正是
+# 该 patch 要打的文件 -> 文件已被改过导致 hunk context 失配 -> 严格 git apply 整体失败
+# (以前靠 patch -p1 -f 模糊糊过去/静默丢 hunk 才没暴露, 却产出行为错的二进制)。
+# 现在严格 git apply, 故紧跟 reset 之后、任何 sed/python 注入之前执行, 保证 deps pristine。
+if [ -d "$MKXP_SRC/src" ]; then
+  # 不用 patch -p1 -f 兜底: f 允许 fuzz, 会在 deps 非 pristine 时把旧 hunk 错打进去
+  # (如把 bltDiag=(bltDiagN++<3000) 残留), 造出"编译过但行为错"的二进制
+  # (a5b0c99 那次 bitmap.cpp 括号错位崩的元凶之一)。失败即视为真问题, 直接 FATAL 退出。
+  git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/framework-entry.patch" \
+   || { echo "FATAL: framework-entry.patch git apply 失败（deps 非 pristine 或 v2.4.2 源码对不上？）"; exit 1; }
+  echo "applied framework-entry.patch"
+fi
+
 # iOS 上 __APPLE__ 为真，上游 src/system/system.h 会把 MKXPZ_PLATFORM 判成
 # MKXPZ_PLATFORM_MACOS，可能误走 macOS Cocoa/AppKit 分支（iOS 没有 AppKit，编译必炸）。
 # 强制改判为 MKXPZ_PLATFORM_LINUX（POSIX/SDL 路径，iOS 与 Linux 同属 Unix 类，可用）。
@@ -673,20 +689,12 @@ else:
     print("binding-mri.cpp: showExc anchor missing")
 PYEOF
 
-# ---------- 3b. 框架化补丁（M1-A：把独立 app 变成可嵌入库） ----------
-# 提前 apply：framework 的 bitmap.cpp 段基于 pristine 生成，必须在 646/748 的
-# bitmap 注入之前 apply，否则后者改过的 bitmap.cpp 让 framework hunk 的 context
-# 失配 -> FATAL。646/748 在下方 3a-2/3a-3 注入，锚点在其后再 apply 仍稳。
-if [ -d "$MKXP_SRC/src" ]; then
-  # 克隆后已 reset --hard 把 deps 回到 pristine v2.4.2, 这里严格 git apply 必能干净命中。
-  # 不用 patch -p1 -f 兜底: f 允许 fuzz, 会在 deps 非 pristine 时把旧 hunk 错打进去
-  # (如把 bltDiag=(bltDiagN++<3000) 残留), 造出"编译过但行为错"的二进制
-  # (a5b0c99 那次 bitmap.cpp 括号错位崩的元凶之一)。git apply 失败即视为真问题
-  # (deps 未 pristine 或 v2.4.2 源码对不上), 直接 FATAL 退出, 不静默错打。
-  git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/framework-entry.patch" \
-   || { echo "FATAL: framework-entry.patch git apply 失败（deps 非 pristine 或 v2.4.2 源码对不上？）"; exit 1; }
-  echo "applied framework-entry.patch"
-fi
+# ---------- 3b. 框架化补丁：已上移到「3. 克隆 mkxp-z」之后立即执行 ----------
+# 原因: 该 patch 的 12 个文件 hunk 全部基于 pristine v2.4.2 生成, 而本节紧邻的上方
+# 3a-1.6(见上方 PYEOF 区块)已用 python 改过 binding/binding-mri.cpp(showExc->log),
+# 该文件也是 framework-entry.patch 要打的文件之一 -> context 失配 -> 严格 git apply
+# 整体失败。故改为在克隆+reset 之后、任何 sed/python 注入之前 apply(见上方 3b 段)。
+# 此处不再重复 apply; 下方 3a-2/3a-3 的 bitmap.cpp python 注入仍在其后, 顺序正确。
 
 # ---------- 3a-1.7. 排查埋点(Bug1 少字 / Bug2 横线)：只取证，不改渲染行为 ----------
 # 放在 framework-entry.patch 之后：drawText / mkxp_z_main 的最终形态由该 patch 决定。
