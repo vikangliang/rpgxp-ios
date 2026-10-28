@@ -30,6 +30,15 @@ static UIView *g_hostView = nil;
 static SDL_Window *g_win = NULL;
 static Uint32 g_iosWinId = 0;   // mkxp_ios_embedIntoView 取 SDL 窗口 ID，鼠标注入事件用
 static UIWindow *g_sdlWin = nil;
+
+/* ---- 帧率优化埋点（埋点优化帧率）----
+ * 统一分解每帧耗时，仅每 600 帧打印一行；CFAbsoluteTimeGetCurrent 开销 ns 级，不影响帧率：
+ *   interval ≈ 总帧时(两帧间隔)；read = glReadPixels；hmc = hash+memcpy+CGImageCreate；
+ *   disp = 主线程放大上屏；engine = interval-read-hmc-disp（≈ MKXP 自身渲染耗时）。
+ * 这是定位卡顿瓶颈的第一步，后续据分解决定优化方向（读回/上屏/引擎渲染）。 */
+static CFAbsoluteTime g_profLastT = 0;
+static double g_profInt = 0, g_profRead = 0, g_profHmc = 0, g_profDisp = 0;
+static int g_profN = 0;
 static int g_drawW = 0, g_drawH = 0;   // renderbufferStorage 时记录的 drawable 像素尺寸
 
 // ---- EAGL hook（模块加载即装，早于 SDL initGL） ----
@@ -360,18 +369,35 @@ static uint32_t mkxp_hashScene(const uint8_t *flip, int w, int h)
 
 static void mkxp_softPresent()
 {
+    CFAbsoluteTime tEnter = CFAbsoluteTimeGetCurrent();
     /* 后台时跳过一切 GL 读回/显示（避免后台 GPU 提交 + 省内存） */
-    if (g_appBackgrounded) return;
+    if (g_appBackgrounded) { g_profLastT = tEnter; return; }
 
     GLuint tex = 0, fbo = 0;
     int sw = 0, sh = 0, ox = 0, oy = 0, ww = 0, wh = 0;
     mkxp_ios_getScene(&tex, &fbo, &sw, &sh, &ox, &oy, &ww, &wh);
-    if (!fbo || sw <= 0 || sh <= 0) return;
+    if (!fbo || sw <= 0 || sh <= 0) { g_profLastT = tEnter; return; }
 
     /* 每帧都尝试上屏：静止帧由下方 hash 跳过（几乎零成本），动画帧以引擎满帧率
      * 显示，避免之前“每 3 帧才上屏→显示仅 ~20fps→动画看着速度不对/卡顿”。
      * 内存泄漏已通过零拷贝复用缓冲根治，无需再用降频压内存。 */
     ++g_softFrames;
+
+    /* 帧率埋点：累计分段耗时，每 600 帧打印分解（见文件头注释） */
+    if (g_profLastT > 0) g_profInt += (tEnter - g_profLastT) * 1000.0;
+    g_profLastT = tEnter;
+    ++g_profN;
+    if (g_profN >= 600) {
+        double inv = g_profN ? g_profInt / g_profN : 0;
+        double rd  = g_profN ? g_profRead / g_profN : 0;
+        double hm  = g_profN ? g_profHmc / g_profN : 0;
+        double dp  = g_profN ? g_profDisp / g_profN : 0;
+        double eng = inv - rd - hm; if (eng < 0) eng = 0;
+        fprintf(stderr, "[ios-embed] PROFILE fps=%.1f frame=%.2fms "
+                        "[engine=%.2f read=%.2f hmc=%.2f disp=%.2f] (n=%d)\n",
+                1000.0 / (inv > 0 ? inv : 1), inv, eng, rd, hm, dp, g_profN);
+        g_profInt = g_profRead = g_profHmc = g_profDisp = 0; g_profN = 0;
+    }
 
     /* 引擎重启探测器：软呈现帧计数器只增不减；若它回退，说明引擎被重新
      * launch（mkxp_run 再次调用）→ “bgm+画面隔几秒重启”的定性铁证。 */
@@ -403,12 +429,14 @@ static void mkxp_softPresent()
      * 半渲染帧 → UIImageView 呈现半帧 → 横向撕裂（PC 的 SDL swap 由驱动保证原子
      * +VSync，无此问题）。glFinish() 强制本帧 GL 命令全部完成后再读回，确保读到
      * 完整一整帧。代价是每帧多等一次 GPU，换取不裂。 */
+    CFTimeInterval tRead0 = CFAbsoluteTimeGetCurrent();
     glFinish();
     /* 清掉此前积压的 GL 错误（如启动首帧的 0x502）：glGetError 返回的是全局
      * 错误标志，不清就会把"历史错误"误判成本次 readback 失败 -> 整帧 return
      * 丢帧。清空后，只有本次 readback 真正出错才会触发下面的 return。 */
     while (glGetError() != GL_NO_ERROR) {}
     glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE, g_softBuf);
+    g_profRead += (CFAbsoluteTimeGetCurrent() - tRead0) * 1000.0;
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 
     GLenum e = glGetError();
@@ -670,8 +698,9 @@ static void mkxp_softPresent()
 
     /* 内容没变就不重建 CGImage / 不上屏（画面几乎全是静态时显著降负载） */
     static uint32_t s_lastHash = 0;
+    CFAbsoluteTime tH0 = CFAbsoluteTimeGetCurrent();
     uint32_t hsh = mkxp_hashScene(g_softBuf, sw, sh);
-    if (hsh == s_lastHash) return;
+    if (hsh == s_lastHash) { g_profHmc += (CFAbsoluteTimeGetCurrent() - tH0) * 1000.0; return; }
     s_lastHash = hsh;
 
     /* 合并：若上一帧还在主线程排队，跳过本帧（不碰 g_softDisp，避免覆盖在途帧）。
@@ -703,6 +732,7 @@ static void mkxp_softPresent()
     CGColorSpaceRelease(cs);
     CGDataProviderRelease(provider);   // cg 仍持有 g_softDisp（provider 用 NULL 释放回调，不会 free 它）
     if (!cg) { atomic_store(&g_softPending, 0); return; }
+    g_profHmc += (CFAbsoluteTimeGetCurrent() - tH0) * 1000.0;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         @autoreleasepool {
@@ -730,6 +760,7 @@ static void mkxp_softPresent()
             static double s_acc = 0;
             static int s_n = 0;
             s_acc += CFAbsoluteTimeGetCurrent() - t0;
+            g_profDisp += (CFAbsoluteTimeGetCurrent() - t0) * 1000.0;
             if (++s_n >= 600) {
                 fprintf(stderr, "[ios-embed] main-display avg %.2f ms (n=600)\n",
                         s_acc / s_n * 1000.0);
