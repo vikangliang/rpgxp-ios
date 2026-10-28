@@ -314,6 +314,12 @@ if [ ! -d "$MKXP_SRC/.git" ]; then
   git clone --depth 1 --branch v2.4.2 https://github.com/mkxp-z/mkxp-z.git "$MKXP_SRC"
 fi
 
+# CI 缓存复用上一轮已打补丁的 deps 时, $MKXP_SRC/.git 已存在会跳过上面的 clone,
+# 导致 framework-entry.patch 的 git apply 因 deps 已打过而失败、回退 patch -p1 -f 错打
+# (补丁被二次套用 → 括号错位 → bitmap.cpp 编译崩, 如 a5b0c99 那次)。每次构建先把 deps
+# 工作树重置到 pristine v2.4.2, 保证 git apply 干净命中(后续 sed/system.h 与各补丁会重新打上)。
+git -C "$MKXP_SRC" checkout -- . 2>/dev/null || true
+
 # iOS 上 __APPLE__ 为真，上游 src/system/system.h 会把 MKXPZ_PLATFORM 判成
 # MKXPZ_PLATFORM_MACOS，可能误走 macOS Cocoa/AppKit 分支（iOS 没有 AppKit，编译必炸）。
 # 强制改判为 MKXPZ_PLATFORM_LINUX（POSIX/SDL 路径，iOS 与 Linux 同属 Unix 类，可用）。
