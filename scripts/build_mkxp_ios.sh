@@ -316,9 +316,11 @@ fi
 
 # CI 缓存复用上一轮已打补丁的 deps 时, $MKXP_SRC/.git 已存在会跳过上面的 clone,
 # 导致 framework-entry.patch 的 git apply 因 deps 已打过而失败、回退 patch -p1 -f 错打
-# (补丁被二次套用 → 括号错位 → bitmap.cpp 编译崩, 如 a5b0c99 那次)。每次构建先把 deps
-# 工作树重置到 pristine v2.4.2, 保证 git apply 干净命中(后续 sed/system.h 与各补丁会重新打上)。
-git -C "$MKXP_SRC" checkout -- . 2>/dev/null || true
+# (补丁被二次套用 → 括号错位 → bitmap.cpp 编译崩, 如 a5b0c99 那次; 或旧诊断 bltDiag=true
+# 被保留 → 地图加载期 stderr 洪水)。每次构建先把 deps 工作树重置到 pristine v2.4.2,
+# 保证 git apply 干净命中(后续 sed/system.h 与各补丁会重新打上)。checkout -- . 失败
+# (浅克隆/索引异常) 时回退 reset --hard HEAD, 双保险; 两者都不该失败, 但绝不能用 ||true 静默吞掉。
+git -C "$MKXP_SRC" checkout -- . 2>/dev/null || git -C "$MKXP_SRC" reset --hard HEAD 2>/dev/null || true
 
 # iOS 上 __APPLE__ 为真，上游 src/system/system.h 会把 MKXPZ_PLATFORM 判成
 # MKXPZ_PLATFORM_MACOS，可能误走 macOS Cocoa/AppKit 分支（iOS 没有 AppKit，编译必炸）。
@@ -676,11 +678,13 @@ PYEOF
 # bitmap 注入之前 apply，否则后者改过的 bitmap.cpp 让 framework hunk 的 context
 # 失配 -> FATAL。646/748 在下方 3a-2/3a-3 注入，锚点在其后再 apply 仍稳。
 if [ -d "$MKXP_SRC/src" ]; then
-  git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/framework-entry.patch" 2>/dev/null \
-   || { echo "WARN: git apply 失败，回退 patch -p1 -f（可能静默丢弃不匹配 hunk）"; \
-        patch -p1 -f --no-backup-if-mismatch -d "$MKXP_SRC" \
-        < "$ROOT/scripts/mkxp-framework/framework-entry.patch" \
-        || { echo "FATAL: framework-entry.patch 应用失败（v2.4.2 源码对不上？）"; exit 1; }; }
+  # 克隆后已 reset --hard 把 deps 回到 pristine v2.4.2, 这里严格 git apply 必能干净命中。
+  # 不用 patch -p1 -f 兜底: f 允许 fuzz, 会在 deps 非 pristine 时把旧 hunk 错打进去
+  # (如把 bltDiag=(bltDiagN++<3000) 残留), 造出"编译过但行为错"的二进制
+  # (a5b0c99 那次 bitmap.cpp 括号错位崩的元凶之一)。git apply 失败即视为真问题
+  # (deps 未 pristine 或 v2.4.2 源码对不上), 直接 FATAL 退出, 不静默错打。
+  git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/framework-entry.patch" \
+   || { echo "FATAL: framework-entry.patch git apply 失败（deps 非 pristine 或 v2.4.2 源码对不上？）"; exit 1; }
   echo "applied framework-entry.patch"
 fi
 
