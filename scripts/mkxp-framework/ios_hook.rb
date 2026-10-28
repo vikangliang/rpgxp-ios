@@ -537,6 +537,7 @@ class << Object
         begin
           mfd = ::Object.instance_method(:mainFunctionDebug)
           ::Object.send(:define_method, :mainFunctionDebug) do
+            __mkxp_patch_mega_bitmap   # 启动期一次性给基类 Sprite/Plane#bitmap= 打 mega-surface 降采样根治
             __mkxp_main_safe(mfd)
           end
         rescue StandardError
@@ -636,6 +637,55 @@ def __mkxp_public_ai_hazard
   rescue StandardError
     # 方法尚未定义（NameError）等：下次再试
   end
+end
+
+# ---- [根治] Sprite/Plane#bitmap= 在 iOS 遇 mega surface 崩溃 ----
+# 真机坐实(dcf87a5 构建日志 [mkxp-ess] + MKXPError 栈): 战斗(Dynamax/变身)动画里
+# MosaicBattlerSprite#bitmap=([DBK] Animated Pokémon System [006] Battler Sprites.rb:263)
+# 调 super(Sprite#bitmap=), 传入的宝可梦精灵 Bitmap 超过设备 GPU maxTexSize, MKXP 做成
+# "mega surface"(仅内存、禁止 Sprite/Plane 使用), 其 bitmap= 的 GUARD_MEGA 抛 MKXPError
+# 'Operation not supported for mega surfaces' -> execute_script rescue 包成 EventScriptError
+# -> 游戏崩。PC 上 RMXP 无纹理尺寸上限故正常。
+# 根为引擎层限制: 任意 Sprite/Plane 被赋超过 maxTexSize 的 Bitmap 即崩。故在【基类
+# Sprite#bitmap= 与 Plane#bitmap=】统一拦截: 赋值前把超 maxTexSize(无 API 时退回 2048 兜底,
+# 低于所有 iOS 设备 maxTexSize>=2048)的位图降采样成普通位图再存储, 精灵/背景照常渲染。
+# 游戏画面仅 512x384、精灵显示 ~100px, 降采样视觉无损。RGSS 仅 Sprite/Plane 有 bitmap=,
+# 故这两条覆盖全部显示对象(战斗宝可梦/地图行走图/跟随精灵/战斗背景/地图滚动平面), 根治
+# "下次又来"。引擎注入层修复, 不改动游戏 Plugins 文件。
+# 判定: 优先用 Bitmap#isMega(精确命中 mega surface), 否则退回尺寸 >2048 兜底。
+# 降采样: Bitmap.new(nw,nh)+stretch_blt。已读 framework-entry.patch stretchBlt 实现
+# (PATH=B/C 走 source.megaSurface() 的 RAM 路径, 安全处理 mega 源, 不依赖无效 gl.tex),
+# 且 Bitmap#rect() 对 mega 取 v.rect 安全 -> 该写法对 mega 位图安全。
+# 启动期一次性打补丁(mainFunctionDebug 包裹里), 哨兵防重复包装; rescue 失败仅打日志。
+$__mkxp_mega_fixed = false
+def __mkxp_patch_mega_bitmap
+  return if $__mkxp_mega_fixed
+  [[:Sprite, defined?(::Sprite) ? ::Sprite : nil],
+   [:Plane,  defined?(::Plane)  ? ::Plane  : nil]].each do |_, k|
+    next unless k
+    begin
+      # 已被本补丁包过(__mkxp_orig_bitmap_set 存在)则跳过, 避免重复包装
+      next if k.method_defined?(:__mkxp_orig_bitmap_set)
+      # alias 捕获 C++ 原生 bitmap=(保证可调用), 再用 Ruby 方法包一层拦截降采样
+      k.send(:alias_method, :__mkxp_orig_bitmap_set, :bitmap=)
+      k.send(:define_method, :bitmap=) do |value|
+        v = value
+        if v.is_a?(Bitmap) &&
+           (v.respond_to?(:isMega) ? v.isMega : (v.width > 2048 || v.height > 2048))
+          nw = [v.width, 2048].min
+          nh = [v.height, 2048].min
+          nb = Bitmap.new(nw, nh)
+          nb.stretch_blt(Rect.new(0, 0, nw, nh), v, v.rect)
+          v = nb
+        end
+        __mkxp_orig_bitmap_set(v)
+      end
+    rescue StandardError => e
+      $stderr.puts "[mkxp-ios] mega-bitmap patch failed for #{k}: #{e.class}: #{e.message}"
+    end
+  end
+  $__mkxp_mega_fixed = true
+  $stderr.puts "[mkxp-ios] Sprite/Plane#bitmap= patched (downscale >maxTexSize mega-surface fix)"
 end
 
 # ---- 文本缺字诊断+防御（④） ----

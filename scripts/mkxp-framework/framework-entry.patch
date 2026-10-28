@@ -3716,8 +3716,11 @@ index 4b43123..dbfa41d 100644
 +     * 可一锤定音区分「按键/RGSS/路径/像素/上屏」哪一层出问题。
 +     * 限频（前 3000 次，覆盖到登录/标题/菜单的一次性背景）+ 只 fprintf，
 +     * 不做 ReadPixels（避免干扰被测路径）。 */
++    /* blt-diag 诊断已关闭：查"横线 Bug2"时遗留, 地图加载期海量 tilemap blit 同步
++     * fprintf 到 stderr 会阻塞引擎线程(疑似 c0ce727 那次"还没进地图就闪退"的元凶)。
++     * 生产构建不再开启; bltDiag 恒为 false。如需重新取证, 改回 bltDiagN++ < 3000。 */
 +    static int bltDiagN = 0;
-+    bool bltDiag = (bltDiagN++ < 3000);
++    bool bltDiag = false;
 +    if (bltDiag) {
 +        /* 字段：dst=目标位图尺寸 dstRect=目标矩形 src=源位图尺寸 srcRect=源矩形
 +         * oob=1 表示源矩形越界。注意参数顺序必须与格式串一致：
