@@ -2,9 +2,37 @@
 
 > 本文件专门写给「接手继续云编译」的会话/人。AI 记忆**不随仓库走**，所以把接力上下文写在这里。
 
-## 当前状态（2026-10-22，更新于 `1e944f7`）
+## 当前状态（2026-10-29，更新于 `63a6874`）
 
-> 今天两条线：① spng 视觉回归关停 + tileset 像素安全 pin（✅ 已完成验证）；② **室内→室外 ~10s 卡顿：10-21 的「buildAtlas 图集重建」结论已被 10-22 复核推翻（见下方 🔴🔴）——`f15464e` 的 buildAtlas 修复没消掉 7.4s，真凶更可能在 bitmap.cpp 的 autotile 展开 blit**。**⚠️ 143ms tileset 解码不是瓶颈（已作废）。**
+> 今天两条线：① 默认关闭调试快照（落盘+行扫描探针）已提交 `fa33fb0`，仅日志清理；② 引擎锁 60fps（无上限 106fps 白烧电+跑飞）已提交 `63a6874`，目标 `kTargetFps=60` 且注释留了 120Hz 一行切换。**⚠️ 推翻旧假设**：此前以为 `soft max` ~19ms 尖刺是每秒 PNG 落盘所致，① 提交后真机日志显示尖刺仍在（落盘开/关几乎一样）→ 真凶是 `glFinish`+`glReadPixels` 的 **GPU 回读阻塞**（软呈现固有成本，非持续掉帧）。EAGL 0x502 逼出软呈现，故尖刺只能异步回读/直渲削幅度（均未做）。④ mega 回退未做；游戏计时方式（帧计数 vs 实时）未决。
+
+### 2026-10-29 性能收尾：锁 60 + 诊断 gate + 尖刺根因锤定（GPU 回读，非落盘）
+
+**今天两条提交（均在 `scripts/mkxp-framework/ios_embed.mm`）：**
+1. **① 默认关闭调试快照（`fa33fb0`）**：`mkxp_softPresent` 顶部加 `s_diagEnabled = (getenv("MKXP_DIAG") != NULL)`（默认关），`dumpImg` 创建被 `if` 包住 → 默认 NULL，行扫描探针 + 每秒一次 PNG 落盘短路跳过。**仅日志清理**，真机日志 `scene dump`/`MONOLINE`/`ROWSAMP`/`red-ish` 已归零。⚠️ **重要修正**：① 并未消除尖刺（见下），作为干净日志保留；此前"消尖刺"的承诺未兑现。
+2. **② 引擎锁 60fps（`63a6874`）**：`swz_presentRenderbuffer` 钩子（同步于 RGSS 线程）顶部加帧限制器，按 `1/60s` 间距 `SDL_Delay` 睡眠卡住整条 RGSS 循环。`kTargetFps=60.0` 常量（= PC mkxp vsync），注释写明未来换 120Hz + 实时计时游戏时一行改读 `UIScreen.mainScreen.maximumFramesPerSecond` 吃满 120Hz。睡眠放在 `hookT0`/`softMs` 测量前 → 不污染耗时指标。
+
+**动机（已查实）**：iOS `SDL_GL_SetSwapInterval(1)` **不阻塞 SDL 循环**，且 mkxp `syncToRefreshrate=true` 只是禁用软件限制器 → 引擎无上限自由跑（实测 ~106fps，轻帧冒 130+）。既白烧电又让帧计数游戏跑飞（2.65× 设计）。② 把回读从 106→60 次/秒。
+
+**尖刺根因锤定（推翻"落盘主因"旧假设）**：
+- 现象：PROFILE `soft max` 偶发 18–30ms（战斗多精灵→30，轻场景→10），量的是 `mkxp_softPresent()` 单帧耗时。
+- 我最初断言"每秒 PNG 落盘含 fsync 是主因"，但 ① 提交后真机日志 `soft max` 仍 18–30ms（落盘开/关几乎一样）→ 假设推翻。
+- 重读 `mkxp_softPresent` 全文逐操作排除：hash/memcpy/CGImageCreate 固定 786KB（恒定 ~1.7ms，冲不到 30）；`dispatch_async`（741 行）非阻塞（排除主线程争用）；诊断块（469–701）已关；`glGetError` 自旋环无错误洪流（无 `readback err`）。
+- **唯一能偶发暴涨的只有 `glFinish()`(437) + `glReadPixels()`(442) 的 GPU 回读阻塞**——`glFinish` 强制等 GPU 画完，`glReadPixels` GPU→CPU 同步读回，负载高时阻塞到 30ms。平均 `read`（600 帧均值 3.4–5.2ms）掩盖单帧尖刺，`soft max` 抓最坏一下。
+- **结论**：尖刺是 iOS 软上屏管线固有成本，偶发单帧晚一点，非持续掉帧，游戏仍 60fps 可玩。
+
+**约束（任何"改回读"方案前提）**：EAGL 默认帧缓冲 present 在此环境不可用（present 后 FBO 0 作废、绘制被 `0x502` 拒），画面只能走"软呈现"（FBO→glReadPixels→CGImage→UIImageView）。故 ①/② 都改不了尖刺幅度，② 只降回读频率。
+
+**真解路线（待评估，高风险，未做）**：
+- 异步回读（PBO / `glFenceSync`）：读上一帧已完成像素、去每帧 `glFinish` 阻塞 → 尖刺幅度大降；风险是 ANGLE/Metal 的 PBO/fence 支持可能不稳，需先最小原型验证。
+- 直渲到屏幕层（修 EAGL present 0x502 根因）：彻底去回读；原作者在此撞墙，根因在 SDL↔mkxp↔iOS GL 状态机，高风险。
+
+**未决 / 接棒待办**：
+- **④ mega 上限回退 2048**（`ios_hook.rb`）：讨论过未做。仅正方形/竖图 mega 省内存，本机 ~900MB 远低于 Jetsam 几乎无感；改的是已验证可用路径，性价比低。
+- **未决问题**：该游戏是"帧计数计时"还是"实时计时"？决定 ② 的"速度对齐 PC"是否生效（帧计数→iOS 现 1.5× 设计=对齐 PC；实时→仅省电）。用户尚未按体感确认。
+- **接棒验证 ②**：CI 双绿后装包看 PROFILE `fps=`≈60、角标不再 130+，并按体感核对"速度和 PC 比是快了/一致/慢了"。
+
+**当前稳定构建 = `63a6874`**（诊断默认关 + 引擎锁 60）。
 
 ### ⚠️ 2026-10-21 23:29 真机日志判别：7.4s 未消 ≠ 修复无效，是**包里根本没有**
 
