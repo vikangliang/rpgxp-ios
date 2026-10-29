@@ -94,13 +94,23 @@ class GameLibrary {
 
     // 1) 定位游戏根：哪个条目是 Game.ini，其上层层级就是根前缀
     var rootPrefix = '';
+    var hasGameIni = false;
     for (final f in archive) {
       if (!f.isFile) continue;
       final p = f.name.replaceAll(r'\', '/');
       if (p.toLowerCase().endsWith('game.ini')) {
+        hasGameIni = true;
         rootPrefix = p.substring(0, p.length - 'game.ini'.length);
         break;
       }
+    }
+    // 0) 先判定是不是游戏，再决定是否动现有目录：坏 Zip（或选错文件）绝不
+    //    清掉已装游戏。Game.ini 在 Zip 根（直铺打包）时 rootPrefix 为空，故用
+    //    hasGameIni 单独标记，避免误判。下方解压后的 Game.ini 校验仍保留，作为
+    //    __MACOSX/Game.ini 这类被跳过条目的兜底。
+    if (!hasGameIni) {
+      throw Exception(
+          '这个 Zip 里找不到 Game.ini——不是 RPG Maker XP 游戏，已取消导入（未改动现有游戏）');
     }
 
     // 2) 目标名：优先根文件夹名，否则用 Zip 文件名（去 .zip）
