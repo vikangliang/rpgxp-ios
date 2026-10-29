@@ -537,7 +537,7 @@ class << Object
         begin
           mfd = ::Object.instance_method(:mainFunctionDebug)
           ::Object.send(:define_method, :mainFunctionDebug) do
-            __mkxp_patch_mega_bitmap   # 启动期一次性给基类 Sprite/Plane#bitmap= 打 mega-surface 降采样根治
+            __mkxp_patch_mega_bitmap   # 启动期一次性给基类 Sprite/Plane#bitmap= 打 mega-surface 降采样根治(判定已改用 mega?,不会误伤游戏 TilesetWrapper 的合法高 tileset)
             __mkxp_main_safe(mfd)
           end
         rescue StandardError
@@ -652,7 +652,9 @@ end
 # 游戏画面仅 512x384、精灵显示 ~100px, 降采样视觉无损。RGSS 仅 Sprite/Plane 有 bitmap=,
 # 故这两条覆盖全部显示对象(战斗宝可梦/地图行走图/跟随精灵/战斗背景/地图滚动平面), 根治
 # "下次又来"。引擎注入层修复, 不改动游戏 Plugins 文件。
-# 判定: 优先用 Bitmap#isMega(精确命中 mega surface), 否则退回尺寸 >2048 兜底。
+# 判定: 只用引擎真实暴露的 Bitmap#mega?(游戏侧 script_00054/00055 亦用此名); 仅当
+# mega? 不存在时才退回 isMega, 最后才退回尺寸 >2048 兜底。绝不让 >2048 盲判命中游戏
+# TilesetWrapper 重排的合法高 tileset(高=Bitmap.max_size, iOS≥4096, 非 mega)。
 # 降采样: Bitmap.new(nw,nh)+stretch_blt。已读 framework-entry.patch stretchBlt 实现
 # (PATH=B/C 走 source.megaSurface() 的 RAM 路径, 安全处理 mega 源, 不依赖无效 gl.tex),
 # 且 Bitmap#rect() 对 mega 取 v.rect 安全 -> 该写法对 mega 位图安全。
@@ -670,8 +672,13 @@ def __mkxp_patch_mega_bitmap
       k.send(:alias_method, :__mkxp_orig_bitmap_set, :bitmap=)
       k.send(:define_method, :bitmap=) do |value|
         v = value
+        # 判定只用引擎真实暴露的 mega?（游戏侧 script_00054/00055 都用 bitmap.mega?）。
+        # 绝不用 width/height>2048 兜底盲判：游戏 TilesetWrapper.wrapTileset 会把大 tileset
+        # 重排成 高=Bitmap.max_size(≥4096) 的【合法、非 mega】位图，盲判会误伤 → 1000+ TileSprite
+        # 各建一份降采样副本 → OOM/瓦片错位 → 进图闪退。仅真·mega(超 GPU 上限、引擎 GUARD_MEGA
+        # 会抛错)才降采样，保住 Dynamax/变身等 mega 精灵的崩溃修复。
         if v.is_a?(Bitmap) &&
-           (v.respond_to?(:isMega) ? v.isMega : (v.width > 2048 || v.height > 2048))
+           (v.respond_to?(:mega?) ? v.mega? : (v.respond_to?(:isMega) ? v.isMega : (v.width > 2048 || v.height > 2048)))
           nw = [v.width, 2048].min
           nh = [v.height, 2048].min
           nb = Bitmap.new(nw, nh)
