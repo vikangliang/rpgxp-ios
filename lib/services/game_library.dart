@@ -75,8 +75,10 @@ class GameLibrary {
   ///   - Game.ini 在 Zip 根目录（整包直铺）；
   ///   - Game.ini 在 Zip 内的某个文件夹下（常见：Essentials/Game.ini）。
   /// 自动跳过 __MACOSX/、.DS_Store、._* 等 macOS 打包垃圾。
-  static Future<String> importZip(
-      {void Function(double progress, String currentFile)? onProgress}) async {
+  static Future<String> importZip({
+    void Function(double progress, String currentFile)? onProgress,
+    bool keepSave = true,
+  }) async {
     // file_picker 13.x：FilePicker 是 abstract final class，静态方法直接挂在
     // FilePicker 上（无 .platform 成员），单文件选择用 pickFile()，读取数据
     // 改用 PlatformFile.readAsBytes()。
@@ -119,47 +121,80 @@ class GameLibrary {
     // 3) 解压（跳过打包垃圾与根目录之外的文件），按字节上报进度
     final dir = await gamesDir();
     final dest = Directory('${dir.path}/$name');
-    if (await dest.exists()) await dest.delete(recursive: true);
-    await dest.create(recursive: true);
 
-    var totalBytes = 0;
-    for (final f in archive) {
-      if (f.isFile) totalBytes += f.size.toInt();
-    }
-    var written = 0;
-    var lastTick = DateTime.now();
-    void report(String file, {bool force = false}) {
-      if (onProgress == null) return;
-      final now = DateTime.now();
-      if (!force && now.difference(lastTick).inMilliseconds < 80) return;
-      lastTick = now;
-      onProgress(totalBytes == 0 ? 1.0 : written / totalBytes, file);
-    }
-
-    for (final f in archive) {
-      written += f.size.toInt(); // 跳过的文件也计入总量，保证进度单调
-      if (!f.isFile) continue;
-      var p = f.name.replaceAll(r'\', '/');
-      if (p.startsWith('__MACOSX/')) continue;
-      final base = p.split('/').last;
-      if (base == '.DS_Store' || base.startsWith('._')) continue;
-      if (rootPrefix.isNotEmpty) {
-        if (!p.startsWith(rootPrefix)) continue;
-        p = p.substring(rootPrefix.length);
+    // 重导时保留用户存档：先把 Save/ 暂存到兄弟临时目录，删旧目录→解压→再还原。
+    // 这样"重新导入修复包"变成增量更新，绝不吞掉游戏进度（keepSave 默认开；
+    // 用户可在导入页关掉开关做干净重导）。失败时也会把暂存存档放回原位，永不丢失。
+    Directory? saveBak;
+    if (keepSave) {
+      final saveSrc = Directory('${dest.path}/Save');
+      if (await saveSrc.exists()) {
+        final bak = Directory('${dir.path}/.mkxp_save_bak_$name');
+        if (await bak.exists()) await bak.delete(recursive: true);
+        await saveSrc.rename(bak.path);
+        saveBak = bak;
       }
-      if (p.isEmpty) continue;
-      report(p);
-      final data = f.content;
-      if (data == null) continue;
-      final out = File('${dest.path}/$p');
-      await out.create(recursive: true);
-      await out.writeAsBytes(data);
     }
-    report('完成', force: true);
 
-    // 4) 校验：顶层必须有 Game.ini，否则不是 RGSS 游戏
-    if (!await File('${dest.path}/Game.ini').exists()) {
-      throw Exception('解压完成但没找到 Game.ini——这个 Zip 可能不是 RPG Maker XP 游戏');
+    try {
+      if (await dest.exists()) await dest.delete(recursive: true);
+      await dest.create(recursive: true);
+
+      var totalBytes = 0;
+      for (final f in archive) {
+        if (f.isFile) totalBytes += f.size.toInt();
+      }
+      var written = 0;
+      var lastTick = DateTime.now();
+      void report(String file, {bool force = false}) {
+        if (onProgress == null) return;
+        final now = DateTime.now();
+        if (!force && now.difference(lastTick).inMilliseconds < 80) return;
+        lastTick = now;
+        onProgress(totalBytes == 0 ? 1.0 : written / totalBytes, file);
+      }
+
+      for (final f in archive) {
+        written += f.size.toInt(); // 跳过的文件也计入总量，保证进度单调
+        if (!f.isFile) continue;
+        var p = f.name.replaceAll(r'\', '/');
+        if (p.startsWith('__MACOSX/')) continue;
+        final base = p.split('/').last;
+        if (base == '.DS_Store' || base.startsWith('._')) continue;
+        if (rootPrefix.isNotEmpty) {
+          if (!p.startsWith(rootPrefix)) continue;
+          p = p.substring(rootPrefix.length);
+        }
+        if (p.isEmpty) continue;
+        report(p);
+        final data = f.content;
+        if (data == null) continue;
+        final out = File('${dest.path}/$p');
+        await out.create(recursive: true);
+        await out.writeAsBytes(data);
+      }
+      report('完成', force: true);
+
+      // 还原用户存档（若 Zip 自带 Save 则覆盖，确保用玩家自己的进度）
+      if (saveBak != null && await saveBak.exists()) {
+        final restored = Directory('${dest.path}/Save');
+        if (await restored.exists()) await restored.delete(recursive: true);
+        await saveBak.rename(restored.path);
+      }
+
+      // 4) 校验：顶层必须有 Game.ini，否则不是 RGSS 游戏
+      if (!await File('${dest.path}/Game.ini').exists()) {
+        throw Exception('解压完成但没找到 Game.ini——这个 Zip 可能不是 RPG Maker XP 游戏');
+      }
+    } catch (e) {
+      // 导入失败：把暂存存档放回原位，绝不丢失玩家进度
+      if (saveBak != null && await saveBak.exists()) {
+        if (!await dest.exists()) await dest.create(recursive: true);
+        final restored = Directory('${dest.path}/Save');
+        if (await restored.exists()) await restored.delete(recursive: true);
+        await saveBak.rename(restored.path);
+      }
+      rethrow;
     }
     return name;
   }

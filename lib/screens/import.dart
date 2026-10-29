@@ -16,6 +16,7 @@ class _ImportPageState extends State<ImportPage> {
   static const _card = Color(0xFF16161C);
 
   bool _importing = false;
+  bool _keepSave = true;
   String _status = '';
   double _progress = 0;
   String _currentFile = '';
@@ -28,13 +29,16 @@ class _ImportPageState extends State<ImportPage> {
       _status = '正在解压…（大游戏请耐心等待）';
     });
     try {
-      final name = await GameLibrary.importZip(onProgress: (p, file) {
+      final name = await GameLibrary.importZip(
+        onProgress: (p, file) {
         if (!mounted) return;
         setState(() {
           _progress = p;
           _currentFile = file;
         });
-      });
+      },
+        keepSave: _keepSave,
+      );
       if (!mounted) return;
       setState(() => _status = name.isEmpty ? '已取消导入' : '导入完成：$name');
       if (name.isNotEmpty) {
@@ -81,6 +85,37 @@ class _ImportPageState extends State<ImportPage> {
                 ),
               ),
               const SizedBox(height: 24),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: _card,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('重新导入时保留存档',
+                              style: TextStyle(color: Colors.white, fontSize: 14)),
+                          SizedBox(height: 2),
+                          Text('覆盖同名游戏时保留 Save/ 进度；关闭则干净重导',
+                              style: TextStyle(color: Colors.white38, fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                    Switch(
+                      value: _keepSave,
+                      activeColor: _primary,
+                      onChanged: _importing
+                          ? null
+                          : (v) => setState(() => _keepSave = v),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _primary,
