@@ -369,6 +369,10 @@ static uint32_t mkxp_hashScene(const uint8_t *flip, int w, int h)
 
 static void mkxp_softPresent()
 {
+    /* 调试快照(场景 PNG 落盘 + 行扫描探针)默认关闭: 它是 Bug1/Bug2 取证工具,
+     * 那俩 bug 已修复; 默认开着会每秒一次写盘(含 fsync) -> 偶发 ~19ms 尖刺 + 刷屏日志。
+     * 需要时设环境变量 MKXP_DIAG=1 恢复取证能力(不影响正常游戏画面与逻辑)。 */
+    static bool s_diagEnabled = (getenv("MKXP_DIAG") != NULL);
     CFAbsoluteTime tEnter = CFAbsoluteTimeGetCurrent();
     /* 后台时跳过一切 GL 读回/显示（避免后台 GPU 提交 + 省内存） */
     if (g_appBackgrounded) { g_profLastT = tEnter; return; }
@@ -462,7 +466,7 @@ static void mkxp_softPresent()
     /* 场景快照（不受跳过逻辑影响，保证准时落盘）。
      * 用零拷贝 provider 引用 g_softBuf，避免 CFDataCreate 的 786KB 拷贝泄漏。 */
     CGImageRef dumpImg = NULL;
-    {
+    if (s_diagEnabled) {
         CGDataProviderRef dp = CGDataProviderCreateWithData(NULL, g_softBuf, (CFIndex)bytes, NULL);
         if (dp) {
             CGColorSpaceRef c = CGColorSpaceCreateDeviceRGB();
