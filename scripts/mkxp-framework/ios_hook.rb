@@ -655,8 +655,9 @@ end
 # 判定: 只用引擎真实暴露的 Bitmap#mega?(游戏侧 script_00054/00055 亦用此名); 仅当
 # mega? 不存在时才退回 isMega, 最后才退回尺寸 >2048 兜底。绝不让 >2048 盲判命中游戏
 # TilesetWrapper 重排的合法高 tileset(高=Bitmap.max_size, iOS≥4096, 非 mega)。
-# 降采样: Bitmap.new(nw,nh)+stretch_blt。已读 framework-entry.patch stretchBlt 实现
-# (PATH=B/C 走 source.megaSurface() 的 RAM 路径, 安全处理 mega 源, 不依赖无效 gl.tex),
+# 降采样: Bitmap.new(nw,nh)+stretch_blt。已读 framework-entry.patch stretchBlt 实现:
+# 对 mega 源强制走 PATH=C(CPU blit, 从 source.megaSurface() 的 RAM 路径缩放, 安全);
+# PATH=B(GPU subImageFix) 分支因会对 >maxTexSize 源建超上限纹理已在引擎侧禁用(防 GL 报错/花屏)。
 # 且 Bitmap#rect() 对 mega 取 v.rect 安全 -> 该写法对 mega 位图安全。
 # 启动期一次性打补丁(mainFunctionDebug 包裹里), 哨兵防重复包装; rescue 失败仅打日志。
 $__mkxp_mega_fixed = false
@@ -679,10 +680,21 @@ def __mkxp_patch_mega_bitmap
         # 会抛错)才降采样，保住 Dynamax/变身等 mega 精灵的崩溃修复。
         if v.is_a?(Bitmap) &&
            (v.respond_to?(:mega?) ? v.mega? : (v.respond_to?(:isMega) ? v.isMega : (v.width > 2048 || v.height > 2048)))
-          nw = [v.width, 2048].min
-          nh = [v.height, 2048].min
-          nb = Bitmap.new(nw, nh)
-          nb.stretch_blt(Rect.new(0, 0, nw, nh), v, v.rect)
+          # 缓存降采样结果到【源位图自身】(instance_variable): 战斗精灵 /
+          # BattlerSprite#update 每帧重赋值 -> 若每次都新建 2048² 纹理 + 跑一次
+          # stretch_blt(从 mega 源) 会致纹理疯狂 churn / 泄漏 / GL 负担。源 dispose
+          # 后 ivar 随对象回收, 无永久泄漏; 同一源复用同一份降采样, 避免重复开销。
+          nb = (v.instance_variable_defined?(:@__mkxp_ds) ? v.instance_variable_get(:@__mkxp_ds) : nil)
+          if !nb || nb.disposed?
+            # 降采样上限取设备真实 GPU maxTexSize(Bitmap.max_size), 而非写死 2048:
+            # mega 源本就 > maxTexSize, 压到 maxTexSize 仍合法(非 mega)且幅度最小 -> 画质最好。
+            cap = (Bitmap.respond_to?(:max_size) ? Bitmap.max_size : 2048)
+            nw = [v.width, cap].min
+            nh = [v.height, cap].min
+            nb = Bitmap.new(nw, nh)
+            nb.stretch_blt(Rect.new(0, 0, nw, nh), v, v.rect)
+            v.instance_variable_set(:@__mkxp_ds, nb)
+          end
           v = nb
         end
         __mkxp_orig_bitmap_set(v)

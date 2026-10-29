@@ -3792,7 +3792,7 @@ index 4b43123..dbfa41d 100644
 +
 +    SDL_Surface *srcSurf = source.megaSurface();
 +    
-+    if (srcSurf && shState->config().subImageFix)
++    if (srcSurf && shState->config().subImageFix && sourceRect.w <= glState.caps.maxTexSize && sourceRect.h <= glState.caps.maxTexSize) /* 子区域超 maxTexSize 的 mega 源禁用 GPU 分支(建超上限纹理会 GL 报错/花屏), 改走下方 CPU blit(PATH=C) */
 +    {
 +        /* Blit from software surface, for broken GL drivers */
 +        Vec2i gpTexSize;
