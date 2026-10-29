@@ -893,6 +893,31 @@ static BOOL swz_presentRenderbuffer(id self, SEL _cmd, NSUInteger target) {
      * GLDRendererMetal completion error 且伴随引擎清理期崩溃。 */
     if (g_appBackgrounded) return YES;
 
+    /* 帧限制器：iOS 的 SDL_GL_SetSwapInterval(1) 不阻塞 SDL 循环(已查实)，引擎无上限
+     * 自由跑(实测 ~106fps)，既白烧 CPU/GPU/电量，又让帧计数计时的游戏跑飞(比设计快数倍)。
+     * 此处把 RGSS 循环(逻辑+渲染+present)统一压到 kTargetFps —— 与 PC 版 mkxp 的 vsync
+     * 速度一致。本钩子从 swz_presentRenderbuffer 同步调用(在 RGSS 线程)，在此睡眠即卡住
+     * 整条循环，主线程独立合成不会死锁。睡眠放在 hookT0/softMs 测量之前，不污染耗时指标。 */
+    {
+        /* 目标 fps：默认 60(=PC mkxp vsync)。
+         * 【未来换 120Hz 机型 + 确认游戏为"实时计时"(速度不随 fps 变)时】要吃满 120Hz 更顺，
+         * 把下面 60.0 改成读取屏幕刷新率即可(60Hz 机→60，Pro→120)，一行改动：
+         *   static const double kTargetFps =
+         *       (double)[[UIScreen mainScreen] maximumFramesPerSecond];
+         * 注意：帧计数计时的游戏绝不能上 120(会跑成 3 倍速)，故默认锁 60 对所有机型都安全。 */
+        static const double kTargetFps = 60.0;
+        static CFAbsoluteTime s_lastFrameT = 0;
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+        if (s_lastFrameT > 0) {
+            double dt = now - s_lastFrameT;
+            const double target = 1.0 / kTargetFps;
+            if (dt < target) {
+                SDL_Delay((Uint32)((target - dt) * 1000.0));
+            }
+        }
+        s_lastFrameT = now;
+    }
+
     uint64_t n = ++g_presentTotal;
     CFTimeInterval hookT0 = CFAbsoluteTimeGetCurrent();
     if (n <= 3 || n % 600 == 1) {
