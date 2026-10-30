@@ -2,9 +2,46 @@
 
 > 本文件专门写给「接手继续云编译」的会话/人。AI 记忆**不随仓库走**，所以把接力上下文写在这里。
 
-## 当前状态（2026-10-29，更新于 `63a6874`）
+## 当前状态（2026-10-30，仅 HANDOFF 文档更新，稳定构建 `63a6874`）
 
-> 今天两条线：① 默认关闭调试快照（落盘+行扫描探针）已提交 `fa33fb0`，仅日志清理；② 引擎锁 60fps（无上限 106fps 白烧电+跑飞）已提交 `63a6874`，目标 `kTargetFps=60` 且注释留了 120Hz 一行切换。**⚠️ 推翻旧假设**：此前以为 `soft max` ~19ms 尖刺是每秒 PNG 落盘所致，① 提交后真机日志显示尖刺仍在（落盘开/关几乎一样）→ 真凶是 `glFinish`+`glReadPixels` 的 **GPU 回读阻塞**（软呈现固有成本，非持续掉帧）。EAGL 0x502 逼出软呈现，故尖刺只能异步回读/直渲削幅度（均未做）。④ mega 回退未做；游戏计时方式（帧计数 vs 实时）未决。
+> **2026-10-30（仅文档更新，未改任何代码，留给接手机器落地）**：坐实"跟随宝可梦战斗/队伍菜单返回后偶发消失"根因 = Following Pokemon EX 插件 `FollowingPkmn.refresh` 的"先清空再条件补回"竞态（`Event_Sprite Commands.rb:68`），**非 iOS 专属**（PC 也会中，iOS 仅更早/更频繁暴露）；给出 A+C+加固 修法并源码确认**不破坏用户开关规则**。其余（② 锁60、GPU 回读尖刺、④ mega 回退、游戏计时方式）见下 10-29 节。
+
+### 2026-10-30 跟随宝可梦"战斗/队伍菜单返回后偶发不显示"根因与修法（仅文档，未改代码）
+
+**现象**：常规情况（非开关特意隐藏）下，战斗结束回地图、或打开宝可梦（队伍）菜单再返回后，跟随宝可梦**偶发**整个消失（连影子也没）。用户起初以为 iOS 专属，后经**全源码核查坐实并非 iOS 专属**——本机装 Ruby 3.3.13（`winget install RubyInstallerTeam.Ruby.3.3`）把核心 `sp/Data/Scripts.rxdata`（二进制 Marshal）用 `Marshal.load`+`Zlib` 只读抽成 `C:\Users\ginny\Documents\_scripts_extract\`（403 段；**切勿跑游戏自带 `脚本_提取.rb`，它会把 Scripts.rxdata 替换成 loader**），逐行读了战斗结束还原全链路。
+
+**根因（源码坐实，平台无关）**：Following Pokemon EX 的 `FollowingPkmn.refresh`（`sp/Plugins/Following Pokemon EX/Main Module/Event_Sprite Commands.rb:68`）是"**先清空、再条件补回**"：
+- L71 `remove_sprite` 把跟随事件 `character_name=""`（身体+影子同属一个 `Sprite_Character`，名字一空两者皆没）；
+- L74 `return if !first_pkmn` 在清空"之后"判空；
+- L88 `FollowingPkmn.change_sprite(first_pkmn) if ret` 只有 `active?`(`refresh_internal` 返回 true) 才补回；
+- 触发清空要求 `can_check?`（`Internal Commands.rb` 内含 `return false if !$scene.is_a?(Scene_Map)`），即场景已切回 Scene_Map。
+
+当 `refresh` 在"已切回 Scene_Map（can_check?=true → 跑到清空）、但 `refresh_internal` 返回 false（那一瞬 `get` 找不到跟随 / `follower_toggled` 为假 / appear handler 否决）或 `first_pkmn` 为 nil"的瞬间执行 → 名字被清空却没补回 → 跟随永久消失，直到下次成功 refresh。**这是纯 Ruby 逻辑竞态，PC/iOS 一字不差执行 → 能力上 PC 也会中，不是 iOS 专属。**
+
+**为什么感觉是 iOS**：偶发取决于战斗结束那帧跟随是否"瞬间不可解析"/appear 是否瞬间为假，频度受帧时序影响。② 锁 60 之前 iOS 跑 106fps，坏窗口与 PC 的 60fps 不同 → 更早/更频繁暴露；② 之后时序对齐，频度应趋同。
+
+**为什么不是 iOS 专属（源码佐证）**：还原全链路每一环都是标准写法、无 Ruby 3.3 炸弹：
+- `change_sprite`→`ow_sprite_filename`→核心 `check_graphic_file`（`00130_Species_files.rb:5`）→`pbResolveBitmap`（`00019:121`）全为标准 Ruby；这些方法被战斗精灵前/后/图标**每帧高频调用**（00130:50/54/122），iOS 能跑说明不在 3.3 上炸。
+- 核心 `pbStartBattle`（`00148:249`）不碰跟随；`pbEndBattle`（`00187:365`）只 `pbDisposeSprites`；`pbRefreshSceneMap`（`00088:16`）只 `miniupdate`——均无 3.x 炸弹、均不碰跟随。
+- HANDOFF M3（762-799 行）记载的"私有调用 NoMethodError"一类，已被 `ios_hook.rb` 把 `Module#private` 变 no-op **全面中和**（游戏脚本的 private 定义都在 ios_hook 之后加载，全变 public），全代码搜过也无 `.taint/.trust` 调用。
+
+**会不会破坏用户开关规则（源码确认：不会）**：用户用开关让跟随"不显示"只可能是三种实现，全会被修法尊重：
+- `FollowingPkmn.toggle_off`（`User Commands.rb:61`）→ 置 `follower_toggled=false` 且把跟随事件从 `$game_temp.followers` 移除；
+- 自定义 appear handler 返回 false；
+- 直接置 `follower_toggled`。
+修法 A 是"回到 Scene_Map 后调 `FollowingPkmn.refresh(false)`"，它**原样走** `refresh_internal`（查 `follower_toggled`）+ `trigger_2(:following_pkmn_appear)`（跑自定义 handler）+ `get`（被 toggle_off 移除的事件就找不到→false）。**绝不绕过、绝不直写 character_name**。开关 ON 时跑完还是 false→保持隐藏；开关 OFF 才补回。
+
+**修法（待接手机器落地，仅动 Following Pokemon EX 插件，不动引擎、不动用户开关逻辑）**：
+- **A（根治）**：确保战斗结束 / 队伍菜单关闭回 Scene_Map 后，`FollowerSprites#refresh`（`Event Sprite.rb:25`→`FollowingPkmn.refresh(false)`）在 Scene_Map 下完整跑完；即在"回到地图"钩子里补一次可靠 `FollowingPkmn.refresh(false)`。
+- **C（顺手真 bug）**：`Refresh.rb:167` `after_battle`（对战创建类）把 `$PokemonGlobal.call_refresh = true`（布尔），但 `Misc.rb` 定义为数组 `[false,false]`、全代码按 `call_refresh[0]/[1]/[2]` 用 → `true[0]` 必 `NoMethodError`。改为 `[true, false, 0]`。
+- **加固**：把 `Event_Sprite Commands.rb:74` 的 `first_pkmn` 判空**提到 L71 `remove_sprite` 之前**——没可显示宝可梦时不空清空，避免孤儿；不影响"开关隐藏"（那种 `first_pkmn` 非空、仅 `ret=false` 仍正常清空）。
+
+**残留确认（iOS 侧，不用 PC）**：唯一没法 100% 排除的是"某极罕见战斗子状态才调用的 3.x 不兼容方法"。最后一锤：下次跟随消失时看 `Documents/mkxp.log`（HANDOFF 745 行 `showExc` 已改落日志）——有 EventScriptError/异常栈 → 确有 iOS 专属异常（日志指明方法，定向修）；日志干净 → 坐实平台无关竞态。
+
+**未决 / 接棒待办**：
+- 实际落地 A+C+加固（本机未改代码，留接手机器）。
+- 接手机器若需再读核心源码：装 Ruby 3.3.x，对 `sp/Data/Scripts.rxdata` 跑只读 Marshal+Zlib 抽取（参考本机 `C:\Users\ginny\Documents\_extract_scripts.rb`），**勿用游戏自带 `脚本_提取.rb`**。
+- 若日志出现 iOS 专属异常，按 HANDOFF M3 的定向法（重定义该方法为 3.x 安全版）修。
 
 ### 2026-10-29 性能收尾：锁 60 + 诊断 gate + 尖刺根因锤定（GPU 回读，非落盘）
 
