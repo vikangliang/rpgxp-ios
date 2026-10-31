@@ -154,6 +154,47 @@ end
 # 游戏脚本加载、TilemapRenderer::AutotileExpander 定义后安装；
 # 记录每次 expand 的签名与耗时，并按"Bitmap 用尺寸 + 其它参数"作稳定 key 缓存返回值，
 # 命中即跳过数千次 GPU blit（首次慢、重进/同 tileset 快）。begin/rescue 兜底，绝不影响游戏。
+## 位图尺寸描述（诊断用）：WxH + (mega) 标志。
+## mega = true 表示任一边超过 Bitmap.max_size，这类位图没有 GL 纹理，
+## 只能走引擎的 mega-surface 路径（Sprite/Plane 绘制结果可能与 PC 不同）。
+def __mkxp_bmp_desc(b)
+  return "-" unless b.is_a?(Bitmap)
+  begin
+    w = b.width
+    h = b.height
+    mega = (b.mega? rescue false) ? "(mega)" : ""
+    "#{w}x#{h}#{mega}"
+  rescue StandardError
+    "?"
+  end
+end
+
+## 诊断：打印 TilemapRenderer::TilesetWrapper.wrapTileset 的输入/输出几何。
+## 黄金市 tile 缺失的直接嫌疑点：Outside 是 256x38660 的 mega tileset，
+## 游戏按 Bitmap.max_size 分列后拷成一张 256*列数 x max_size 的位图；
+## 若列数/尺寸与 max_size 不匹配，深处的图块（列 1 以后）就会取不到像素。
+def __mkxp_install_tileset_wrap_diag
+  return unless defined?(::TilemapRenderer) && ::TilemapRenderer.const_defined?(:TilesetWrapper)
+  m = ::TilemapRenderer::TilesetWrapper
+  return if m.instance_variable_get(:@__mkxp_wrap_diag)
+  m.instance_variable_set(:@__mkxp_wrap_diag, true)
+  orig = (m.method(:wrapTileset) rescue nil)
+  return unless orig
+  m.define_singleton_method(:wrapTileset) do |bmp|
+    res = orig.call(bmp)
+    begin
+      maxtex = (Bitmap.max_size / 1024) * 1024
+      $stderr.puts "[diag] wrapTileset in=#{__mkxp_bmp_desc(bmp)} maxTex=#{maxtex} out=#{__mkxp_bmp_desc(res)}"
+    rescue StandardError => e
+      $stderr.puts "[diag] wrapTileset diag failed: #{e.class}"
+    end
+    res
+  end
+  $stderr.puts "[diag] tileset wrap diag installed"
+rescue StandardError => e
+  $stderr.puts "[diag] tileset wrap diag install failed: #{e.class}: #{e.message}"
+end
+
 def __mkxp_install_autotile_cache
   return unless defined?(::TilemapRenderer) && ::TilemapRenderer.const_defined?(:AutotileExpander)
   cls = ::TilemapRenderer::AutotileExpander
@@ -164,6 +205,19 @@ def __mkxp_install_autotile_cache
   store = {}
   order = []          # LRU 顺序（最近使用在尾部）
   cls.instance_variable_set(:@__mkxp_at_store, store)
+  # ---- 诊断（2026-10-31 黄金市 tile 缺失定位）----
+  # Bitmap.max_size 决定两件事：
+  #   1) TilesetWrapper.wrapTileset 把 256x38660 的 Outside mega tileset 按
+  #      max_size 分列（列数 = ceil(h/max_size)），列数*256 不能超过 max_size；
+  #   2) AutotileExpander 里 wrap = (max_size < 48*32=1536)，展开结果位图
+  #      尺寸 frames*32 x 1536；若任一边 > max_size，该展开图会退化成
+  #      "mega surface"（无 GL 纹理），Sprite 走 mega 分支 -> 图块可能整块不显示。
+  # 同时打印源/结果位图尺寸与 mega 标志，可一次判定是"上限不够"还是"串图"。
+  begin
+    $stderr.puts "[diag] Bitmap.max_size=#{Bitmap.max_size}"
+  rescue StandardError => e
+    $stderr.puts "[diag] Bitmap.max_size unavailable: #{e.class}: #{e.message}"
+  end
   cls.define_singleton_method(:expand) do |*a, &b|
     key = a.map do |x|
       if x.is_a?(Bitmap)
@@ -207,7 +261,7 @@ def __mkxp_install_autotile_cache
     if tpl
       order.delete(key)
       order.push(key)
-      $stderr.puts "[autotile-cache] HIT argc=#{a.size}"
+      $stderr.puts "[autotile-cache] HIT argc=#{a.size} key=#{key[0,80]} src=#{__mkxp_bmp_desc(a[0])} tpl=#{__mkxp_bmp_desc(tpl)}"
       # 交出【副本】：游戏 dispose 的是它持有的那张，缓存模板必须与之解耦，
       # 否则命中时返回已被 dispose 的 bitmap -> RGSSError: disposed bitmap
       __mkxp_clone_bitmap(tpl)
@@ -215,7 +269,7 @@ def __mkxp_install_autotile_cache
       t = (Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0)
       r = orig.call(*a, &b)
       dt = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t) * 1000).to_i rescue -1
-      $stderr.puts "[autotile-cache] MISS +#{dt}ms arity=#{orig.arity} argc=#{a.size} args=[#{a.map(&:class).join(',')}] ret=#{r.class} key=#{key[0,80]}"
+      $stderr.puts "[autotile-cache] MISS +#{dt}ms arity=#{orig.arity} argc=#{a.size} args=[#{a.map(&:class).join(',')}] ret=#{r.class} src=#{__mkxp_bmp_desc(a[0])} res=#{__mkxp_bmp_desc(r)} key=#{key[0,80]}"
       store[key] = __mkxp_clone_bitmap(r)
       order.push(key)
       # 有界 LRU：室外跨图频繁，autotile 组合可能被逐出后重展造成偶发卡顿；
@@ -384,6 +438,7 @@ class << Object
       rescue StandardError
       end
       __mkxp_install_autotile_cache if defined?(::TilemapRenderer) && ::TilemapRenderer.const_defined?(:AutotileExpander)
+      __mkxp_install_tileset_wrap_diag if defined?(::TilemapRenderer) && ::TilemapRenderer.const_defined?(:TilesetWrapper)
       # 包装一律替换 Object 的【实例】方法（顶层 def 的真实落点），
       # 使 main 上下文与类上下文的所有调用都被拦截；此前定义在
       # Object 单例类上的包装只拦截类上下文调用，是覆盖不全的根子。
