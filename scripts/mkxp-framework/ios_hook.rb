@@ -253,6 +253,21 @@ def __mkxp_install_map_timing
   __mkxp_install_tracepoint_profiler if defined?(::Spriteset_Map)
   __mkxp_wrap_new(::Tilemap, "Tilemap.new") if defined?(::Tilemap)
   __mkxp_wrap_new(::Sprite_Character, "Sprite_Character.new") if defined?(::Sprite_Character)
+  __mkxp_time_wrap(::TilemapRenderer, :add_tileset, "TilemapRenderer#add_tileset") if defined?(::TilemapRenderer)
+  __mkxp_time_wrap(::TilemapRenderer, :add_extra_autotiles, "TilemapRenderer#add_extra_autotiles") if defined?(::TilemapRenderer)
+  # update 每帧都调，只在重负载(>50ms)时打印，避免刷屏；用于坐实地图加载当帧的 update 耗时
+  if defined?(::Spriteset_Map)
+    im = ::Spriteset_Map.instance_method(:update) rescue nil
+    if im
+      ::Spriteset_Map.send(:define_method, :update) do |*a, &b|
+        t = __mkxp_ms
+        r = im.bind(self).call(*a, &b)
+        d = __mkxp_ms - t
+        $stderr.puts "[map-timing] Spriteset_Map#update +#{d}ms" if d > 50
+        r
+      end
+    end
+  end
   $stderr.puts "[map-timing] installed; Spriteset_Map#init now TracePoint-profiled"
 rescue StandardError => e
   $stderr.puts "[map-timing] install failed: #{e.class}"
