@@ -1031,7 +1031,7 @@ if [ -d "$MKXP_SRC/src" ]; then
   # 「rgss: buildAtlas t=」必须在此：patch -p1 -f 回退时 tilemap.cpp hunk 可被静默丢弃
   # （2026-10-21 教训：漏此签名 -> buildAtlas 计时+缓存都没进包，真机 7.4s 依旧，而日志
   #  因无计时完全看不出来，白装一轮 IPA）。现在 tilemap 缺失 = 直接 FATAL，不许出包。
-  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "swapInterval=" "mkxp: bitmap missing" "rgss: ruby exception (suppressed dialog)" "BgmFadingIn must NOT be overridden" "rgss: buildAtlas t="; do
+  for sig in "rgss: bgm heal attempt" "rgss: slow decode" "rgss: decode-cache" "rgss: tainted skip" "rgss: text clipped" "swapInterval=" "mkxp: bitmap missing" "rgss: ruby exception (suppressed dialog)" "BgmFadingIn must NOT be overridden" "rgss: buildAtlas t=" "rgss: atlas-reuse-by-name"; do
     if ! grep -rqF "$sig" "$MKXP_SRC"; then
       echo "FATAL: 关键补丁签名缺失: $sig （hunk 可能被丢弃，修复未生效）"; exit 1
     fi
@@ -1641,7 +1641,7 @@ cmake --build "$MKXP_SRC/build-ios" -j"$(sysctl -n hw.ncpu)"
 echo "mkxp static lib: $(ls -1 "$MKXP_SRC"/build-ios/libmkxp.a 2>/dev/null || echo NONE)"
 # 二进制级铁闸：源码有补丁不够，必须确认 string literal 真编进 libmkxp.a。
 # 2026-10-22 教训：源码 FATAL 绿、但二进制无 slow decode/buildAtlas 标记 = 补丁没进包。
-for sig in "rgss: slow decode" "rgss: buildAtlas t=" "atlas-cache MISS" "rgss: Tilemap.ctor t=" "rgss: Tilemap.setMapData t="; do
+for sig in "rgss: slow decode" "rgss: buildAtlas t=" "atlas-cache MISS" "rgss: Tilemap.ctor t=" "rgss: Tilemap.setMapData t=" "rgss: atlas-reuse-by-name"; do
   if ! grep -aqF "$sig" "$MKXP_SRC/build-ios/libmkxp.a"; then
     echo "FATAL: libmkxp.a 缺少补丁签名: $sig（补丁没编进二进制，禁止出包）"; exit 1
   fi
@@ -1685,7 +1685,7 @@ libtool -static -o "$FW_DIR/MKXP" "${CORE_LIBS[@]}"
 # 二进制铁闸(框架合并后)：App -force_load 的是这个 MKXP 归档。若 libtool -static
 # 合并丢了某些 .o，libmkxp.a 级铁闸查不出来（bitmap.cpp 生效但 tilemap.cpp 计时
 # 从来不打的疑似根因）。这里查最终框架归档，缺签名直接 FATAL，逼出合并问题。
-for sig in "rgss: slow decode" "rgss: buildAtlas t=" "rgss: Tilemap.ctor t=" "atlas-cache MISS"; do
+for sig in "rgss: slow decode" "rgss: buildAtlas t=" "rgss: Tilemap.ctor t=" "atlas-cache MISS" "rgss: atlas-reuse-by-name"; do
   if ! grep -aqF "$sig" "$FW_DIR/MKXP"; then
     echo "FATAL: 合并后 MKXP 框架缺少签名: $sig（libtool -static 合并疑似丢 .o）"; exit 1
   fi

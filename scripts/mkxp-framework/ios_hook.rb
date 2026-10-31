@@ -218,8 +218,9 @@ def __mkxp_install_autotile_cache
       $stderr.puts "[autotile-cache] MISS +#{dt}ms arity=#{orig.arity} argc=#{a.size} args=[#{a.map(&:class).join(',')}] ret=#{r.class} key=#{key[0,80]}"
       store[key] = __mkxp_clone_bitmap(r)
       order.push(key)
-      # 有界 LRU：autotile 组合本身很少，但若地图很多仍可能累积，故设上限
-      while order.size > 64
+      # 有界 LRU：室外跨图频繁，autotile 组合可能被逐出后重展造成偶发卡顿；
+      # 放宽到 256（覆盖一套 tileset 的全部 autotile，避免回访时重展），仍受界防止无限增长
+      while order.size > 256
         old = order.shift
         store.delete(old)
       end
