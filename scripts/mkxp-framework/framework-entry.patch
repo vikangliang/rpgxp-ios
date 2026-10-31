@@ -483,8 +483,9 @@ index 4b43123..c1b9da5 100644
 +        }
 +        SDL_Surface *srcSurf = const_cast<Bitmap&>(source).ensureCpuSurface();
 +        if (!srcSurf) return false;
-+        SDL_Rect sr = { (Sint16)sourceRect.x, (Sint16)sourceRect.y, (Uint16)sourceRect.w, (Uint16)sourceRect.h };
-+        SDL_Rect dr = { (Sint16)destRect.x, (Sint16)destRect.y, (Uint16)destRect.w, (Uint16)destRect.h };
++        /* SDL2 的 SDL_Rect 是 int(32 位); 此前误 cast 成 Sint16 会让源 y>=32768 的 mega 源分列(如 256x38660 tileset 第 8/9 列) 溢出成负数 -> blit 失败 -> iOS 上 tileset 深列整块丢失(PC 被 PATH=B 救回故正常)。去掉 16 位截断。 */
++        SDL_Rect sr = { (int)sourceRect.x, (int)sourceRect.y, (Uint16)sourceRect.w, (Uint16)sourceRect.h };
++        SDL_Rect dr = { (int)destRect.x, (int)destRect.y, (Uint16)destRect.w, (Uint16)destRect.h };
 +        if (sr.w != dr.w || sr.h != dr.h) return false;   // 仅支持 1:1
 +        SDL_SetSurfaceBlendMode(srcSurf, SDL_BLENDMODE_NONE);
 +        if (SDL_BlitSurface(srcSurf, &sr, surface, &dr) != 0) return false;
@@ -876,7 +877,7 @@ index 4b43123..c1b9da5 100644
  }
  
  Bitmap::Bitmap(void *pixeldata, int width, int height)
-@@ -813,6 +1178,59 @@ void Bitmap::stretchBlt(const IntRect &destRect,
+@@ -813,6 +1178,60 @@ void Bitmap::stretchBlt(const IntRect &destRect,
      // Don't need this, right? This function is fine with megasurfaces it seems
      //GUARD_MEGA;
      
@@ -886,7 +887,7 @@ index 4b43123..c1b9da5 100644
 +     * 限频（前 3000 次，覆盖到登录/标题/菜单的一次性背景）+ 只 fprintf，
 +     * 不做 ReadPixels（避免干扰被测路径）。 */
 +    static int bltDiagN = 0;
-+    bool bltDiag = false;  /* blt-diag 关闭: 查横线Bug2遗留, 地图加载期 stderr 洪水(疑似 c0ce727 那次"还没进地图就闪退"元凶); 恢复见 bltDiagN++ < 3000 */
++    bool bltDiag = (source.megaSurface() != 0);  /* 仅记录 mega 源 blit(wrap 大图分列), 验证深列(y>=32768)是否被正确拷贝; 不洪水 */
 +    if (bltDiag) {
 +        /* 字段：dst=目标位图尺寸 dstRect=目标矩形 src=源位图尺寸 srcRect=源矩形
 +         * oob=1 表示源矩形越界。注意参数顺序必须与格式串一致：
