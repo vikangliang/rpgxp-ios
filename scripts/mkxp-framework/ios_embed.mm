@@ -367,22 +367,14 @@ static uint32_t mkxp_hashScene(const uint8_t *flip, int w, int h)
     return hsh;
 }
 
-/* iOS 软呈现回读改用 fence 精准同步(见 mkxp_softPresent 内)。APPLE_sync 在 iOS SDK
- * 有声明；ANGLE ES2 上下文下运行时不支持则函数返回 0 → 自动回退 glFinish。
- * 下方守卫确保即使系统头未声明也能编译(常量值取自 GL_APPLE_sync)。 */
-#ifndef GL_SYNC_GPU_COMMANDS_COMPLETE_APPLE
-#define GL_SYNC_GPU_COMMANDS_COMPLETE_APPLE 0x9116
-#define GL_SYNC_FLUSH_COMMANDS_BIT_APPLE   0x911B
-#define GL_ALREADY_SIGNALED_APPLE          0x911A
-#define GL_CONDITION_SATISFIED_APPLE       0x911C
-typedef struct __GLsync *GLsync;
-#endif
-extern "C" GLsync glFenceSyncAPPLE(GLenum condition, GLbitfield flags);
-extern "C" GLenum glClientWaitSyncAPPLE(GLsync sync, GLbitfield flags, GLuint64 timeout);
-extern "C" void   glDeleteSyncAPPLE(GLsync sync);
-
 static void mkxp_softPresent()
 {
+    /* 埋点：逐帧尖刺探针。测相邻 softPresent 的帧间隔 dt；单帧 >100ms 立即打印，
+     * 暴露被 600 帧平均掩盖的几百 ms 冻结，并粗略区分 Ruby(engine) 与回读(read)。 */
+    static double s_lastSoftT = 0;
+    double nowT = CFAbsoluteTimeGetCurrent();
+    double frameDt = s_lastSoftT ? (nowT - s_lastSoftT) * 1000.0 : 0;
+    s_lastSoftT = nowT;
     /* 调试快照(场景 PNG 落盘 + 行扫描探针)默认关闭: 它是 Bug1/Bug2 取证工具,
      * 那俩 bug 已修复; 默认开着会每秒一次写盘(含 fsync) -> 偶发 ~19ms 尖刺 + 刷屏日志。
      * 需要时设环境变量 MKXP_DIAG=1 恢复取证能力(不影响正常游戏画面与逻辑)。 */
@@ -443,56 +435,24 @@ static void mkxp_softPresent()
     GLint prevFbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    /* 撕裂根治 + 降尖刺：原 glFinish() 强制整帧画完再读回(保不裂)，但每帧多等一次
-     * GPU，室外图高负载时阻塞尖刺 18~30ms(=“跑动偶尔卡一下”)。现改 fence 精准同步：
-     * 正常帧 GPU 画完即返回后读回(仍保不裂)；重负载帧超 12ms 等待上限即跳过本帧回读、
-     * 沿用上一帧已完成像素上屏(1 帧滞后，60fps 不可察觉)→ 消除尖刺。
-     * 运行时不支持 APPLE_sync(如 ANGLE ES2)或实现异常时三重回退 glFinish，行为不变。 */
+    /* 撕裂根治：iOS(Metal 后端)下 glReadPixels 不保证等 GPU 画完，高负载时会读回
+     * 半渲染帧 → UIImageView 呈现半帧 → 横向撕裂（PC 的 SDL swap 由驱动保证原子
+     * +VSync，无此问题）。glFinish() 强制本帧 GL 命令全部完成后再读回，确保读到
+     * 完整一整帧。代价是每帧多等一次 GPU，换取不裂。 */
     CFTimeInterval tRead0 = CFAbsoluteTimeGetCurrent();
-    bool readOK = true;
-    static bool s_useFence = true;
-    static int s_skipStreak = 0;
-    if (s_useFence) {
-        GLsync fence = glFenceSyncAPPLE(GL_SYNC_GPU_COMMANDS_COMPLETE_APPLE, 0);
-        if (fence) {
-            GLenum fs = glClientWaitSyncAPPLE(fence, GL_SYNC_FLUSH_COMMANDS_BIT_APPLE, 18000000ULL); /* 18ms: 仅跳过真尖刺(>18ms GPU)，正常帧仍读回，无回归 */
-            readOK = (fs == GL_ALREADY_SIGNALED_APPLE || fs == GL_CONDITION_SATISFIED_APPLE);
-            glDeleteSyncAPPLE(fence);
-        } else {
-            s_useFence = false;   /* APPLE_sync 不可用 → 永久回退 glFinish */
-            fprintf(stderr, "[ios-embed] fence-sync unavailable, falling back to glFinish\n");
-            glFinish();
-        }
-        if (s_useFence && !readOK) {
-            if (++s_skipStreak > 30) {
-                s_useFence = false;
-                fprintf(stderr, "[ios-embed] fence-sync timed out >30 frames, falling back to glFinish\n");
-                glFinish(); readOK = true;
-            }
-        }
-    } else {
-        glFinish();
-    }
-    if (readOK) {
-        /* 清掉此前积压的 GL 错误（如启动首帧的 0x502）：不清会把“历史错误”误判成
-         * 本次 readback 失败 → 整帧 return 丢帧。 */
-        while (glGetError() != GL_NO_ERROR) {}
-        glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE, g_softBuf);
-        g_profRead += (CFAbsoluteTimeGetCurrent() - tRead0) * 1000.0;
-        s_skipStreak = 0;
-        static bool s_fenceLogged = false;
-        if (s_useFence && !s_fenceLogged) {
-            s_fenceLogged = true;
-            fprintf(stderr, "[ios-embed] fence-sync ACTIVE (glFinish replaced by glFenceSyncAPPLE)\n");
-        }
-    }
+    glFinish();
+    /* 清掉此前积压的 GL 错误（如启动首帧的 0x502）：glGetError 返回的是全局
+     * 错误标志，不清就会把"历史错误"误判成本次 readback 失败 -> 整帧 return
+     * 丢帧。清空后，只有本次 readback 真正出错才会触发下面的 return。 */
+    while (glGetError() != GL_NO_ERROR) {}
+    double thisRead = (CFAbsoluteTimeGetCurrent() - tRead0) * 1000.0;
+    glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE, g_softBuf);
+    g_profRead += thisRead;
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 
-    if (!readOK) {
-        /* 本帧 GPU 过重，跳过回读：g_softBuf 保留上一帧完整像素，下方 hash 命中 →
-         * 自动跳过上屏，画面保持上一帧(1 帧滞后)。 */
-        atomic_store(&g_firstFrameShown, 1);
-        return;
+    if (frameDt > 100.0) {
+        fprintf(stderr, "[ios-embed] FRAME-SPIKE dt=%.0fms read=%.1f engine≈%.1f (回读已固定, 冻结应在Ruby侧)\n",
+                frameDt, thisRead, frameDt - thisRead - 4.0);
     }
 
     GLenum e = glGetError();
