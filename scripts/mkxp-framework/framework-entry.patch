@@ -3717,7 +3717,7 @@ index 4b43123..dbfa41d 100644
 +     * 限频（前 3000 次，覆盖到登录/标题/菜单的一次性背景）+ 只 fprintf，
 +     * 不做 ReadPixels（避免干扰被测路径）。 */
 +    static int bltDiagN = 0;
-+    bool bltDiag = (source.megaSurface() != 0);  /* 仅记录 mega 源 blit(wrap 大图分列), 验证深列(y>=32768)是否被正确拷贝, 不洪水 */
++    bool bltDiag = false;  /* blt-diag 关闭: 查横线Bug2遗留, 地图加载期 stderr 洪水(疑似 c0ce727 那次"还没进地图就闪退"元凶); 恢复见 bltDiagN++ < 3000 */
 +    if (bltDiag) {
 +        /* 字段：dst=目标位图尺寸 dstRect=目标矩形 src=源位图尺寸 srcRect=源矩形
 +         * oob=1 表示源矩形越界。注意参数顺序必须与格式串一致：
