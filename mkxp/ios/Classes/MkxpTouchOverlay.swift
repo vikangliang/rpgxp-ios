@@ -235,7 +235,7 @@ final class MkxpTouchOverlay: NSObject {
   /// 换向触发轻触感；手指可滑动连续换向、抬起精准释放。
   private func buildDpad(in ctl: UIView) {
     let side: CGFloat = 160      // 圆盘直径
-    let cx: CGFloat = 84         // 盘心 x（左侧偏下，少挡画面）
+    let cx: CGFloat = 120        // 盘心 x（横屏靠左但右移，少挡画面、不压到中部）
     let h = ctl.bounds.height   // 用真实窗口高度（横屏时≠UIScreen.main.bounds）
     let cy = h - 128             // 盘心 y（保持距底边 48px 不变：128 - 80=48）
     let pad = MkxpDpadView(frame: CGRect(
