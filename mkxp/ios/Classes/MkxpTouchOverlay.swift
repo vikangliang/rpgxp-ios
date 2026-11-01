@@ -234,10 +234,10 @@ final class MkxpTouchOverlay: NSObject {
   /// 触摸点相对盘心的角度判 4 向（点哪亮哪），中心小圆环为死区，
   /// 换向触发轻触感；手指可滑动连续换向、抬起精准释放。
   private func buildDpad(in ctl: UIView) {
-    let side: CGFloat = 204      // 圆盘直径
-    let cx: CGFloat = 104        // 盘心 x（左侧偏下，少挡画面）
+    let side: CGFloat = 160      // 圆盘直径
+    let cx: CGFloat = 84         // 盘心 x（左侧偏下，少挡画面）
     let h = ctl.bounds.height   // 用真实窗口高度（横屏时≠UIScreen.main.bounds）
-    let cy = h - 150             // 盘心 y
+    let cy = h - 128             // 盘心 y（保持距底边 48px 不变：128 - 80=48）
     let pad = MkxpDpadView(frame: CGRect(
         x: cx - side / 2, y: cy - side / 2, width: side, height: side))
     pad.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
@@ -449,7 +449,7 @@ final class MkxpPassthroughView: UIView {
 /// 中心小圆环为死区；换向触发轻触感。同一时刻只保留一个方向，
 /// 手指滑动可连续换向、抬起精准释放（旧的多 UIButton 方案会卡键）。
 final class MkxpDpadView: UIView {
-  private let hub: CGFloat = 26        // 中心死区半径（小圆环内不响应）
+  private let hub: CGFloat = 22        // 中心死区半径（小圆环内不响应；随圆盘 204→160 同步缩小）
   private var held: Set<Int32> = []
   private var heldOrder: [Int32] = []   // 按下顺序（最近按下优先保留）
   /// 本视图上仍活动的触摸（自维护）。不能用 event.allTouches：
