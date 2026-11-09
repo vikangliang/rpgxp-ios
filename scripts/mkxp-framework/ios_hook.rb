@@ -444,6 +444,34 @@ class << Object
           end
           r
         end
+      elsif m == :pbSceneStandby
+        # 诊断(决定性): 拆分"进战搭建"三段 + 探测 major GC 次数, 一次性判定首战黑屏 15s
+        # 究竟是【自动 major GC 扫 100万对象】还是【可修的代码 bug】。忠实复刻原方法体,
+        # 仅在各段加计时与 GC.stat[:major_gc_count](rescue 防崩) 探针。每战一次, 量极小。
+        #   pre  = disposeSpritesets + RPG::Cache.clear + frame_reset + pbLoadBattleAnimations
+        #   yield= battle.pbStartBattle(战斗场景搭建+入场动画) —— 嫌疑 14.8s 在此
+        #   post = createSpritesets
+        # 判读: yield 段 mGC 自增1 且耗时≈14s => 自动 major GC(扫100万对象)为真凶;
+        #        yield 段无 majorGC 却耗时≈14s => Ruby 代码热点(bug), 可针对性修掉。
+        ::Object.send(:define_method, :pbSceneStandby) do |&blk|
+          t0 = Time.now.to_f
+          g0 = (GC.stat[:major_gc_count] rescue nil)
+          $scene.disposeSpritesets if $scene.is_a?(Scene_Map)
+          RPG::Cache.clear
+          Graphics.frame_reset
+          pbLoadBattleAnimations
+          t1 = Time.now.to_f
+          g1 = (GC.stat[:major_gc_count] rescue nil)
+          ret = yield
+          t2 = Time.now.to_f
+          g2 = (GC.stat[:major_gc_count] rescue nil)
+          $scene.createSpritesets if $scene.is_a?(Scene_Map)
+          t3 = Time.now.to_f
+          $stderr.puts "[ios-fix] pbSceneStandby: pre=#{(t1 - t0).round(2)}s(mGC=#{g1 - g0}) " \
+                       "yield=#{(t2 - t1).round(2)}s(mGC=#{g2 - g1}) post=#{(t3 - t2).round(2)}s " \
+                       "TOTAL=#{(t3 - t0).round(2)}s"
+          ret
+        end
       elsif m == :pbResolveBitmap
         # 第二层兜底：orig 全候选失败时，用自研逐段解析器直接判
         # （设备探针已证明 File.exist?+Dir.children 可靠）。charset 名常被
