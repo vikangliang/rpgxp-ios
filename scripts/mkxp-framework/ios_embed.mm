@@ -41,6 +41,32 @@ static double g_profInt = 0, g_profRead = 0, g_profHmc = 0, g_profDisp = 0;
 static int g_profN = 0;
 static int g_drawW = 0, g_drawH = 0;   // renderbufferStorage 时记录的 drawable 像素尺寸
 
+/* ---- 输入延迟探针（纯诊断，零逻辑改动）----
+ * 只查一个主因：iOS 独有的"每帧软上屏 dispatch_async 到主队列"与"UIKit 触摸事件
+ * 也在主线程主队列派发"争抢同一队列，是否为所有按键统一延迟几百 ms 的来源。
+ * PC 版直接 GL swap，无此链，故 PC 不卡。
+ *   A touchQ: UIEvent.timestamp(硬件触摸时刻) → 浮层 UIWindow.sendEvent 派发时刻
+ *             = 触摸事件在主线程主队列的排队延迟（决定性判据）。
+ *   B mainQ : dispatch_async 提交 → 上屏 block 开始执行 = 同一主队列的排队延迟。
+ *   submit/skip: 画面 hash 命中率（图鉴每帧变→每帧上屏→主队列更忙；大世界静止帧跳过）。
+ * A 由 Swift 侧调用下面的 C 函数累加，热路径仅几个加法、无文件 I/O；A/B 统计与打印
+ * 都在主线程（上屏 block）内进行，submit/skip 都在引擎线程，故无需加锁。
+ * 统计统一随每 120 个上屏 block 打印一行并清零，不在触摸线程写日志。 */
+static double g_inTouchSum = 0, g_inTouchMax = 0;
+static int    g_inTouchN = 0, g_inTouchOver100 = 0;
+static double g_inQSum = 0, g_inQMax = 0;
+static int    g_inQN = 0, g_inQOver100 = 0;
+static int    g_hashSubmitN = 0, g_hashSkipN = 0;
+
+/* Swift 触摸浮层每次 sendEvent 调用；纯累加，绝不做 I/O。 */
+extern "C" void mkxp_ios_note_touch_lag(double ms) {
+    if (ms < 0 || ms > 10000) return;   // 滤掉时钟基准异常值
+    g_inTouchSum += ms;
+    if (ms > g_inTouchMax) g_inTouchMax = ms;
+    ++g_inTouchN;
+    if (ms > 100.0) ++g_inTouchOver100;
+}
+
 // ---- EAGL hook（模块加载即装，早于 SDL initGL） ----
 static void (*g_origRBS)(id, SEL, NSUInteger, id);
 static BOOL (*g_origPresent)(id, SEL, NSUInteger);
@@ -398,9 +424,12 @@ static void mkxp_softPresent()
         double dp  = g_profN ? g_profDisp / g_profN : 0;
         double eng = inv - rd - hm; if (eng < 0) eng = 0;
         fprintf(stderr, "[ios-embed] PROFILE fps=%.1f frame=%.2fms "
-                        "[engine=%.2f read=%.2f hmc=%.2f disp=%.2f] (n=%d)\n",
-                1000.0 / (inv > 0 ? inv : 1), inv, eng, rd, hm, dp, g_profN);
+                        "[engine=%.2f read=%.2f hmc=%.2f disp=%.2f] (n=%d) "
+                        "submit=%d skip=%d\n",
+                1000.0 / (inv > 0 ? inv : 1), inv, eng, rd, hm, dp, g_profN,
+                g_hashSubmitN, g_hashSkipN);
         g_profInt = g_profRead = g_profHmc = g_profDisp = 0; g_profN = 0;
+        g_hashSubmitN = 0; g_hashSkipN = 0;
     }
 
     /* 引擎重启探测器：软呈现帧计数器只增不减；若它回退，说明引擎被重新
@@ -704,7 +733,7 @@ static void mkxp_softPresent()
     static uint32_t s_lastHash = 0;
     CFAbsoluteTime tH0 = CFAbsoluteTimeGetCurrent();
     uint32_t hsh = mkxp_hashScene(g_softBuf, sw, sh);
-    if (hsh == s_lastHash) { g_profHmc += (CFAbsoluteTimeGetCurrent() - tH0) * 1000.0; return; }
+    if (hsh == s_lastHash) { g_profHmc += (CFAbsoluteTimeGetCurrent() - tH0) * 1000.0; ++g_hashSkipN; return; }
     s_lastHash = hsh;
 
     /* 合并：若上一帧还在主线程排队，跳过本帧（不碰 g_softDisp，避免覆盖在途帧）。
@@ -738,9 +767,27 @@ static void mkxp_softPresent()
     if (!cg) { atomic_store(&g_softPending, 0); return; }
     g_profHmc += (CFAbsoluteTimeGetCurrent() - tH0) * 1000.0;
 
+    ++g_hashSubmitN;
+    CFTimeInterval tSubmit = CFAbsoluteTimeGetCurrent();
     dispatch_async(dispatch_get_main_queue(), ^{
         @autoreleasepool {
             CFTimeInterval t0 = CFAbsoluteTimeGetCurrent();
+            /* B: 本上屏 block 在主线程主队列里排队了多久（提交 → 开始执行） */
+            double qms = (t0 - tSubmit) * 1000.0;
+            g_inQSum += qms;
+            if (qms > g_inQMax) g_inQMax = qms;
+            ++g_inQN;
+            if (qms > 100.0) ++g_inQOver100;
+            /* A/B 汇总：每 120 个上屏 block 打一行，触摸热路径不做 I/O */
+            if (g_inQN >= 120) {
+                fprintf(stderr, "[ios-input] touchQ avg=%.1f max=%.1f >100ms=%d/%d | "
+                                "mainQ avg=%.1f max=%.1f >100ms=%d/%d (n=%d)\n",
+                        g_inTouchN ? g_inTouchSum / g_inTouchN : 0, g_inTouchMax,
+                        g_inTouchOver100, g_inTouchN,
+                        g_inQSum / g_inQN, g_inQMax, g_inQOver100, g_inQN, g_inQN);
+                g_inTouchSum = g_inTouchMax = g_inQSum = g_inQMax = 0;
+                g_inTouchN = g_inTouchOver100 = g_inQN = g_inQOver100 = 0;
+            }
             if (g_softView) {
                 /* 自己用最近邻把 512x384 的帧放大到屏幕实际像素分辨率，再 1:1 呈现，
                  * 绕过 UIImageView 不吃 layer.magnificationFilter 的问题，保证锐利。 */

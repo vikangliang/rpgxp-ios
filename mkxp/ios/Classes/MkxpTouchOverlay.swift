@@ -1,5 +1,22 @@
 import UIKit
+import QuartzCore
 import MKXP
+
+/// 输入延迟诊断（纯探针，零行为改动）：所有触摸事件都经本浮层窗口的 sendEvent 派发。
+/// UIEvent.timestamp 是硬件触摸发生时刻（基于 mach_absolute_time，与 CACurrentMediaTime
+/// 同一时钟），两者之差即"触摸事件在主线程主队列里排队等待"的耗时。仅调 C 函数做内存累加，
+/// 绝不在触摸热路径写日志/文件（那会自己制造延迟）。汇总由 ios_embed.mm 每 120 帧打印。
+private final class MkxpInputProbeWindow: UIWindow {
+  override func sendEvent(_ event: UIEvent) {
+    if event.type == .touches {
+      let ts = event.timestamp
+      if ts > 0 {
+        mkxp_ios_note_touch_lag((CACurrentMediaTime() - ts) * 1000.0)
+      }
+    }
+    super.sendEvent(event)
+  }
+}
 
 /// 原生触摸控制浮层（M2 阶段二）。
 ///
@@ -178,7 +195,7 @@ final class MkxpTouchOverlay: NSObject {
       MkxpLog.append("[overlay] show FAILED: no active scene")
       return
     }   // 无可用 scene（极少见）：下次 show() 重试
-    let win = UIWindow(windowScene: scene)
+    let win = MkxpInputProbeWindow(windowScene: scene)
     win.windowLevel = UIWindow.Level.alert + 2   // 高于 SDL 与 Flutter 窗口
     let vc = UIViewController()
     vc.view.backgroundColor = .clear
