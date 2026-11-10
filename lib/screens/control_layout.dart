@@ -1,14 +1,14 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../services/mkxp.dart';
 
 /// 虚拟按键布局编辑器。
-/// 横屏/竖屏各一套独立布局，切换目标方向时把设备方向一起转过去，画布按该方向的
-/// 真实屏幕比例绘制 → 编辑竖屏时看到的就是竖屏游玩时的实际排布。
-/// 两套坐标都归一化（0..1），但各自相对本方向画布，不会因宽高比翻转而拉伸变形。
+/// 横屏/竖屏各一套独立布局，工具栏切换只改变【预览画布】和【要编辑的那套配置】，
+/// 绝不调用任何方向 API —— 编辑器跟随设置页的竖屏锁，设备/游戏画面不会被旋转。
+/// 游戏横屏还是竖屏完全由设置里的「固定横屏游戏」开关决定（game_run.dart）。
+/// 两套坐标都归一化（0..1），各自相对本方向画布，不会因宽高比翻转而拉伸变形。
 /// 某方向没编辑过就不落盘，浮层自动走原硬编码布局；「重置」删除该方向的自定义项。
 class ControlLayoutPage extends StatefulWidget {
   const ControlLayoutPage({super.key});
@@ -34,24 +34,7 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
   @override
   void initState() {
     super.initState();
-    _orientFor(_landscape);
     _load();
-  }
-
-  @override
-  void dispose() {
-    Mkxp.setOrientation(false);
-    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    super.dispose();
-  }
-
-  /// 与 game_run.dart 一致：先松开 Flutter 的全局竖屏锁，再由原生强制切到目标方向
-  /// （iOS 上只改 preferred orientations 时，设备物理竖屏不会真的旋转）。
-  Future<void> _orientFor(bool landscape) async {
-    await SystemChrome.setPreferredOrientations(landscape
-        ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
-        : [DeviceOrientation.portraitUp]);
-    await Mkxp.setOrientation(landscape);
   }
 
   Future<void> _load() async {
@@ -107,8 +90,7 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
       _dirty = false;
       _loading = true;
     });
-    await _orientFor(landscape);
-    await _load();
+    await _load();   // 只换预览与配置，不旋转设备
   }
 
   ControlItem? get _selected {
@@ -154,11 +136,9 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
         _dirty = true;
       });
 
-  Future<void> _back() async {
-    // 先把方向锁回竖屏再出栈，避免设置页短暂保持横屏
-    await Mkxp.setOrientation(false);
-    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    if (mounted) Navigator.pop(context);
+  void _back() {
+    // 编辑器从不改方向，直接出栈即可（方向由设置页的竖屏锁 / 游戏页的开关决定）。
+    Navigator.pop(context);
   }
 
   void _toast(String msg) {
@@ -234,7 +214,7 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
           final narrow = c.maxWidth < 620;
           return Column(children: [
             _toolbar(narrow),
-            Expanded(child: _canvasArea()),
+            Expanded(child: _canvasArea(narrow)),
             _bottomBar(narrow),
           ]);
         }),
@@ -251,9 +231,9 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
           if (!narrow) const Text('虚拟按键布局',
               style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
           const SizedBox(width: 8),
-          _orientationSwitch(),
+          _orientationSwitch(narrow),
           const SizedBox(width: 8),
-          _badge(),
+          if (!narrow) _badge(),
           const Spacer(),
           if (!narrow) ...[
             const Text('拖动移动 · 点选后调大小',
@@ -284,32 +264,38 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
         ]),
       );
 
-  Widget _orientationSwitch() => Container(
+  Widget _orientationSwitch(bool narrow) => Container(
         decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.06),
             borderRadius: BorderRadius.circular(8)),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          _orientBtn('横屏', true, Icons.stay_current_landscape_outlined),
-          _orientBtn('竖屏', false, Icons.stay_current_portrait_outlined),
+          _orientBtn('横屏', true, Icons.stay_current_landscape_outlined, narrow),
+          _orientBtn('竖屏', false, Icons.stay_current_portrait_outlined, narrow),
         ]),
       );
 
-  Widget _orientBtn(String text, bool value, IconData icon) {
+  Widget _orientBtn(String text, bool value, IconData icon, bool narrow) {
     final on = _landscape == value;
-    return InkWell(
-      onTap: () => _switchTarget(value),
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-            color: on ? _primary.withValues(alpha: 0.22) : Colors.transparent,
-            borderRadius: BorderRadius.circular(8)),
-        child: Row(children: [
-          Icon(icon, size: 14, color: on ? _primary : Colors.white38),
-          const SizedBox(width: 4),
-          Text(text, style: TextStyle(
-              color: on ? _primary : Colors.white54, fontSize: 12)),
-        ]),
+    return Tooltip(
+      message: '$text布局',
+      child: InkWell(
+        onTap: () => _switchTarget(value),
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: EdgeInsets.symmetric(
+              horizontal: narrow ? 9 : 10, vertical: 5),
+          decoration: BoxDecoration(
+              color: on ? _primary.withValues(alpha: 0.22) : Colors.transparent,
+              borderRadius: BorderRadius.circular(8)),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 15, color: on ? _primary : Colors.white38),
+            if (!narrow) ...[
+              const SizedBox(width: 4),
+              Text(text, style: TextStyle(
+                  color: on ? _primary : Colors.white54, fontSize: 12)),
+            ],
+          ]),
+        ),
       ),
     );
   }
@@ -324,36 +310,73 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
                 color: _dirty ? Colors.orange : _primary, fontSize: 11)),
       );
 
-  Widget _canvasArea() {
+  Widget _canvasArea(bool narrow) {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) return Center(child: Text(_error!, style: const TextStyle(color: Colors.white54)));
-    return Center(
-      child: AspectRatio(
-        aspectRatio: _canvasRatio,
-        child: LayoutBuilder(builder: (context, c) {
-          final W = c.maxWidth, H = c.maxHeight;
-          return GestureDetector(
-            onTap: () => setState(() => _selectedId = null),
-            child: Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFF101018),
-                border: Border.all(color: Colors.white24),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Stack(children: [
-                  Center(
-                      child: Text('游戏画面（$_targetName ${_canvasW.round()} : ${_canvasH.round()} 预览）',
-                          style: const TextStyle(color: Colors.white12, fontSize: 13))),
-                  for (final it in _items) _control(it, W, H),
-                ]),
-              ),
-            ),
-          );
-        }),
+    return Column(children: [
+      // 方向标签放在画布外，保证竖屏画布被压窄时也能一眼看出当前预览的是哪一套。
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+        child: Row(children: [
+          Icon(_landscape ? Icons.stay_current_landscape_outlined
+                          : Icons.stay_current_portrait_outlined,
+              size: 16, color: _primary),
+          const SizedBox(width: 6),
+          Text('$_targetName预览  ${_canvasW.round()} × ${_canvasH.round()}',
+              style: const TextStyle(
+                  color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+          const Spacer(),
+          if (narrow) _badge(),
+        ]),
       ),
-    );
+      Expanded(
+        child: Center(
+          child: AspectRatio(
+            aspectRatio: _canvasRatio,
+            child: LayoutBuilder(builder: (context, c) {
+              final W = c.maxWidth, H = c.maxHeight;
+              return GestureDetector(
+                onTap: () => setState(() => _selectedId = null),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF101018),
+                    border: Border.all(
+                        color: _primary.withValues(alpha: 0.55), width: 1.5),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Stack(children: [
+                      Center(
+                          child: Text(
+                              '游戏画面（$_targetName ${_canvasW.round()} : ${_canvasH.round()}）',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 12))),
+                      // 左上角方向角标：画布再窄也不会看不出是横还是竖。
+                      Positioned(
+                        left: 6, top: 6,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                              color: _primary.withValues(alpha: 0.22),
+                              borderRadius: BorderRadius.circular(6)),
+                          child: Text(_targetName,
+                              style: const TextStyle(
+                                  color: _primary, fontSize: 10)),
+                        ),
+                      ),
+                      for (final it in _items) _control(it, W, H),
+                    ]),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    ]);
   }
 
   Widget _control(ControlItem it, double W, double H) {

@@ -124,10 +124,10 @@ class MkxpMethodHandler: NSObject {
     case "toggleControls":
       MkxpTouchOverlay.shared.toggle(); result(nil)
     case "setOrientation":
-      if let args = call.arguments as? [String: Any],
-         let landscape = args["landscape"] as? Bool {
-        MkxpOrientation.lockLandscape(landscape)
-      }
+      // 游戏方向只由设置「固定横屏游戏」传入；布尔桥接失败时不能静默忽略，
+      // 否则会停在上一局的方向。用兼容解析并显式回退到竖屏。
+      let args = call.arguments as? [String: Any]
+      MkxpOrientation.lockLandscape(mkxpBool(args, "landscape", false))
       result(nil)
     case "haptic":
       MkxpHaptic.tap(); result(nil)
@@ -147,7 +147,7 @@ class MkxpMethodHandler: NSObject {
     // MARK: - 虚拟按键布局（横竖各一套，运行时可调，无需重新打包）
     case "getControlLayout":
       let args = call.arguments as? [String: Any]
-      let landscape = args?["landscape"] as? Bool ?? true
+      let landscape = mkxpBool(args, "landscape", true)
       let size = MkxpControlLayout.canvasSize(landscape: landscape)
       let payload: [String: Any] = ["items": MkxpControlLayout.load(landscape: landscape),
                                     "defaults": MkxpControlLayout.defaults(landscape: landscape),
@@ -161,7 +161,7 @@ class MkxpMethodHandler: NSObject {
         result(FlutterError(code: "badArgs", message: "setControlLayout 需要 items 数组", details: nil))
         return
       }
-      let landscape = args["landscape"] as? Bool ?? true
+      let landscape = mkxpBool(args, "landscape", true)
       let items = raw.compactMap { $0 as? [String: Any] }
       MkxpControlLayout.save(items, landscape: landscape)
       // 游戏运行中，只有编辑的正是当前方向时才会立刻看到变化；另一套在旋转后生效。
@@ -169,7 +169,7 @@ class MkxpMethodHandler: NSObject {
       result(nil)
     case "resetControlLayout":
       let args = call.arguments as? [String: Any]
-      let landscape = args?["landscape"] as? Bool ?? true
+      let landscape = mkxpBool(args, "landscape", true)
       MkxpControlLayout.reset(landscape: landscape)
       MkxpTouchOverlay.shared.applyLayout()   // 回到该方向的原始硬编码布局（重置起点）
       result(nil)
@@ -177,6 +177,15 @@ class MkxpMethodHandler: NSObject {
       result(FlutterMethodNotImplemented)
     }
   }
+}
+
+/// MethodChannel 的 bool 可能桥接成 NSNumber/__NSCFBoolean，统一解析，
+/// 避免 `as? Bool` 失败时静默回退 true（那会让「竖屏」永远读到横屏配置）。
+private func mkxpBool(_ args: [String: Any]?, _ key: String, _ fallback: Bool) -> Bool {
+  if let n = args?[key] as? NSNumber { return n.boolValue }
+  if let b = args?[key] as? Bool { return b }
+  if let s = args?[key] as? String { return s == "true" || s == "1" }
+  return fallback
 }
 
 // MARK: - 场景快照（ios_embed.mm 落盘的 Documents/scene_dump_*.png）

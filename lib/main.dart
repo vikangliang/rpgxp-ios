@@ -8,7 +8,8 @@ import 'screens/log_view.dart';
 import 'screens/settings.dart';
 
 void main() {
-  // 菜单/库/设置页锁竖屏；游戏运行页由原生 setOrientation 单独把 SDL 窗口切横屏。
+  // 菜单/库/设置页锁竖屏；游戏运行页的方向由设置「固定横屏游戏」单独决定
+  // （开=横屏，关=竖屏），按键布局编辑器不改设备方向。
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
