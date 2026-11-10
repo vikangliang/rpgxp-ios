@@ -528,6 +528,21 @@ class << Object
                        "TOTAL=#{(t3 - t0).round(2)}s"
           ret
         end
+      elsif m == :pbLoadBattleAnimations
+        # 首战黑屏根治：14MB 全量反序列化换成惰性容器；任何失败自动回退原实现。
+        # 哨兵防止插件二次定义时形成包装链；块内不用 yield（981e621 LocalJumpError）。
+        unless ::Object.instance_variable_get(:@__mkxp_lba_wrapped)
+          ::Object.instance_variable_set(:@__mkxp_lba_wrapped, true)
+          origLBA = ::Object.instance_method(:pbLoadBattleAnimations)
+          ::Object.send(:define_method, :pbLoadBattleAnimations) do
+            $game_temp = Game_Temp.new if !$game_temp
+            if !$game_temp.battle_animations_data
+              lazy = __mkxp_anim_lazy_container
+              $game_temp.battle_animations_data = lazy || origLBA.bind(self).call
+            end
+            $game_temp.battle_animations_data
+          end
+        end
       elsif m == :pbResolveBitmap
         # 第二层兜底：orig 全候选失败时，用自研逐段解析器直接判
         # （设备探针已证明 File.exist?+Dir.children 可靠）。charset 名常被
@@ -621,6 +636,7 @@ class << Object
         begin
           mfd = ::Object.instance_method(:mainFunctionDebug)
           ::Object.send(:define_method, :mainFunctionDebug) do
+            __mkxp_anim_ensure_cache   # 所有游戏脚本已加载完（PBAnimations 等类齐备），此处一次性构建分片缓存
             __mkxp_patch_mega_bitmap   # 启动期一次性给基类 Sprite/Plane#bitmap= 打 mega-surface 降采样根治(判定已改用 mega?,不会误伤游戏 TilesetWrapper 的合法高 tileset)
             __mkxp_main_safe(mfd)
           end
@@ -1076,4 +1092,230 @@ if $__mkxp_diag && !defined?($__mkxp_selfblit)
   rescue StandardError => e
     $stderr.puts "[mkxp-blit] install failed: #{e.class}: #{e.message}"
   end
+end
+
+# ---- 首战黑屏根治：战斗动画数据惰性分片（仅引擎注入层，游戏脚本/数据均不改）----
+# 真机证据：pbSceneStandby PRE 调用 pbLoadBattleAnimations ->
+# load_data("Data/PkmnAnimations.rxdata") 14.8MB，反序列化出约 38 万 Array +
+# 32 万 String，3 次 major GC，独占 6.15s 黑屏；第二战因 $game_temp 缓存为 0.0s。
+# 游戏脚本刻意把这步放在入场黑屏期，注释说明是为了避免首场招式动画现场加载卡 3 秒，
+# 而 StartGame 注释又明确禁止启动期预加载（70 万对象常驻 -> 大世界周期 full GC）。
+# 本方案两头都不牺牲：主循环入口把 PBAnimations.@array 的每个动画单独 Marshal.dump
+# 成独立分片并落 App Caches（仅首次，之后读索引），随后 pbLoadBattleAnimations
+# 只返回轻量代理容器；单个动画在第一次被 [] / each / get_from_name 实际使用时
+# 才从分片反序列化。堆里不再常驻 70 万对象，PRE <10ms，首次动画 <50ms。
+# 任何异常、缓存缺失、签名不符都回退原 load_data 全量加载，功能完全不变。
+$__mkxp_anim_lazy = true unless defined?($__mkxp_anim_lazy)
+begin
+  require "zlib"
+rescue LoadError
+end
+
+def __mkxp_anim_cache_dir
+  return $__mkxp_anim_dir if defined?($__mkxp_anim_dir) && $__mkxp_anim_dir
+  cands = []
+  begin
+    cands << File.expand_path("../../../Library/Caches", Dir.pwd)
+  rescue StandardError
+  end
+  cands << ENV["TMPDIR"] if ENV["TMPDIR"]
+  cands.each do |d|
+    begin
+      Dir.mkdir(d) unless Dir.exist?(d)
+      probe = File.join(d, ".mkxp_anim_w")
+      File.binwrite(probe, "w")
+      File.delete(probe)
+      return ($__mkxp_anim_dir = d)
+    rescue StandardError
+    end
+  end
+  nil
+end
+
+def __mkxp_anim_signature(raw)
+  head = raw[0, 65536].to_s
+  crc = defined?(Zlib) ? (Zlib.crc32(head) rescue 0) : 0
+  [raw.bytesize, crc]
+rescue StandardError
+  [0, 0]
+end
+
+# 校验只读文件头，避免在首战 PRE 里再分配一个 14MB 的 String。
+def __mkxp_anim_signature_file(path)
+  head = File.open(path, "rb") { |f| f.read(65536) }.to_s
+  crc = defined?(Zlib) ? (Zlib.crc32(head) rescue 0) : 0
+  [File.size(path), crc]
+rescue StandardError
+  [0, 0]
+end
+
+def __mkxp_anim_ensure_cache
+  return false unless $__mkxp_anim_lazy
+  return $__mkxp_anim_lazy_ok if defined?($__mkxp_anim_cache_done) && $__mkxp_anim_cache_done
+  $__mkxp_anim_cache_done = true
+  t = Time.now.to_f
+  $__mkxp_anim_lazy_ok = begin
+    raise "PBAnimations undefined" unless defined?(::PBAnimations) && defined?(::PBAnimation)
+    src = "Data/PkmnAnimations.rxdata"
+    raise "source missing" unless File.exist?(src)
+    dir = __mkxp_anim_cache_dir
+    raise "no writable cache dir" unless dir
+    raw = File.binread(src)
+    sig = __mkxp_anim_signature(raw)
+    idx = File.join(dir, "mkxp_anims.idx")
+    bin = File.join(dir, "mkxp_anims.bin")
+    meta = (Marshal.load(File.binread(idx)) rescue nil) if File.exist?(idx) && File.exist?(bin)
+    if meta && meta[0] == "MKXPANIM1" && meta[1] == sig
+      $stderr.puts "[mkxp-anim] cache hit n=#{meta[2].length} t=#{(Time.now.to_f - t).round(2)}s"
+      true
+    else
+      obj = Marshal.load(raw)
+      arr = obj.instance_variable_get(:@array)
+      raise "unexpected container" unless arr.is_a?(Array)
+      entries = []
+      File.open(bin, "wb") do |f|
+        arr.each_with_index do |anim, i|
+          blob = Marshal.dump(anim)
+          nm = anim.respond_to?(:name) ? anim.name : nil
+          entries << [f.tell, blob.bytesize, nm]
+          f.write(blob)
+        end
+      end
+      File.binwrite(idx, Marshal.dump(["MKXPANIM1", sig, entries]))
+      $stderr.puts "[mkxp-anim] cache built n=#{entries.length} t=#{(Time.now.to_f - t).round(2)}s"
+      obj = nil
+      arr = nil
+      true
+    end
+  rescue StandardError => e
+    $stderr.puts "[mkxp-anim] cache build failed, fallback: #{e.class}: #{e.message}"
+    false
+  end
+end
+
+class MkxpAnimStore
+  def initialize(dir, entries)
+    @bin = File.join(dir, "mkxp_anims.bin")
+    @entries = entries
+    @names = {}
+    @loaded = {}
+    entries.each_with_index do |e, i|
+      @names[e[2]] = i unless @names.key?(e[2])
+    end
+  end
+
+  def length
+    @entries.length
+  end
+
+  def name(i)
+    e = @entries[i]
+    e ? e[2] : nil
+  end
+
+  def load(i)
+    return @loaded[i] if @loaded.key?(i)
+    e = @entries[i]
+    return nil unless e
+    blob = File.open(@bin, "rb") { |f| f.seek(e[0]); f.read(e[1]) }
+    obj = Marshal.load(blob)
+    @loaded.clear if @loaded.size >= 64
+    @loaded[i] = obj
+  rescue StandardError
+    begin
+      full = Marshal.load(File.binread("Data/PkmnAnimations.rxdata"))
+      a = full.instance_variable_get(:@array)
+      a ? a[i] : nil
+    rescue StandardError
+      nil
+    end
+  end
+end
+
+# 放在 PBAnimations.@array 里的轻量占位：只带 name，真正用到动画对象时才反序列化。
+# 覆盖 Ruby 对象自带的判定方法，避免引擎/游戏用 is_a? / class / respond_to? 时拿到代理。
+class MkxpAnimProxy
+  def initialize(store, i)
+    @s = store
+    @i = i
+  end
+
+  def name
+    @s.name(@i)
+  end
+
+  def nil?
+    false
+  end
+
+  def real
+    @obj ||= @s.load(@i)
+  end
+
+  def method_missing(m, *a, &b)
+    r = real
+    return nil unless r
+    r.__send__(m, *a, &b)
+  end
+
+  def respond_to_missing?(m, p = false)
+    return true if m == :name
+    r = real
+    r ? r.respond_to?(m, p) : false
+  end
+
+  def is_a?(k)
+    r = real
+    r ? r.is_a?(k) : false
+  end
+  alias kind_of? is_a?
+
+  def class
+    r = real
+    r ? r.class : MkxpAnimProxy
+  end
+
+  def ==(o)
+    r = real
+    r ? r == o : false
+  end
+
+  def hash
+    r = real
+    r ? r.hash : @i.hash
+  end
+
+  def inspect
+    r = real
+    r ? r.inspect : "#<MkxpAnimProxy #{@i}>"
+  end
+
+  def to_s
+    r = real
+    r ? r.to_s : "#<MkxpAnimProxy #{@i}>"
+  end
+
+  def marshal_dump
+    real
+  end
+end
+
+def __mkxp_anim_lazy_container
+  return nil unless $__mkxp_anim_lazy && $__mkxp_anim_lazy_ok
+  return nil unless defined?(::PBAnimations)
+  dir = __mkxp_anim_cache_dir
+  return nil unless dir
+  src = "Data/PkmnAnimations.rxdata"
+  meta = (Marshal.load(File.binread(File.join(dir, "mkxp_anims.idx"))) rescue nil)
+  return nil unless meta && meta[0] == "MKXPANIM1"
+  return nil unless meta[1] == __mkxp_anim_signature_file(src)
+  store = MkxpAnimStore.new(dir, meta[2])
+  c = ::PBAnimations.allocate
+  c.instance_variable_set(:@array, Array.new(store.length) { |i| MkxpAnimProxy.new(store, i) })
+  c.instance_variable_set(:@selected, 0)
+  $stderr.puts "[mkxp-anim] lazy container ready n=#{store.length}"
+  c
+rescue StandardError => e
+  $stderr.puts "[mkxp-anim] lazy failed, fallback: #{e.class}: #{e.message}"
+  nil
 end
