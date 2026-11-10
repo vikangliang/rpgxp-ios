@@ -88,7 +88,9 @@ class _SettingsPageState extends State<SettingsPage> {
                     if (v) await Mkxp.haptic();
                   })),
               _row(Icons.tune, '默认游戏配置', onTap: () => _todo('默认游戏配置')),
-              _row(Icons.keyboard_outlined, '虚拟键盘预设', onTap: () => _todo('虚拟键盘预设')),
+              _row(Icons.gamepad_outlined, '虚拟按键布局',
+                  trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                  onTap: () => Navigator.pushNamed(context, '/controls')),
               _row(Icons.sports_esports_outlined, '实体手柄', onTap: () => _todo('实体手柄')),
             ]),
             const SizedBox(height: 16),

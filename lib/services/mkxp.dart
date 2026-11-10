@@ -163,6 +163,100 @@ class Mkxp {
       return null;
     }
   }
+
+  // MARK: - 虚拟按键布局（原生 UserDefaults 为唯一数据源）
+
+  /// items = 当前生效布局，defaults = 原始布局（重置起点）。
+  static Future<ControlLayout> getControlLayout() async {
+    try {
+      final r = await _ch.invokeMapMethod<String, dynamic>('getControlLayout');
+      if (r == null) return ControlLayout.fallback();
+      return ControlLayout.fromMap(r);
+    } catch (_) {
+      return ControlLayout.fallback();
+    }
+  }
+
+  static Future<void> setControlLayout(List<ControlItem> items) async {
+    await _ch.invokeMethod('setControlLayout', {
+      'items': items.map((e) => e.toMap()).toList(),
+    });
+  }
+
+  static Future<void> resetControlLayout() async {
+    await _ch.invokeMethod('resetControlLayout');
+  }
+}
+
+/// 单个虚拟按键的归一化布局：cx/cy 为中心点，w/h 为尺寸，均相对横屏画布 0..1。
+class ControlItem {
+  final String id;
+  final String label;
+  double cx, cy, w, h;
+
+  ControlItem({
+    required this.id,
+    required this.label,
+    required this.cx,
+    required this.cy,
+    required this.w,
+    required this.h,
+  });
+
+  factory ControlItem.fromMap(Map m) => ControlItem(
+        id: m['id'] as String? ?? '',
+        label: m['label'] as String? ?? '',
+        cx: (m['cx'] as num?)?.toDouble() ?? 0.5,
+        cy: (m['cy'] as num?)?.toDouble() ?? 0.5,
+        w: (m['w'] as num?)?.toDouble() ?? 0.1,
+        h: (m['h'] as num?)?.toDouble() ?? 0.1,
+      );
+
+  Map<String, dynamic> toMap() =>
+      {'id': id, 'label': label, 'cx': cx, 'cy': cy, 'w': w, 'h': h};
+
+  ControlItem copy() =>
+      ControlItem(id: id, label: label, cx: cx, cy: cy, w: w, h: h);
+}
+
+class ControlLayout {
+  final List<ControlItem> items;
+  final List<ControlItem> defaults;
+  final bool customized;
+  final double canvasW;
+  final double canvasH;
+
+  const ControlLayout({
+    required this.items,
+    required this.defaults,
+    required this.customized,
+    this.canvasW = 896,
+    this.canvasH = 414,
+  });
+
+  double get aspect => canvasH > 0 ? canvasW / canvasH : 896 / 414;
+
+  factory ControlLayout.fromMap(Map m) {
+    List<ControlItem> parse(Object? raw) => (raw as List? ?? [])
+        .map((e) => ControlItem.fromMap(e as Map))
+        .toList();
+    final defs = parse(m['defaults']);
+    final its = parse(m['items']);
+    return ControlLayout(
+      items: its.isEmpty ? defs.map((e) => e.copy()).toList() : its,
+      defaults: defs,
+      customized: m['customized'] as bool? ?? false,
+      canvasW: (m['canvasW'] as num?)?.toDouble() ?? 896,
+      canvasH: (m['canvasH'] as num?)?.toDouble() ?? 414,
+    );
+  }
+
+  /// 原生侧不可用时（如 Android/旧版本）不至于白屏，给一个可编辑的空壳。
+  static ControlLayout fallback() => ControlLayout(
+        items: [],
+        defaults: [],
+        customized: false,
+      );
 }
 
 /// 场景快照条目。

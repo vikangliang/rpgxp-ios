@@ -41,39 +41,6 @@ static double g_profInt = 0, g_profRead = 0, g_profHmc = 0, g_profDisp = 0;
 static int g_profN = 0;
 static int g_drawW = 0, g_drawH = 0;   // renderbufferStorage 时记录的 drawable 像素尺寸
 
-/* ---- 输入延迟探针（纯诊断，零逻辑改动）----
- * touchQ/mainQ/submit-skip 用于测「软上屏与触摸争抢主线程主队列」；8de2acd 真机日志
- * 已证伪该假设（touchQ max<=17ms、mainQ≈0，图鉴 submit=505 时 mainQ 仍为 0），
- * 保留仅作回归对照，确认修复不引入主队列回归。
- *   A touchQ: UIEvent.timestamp(硬件触摸时刻) → 浮层 UIWindow.sendEvent 派发时刻。
- *   B mainQ : dispatch_async 提交 → 上屏 block 开始执行。
- *   submit/skip: 画面 hash 命中率。
- * 新增关键判据 edgeLost/downs（由 mkxp_framework.cpp 纯累加、本函数读取）：
- *   统计「虚拟键按下时该键仍处于 pressed」的次数 —— KEYUP 迟到时，Input::update
- *   采不到「松开帧」，下一次按下的 triggered 边沿被吞，正是快按第二下丢失的直接标志。
- * 修复前（三指 UITapGestureRecognizer hold 住 touchesEnded）应偏高，修复后应归零。
- * 累加/读取/打印都在主线程，热路径仅几个加法、无文件 I/O。 */
-static double g_inTouchSum = 0, g_inTouchMax = 0;
-static int    g_inTouchN = 0, g_inTouchOver100 = 0;
-static double g_inQSum = 0, g_inQMax = 0;
-static int    g_inQN = 0, g_inQOver100 = 0;
-static int    g_hashSubmitN = 0, g_hashSkipN = 0;
-
-/* mkxp_framework.cpp 导出：取「边沿丢失 + down→up 间隔」统计，reset=1 时清零。 */
-extern "C" void mkxp_ios_key_edge_stats(int *lost, int *downs,
-                                        double *holdAvg, double *holdMax,
-                                        int *holdOver100, int *holdN,
-                                        int reset);
-
-/* Swift 触摸浮层每次 sendEvent 调用；纯累加，绝不做 I/O。 */
-extern "C" void mkxp_ios_note_touch_lag(double ms) {
-    if (ms < 0 || ms > 10000) return;   // 滤掉时钟基准异常值
-    g_inTouchSum += ms;
-    if (ms > g_inTouchMax) g_inTouchMax = ms;
-    ++g_inTouchN;
-    if (ms > 100.0) ++g_inTouchOver100;
-}
-
 // ---- EAGL hook（模块加载即装，早于 SDL initGL） ----
 static void (*g_origRBS)(id, SEL, NSUInteger, id);
 static BOOL (*g_origPresent)(id, SEL, NSUInteger);
@@ -431,12 +398,9 @@ static void mkxp_softPresent()
         double dp  = g_profN ? g_profDisp / g_profN : 0;
         double eng = inv - rd - hm; if (eng < 0) eng = 0;
         fprintf(stderr, "[ios-embed] PROFILE fps=%.1f frame=%.2fms "
-                        "[engine=%.2f read=%.2f hmc=%.2f disp=%.2f] (n=%d) "
-                        "submit=%d skip=%d\n",
-                1000.0 / (inv > 0 ? inv : 1), inv, eng, rd, hm, dp, g_profN,
-                g_hashSubmitN, g_hashSkipN);
+                        "[engine=%.2f read=%.2f hmc=%.2f disp=%.2f] (n=%d)\n",
+                1000.0 / (inv > 0 ? inv : 1), inv, eng, rd, hm, dp, g_profN);
         g_profInt = g_profRead = g_profHmc = g_profDisp = 0; g_profN = 0;
-        g_hashSubmitN = 0; g_hashSkipN = 0;
     }
 
     /* 引擎重启探测器：软呈现帧计数器只增不减；若它回退，说明引擎被重新
@@ -740,7 +704,7 @@ static void mkxp_softPresent()
     static uint32_t s_lastHash = 0;
     CFAbsoluteTime tH0 = CFAbsoluteTimeGetCurrent();
     uint32_t hsh = mkxp_hashScene(g_softBuf, sw, sh);
-    if (hsh == s_lastHash) { g_profHmc += (CFAbsoluteTimeGetCurrent() - tH0) * 1000.0; ++g_hashSkipN; return; }
+    if (hsh == s_lastHash) { g_profHmc += (CFAbsoluteTimeGetCurrent() - tH0) * 1000.0; return; }
     s_lastHash = hsh;
 
     /* 合并：若上一帧还在主线程排队，跳过本帧（不碰 g_softDisp，避免覆盖在途帧）。
@@ -774,34 +738,9 @@ static void mkxp_softPresent()
     if (!cg) { atomic_store(&g_softPending, 0); return; }
     g_profHmc += (CFAbsoluteTimeGetCurrent() - tH0) * 1000.0;
 
-    ++g_hashSubmitN;
-    CFTimeInterval tSubmit = CFAbsoluteTimeGetCurrent();
     dispatch_async(dispatch_get_main_queue(), ^{
         @autoreleasepool {
             CFTimeInterval t0 = CFAbsoluteTimeGetCurrent();
-            /* B: 本上屏 block 在主线程主队列里排队了多久（提交 → 开始执行） */
-            double qms = (t0 - tSubmit) * 1000.0;
-            g_inQSum += qms;
-            if (qms > g_inQMax) g_inQMax = qms;
-            ++g_inQN;
-            if (qms > 100.0) ++g_inQOver100;
-            /* 汇总：每 120 个上屏 block 打一行，触摸热路径不做 I/O。
-             * 按键统计由 mkxp_framework.cpp 累加，此处读取并清零。 */
-            if (g_inQN >= 120) {
-                int kLost = 0, kDowns = 0, kHoldOver = 0, kHoldN = 0;
-                double kHoldAvg = 0, kHoldMax = 0;
-                mkxp_ios_key_edge_stats(&kLost, &kDowns, &kHoldAvg, &kHoldMax,
-                                        &kHoldOver, &kHoldN, 1);
-                fprintf(stderr, "[ios-input] touchQ avg=%.1f max=%.1f >100ms=%d/%d | "
-                                "mainQ avg=%.1f max=%.1f >100ms=%d/%d | "
-                                "key edgeLost=%d/%d hold avg=%.0f max=%.0f >100ms=%d/%d (n=%d)\n",
-                        g_inTouchN ? g_inTouchSum / g_inTouchN : 0, g_inTouchMax,
-                        g_inTouchOver100, g_inTouchN,
-                        g_inQSum / g_inQN, g_inQMax, g_inQOver100, g_inQN,
-                        kLost, kDowns, kHoldAvg, kHoldMax, kHoldOver, kHoldN, g_inQN);
-                g_inTouchSum = g_inTouchMax = g_inQSum = g_inQMax = 0;
-                g_inTouchN = g_inTouchOver100 = g_inQN = g_inQOver100 = 0;
-            }
             if (g_softView) {
                 /* 自己用最近邻把 512x384 的帧放大到屏幕实际像素分辨率，再 1:1 呈现，
                  * 绕过 UIImageView 不吃 layer.magnificationFilter 的问题，保证锐利。 */

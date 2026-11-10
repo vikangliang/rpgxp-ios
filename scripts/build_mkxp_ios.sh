@@ -1737,9 +1737,6 @@ double mkxp_get_avg_fps(void);
 void mkxp_ios_inject_mouse(float nx, float ny, int down);
 // 三指截屏(spng 快速路径)切换，供原生浮层转发。
 void mkxp_ios_toggle_spng(void);
-// 输入延迟诊断：触摸浮层在 UIWindow.sendEvent 里传入
-// (CACurrentMediaTime() - UIEvent.timestamp)*1000 的毫秒值；实现只做内存累加，不做 I/O。
-void mkxp_ios_note_touch_lag(double ms);
 #ifdef __cplusplus
 }
 #endif

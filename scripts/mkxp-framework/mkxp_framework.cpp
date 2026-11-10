@@ -19,9 +19,8 @@
 // SDL_Init(VIDEO)/SDL_CreateWindow 会直接崩，2026-10-16 真机实测）。EventThread::process
 // 这个阻塞事件循环由 mkxp_z_main 甩到【后台线程】，主线程 run loop 不被占死，Core Animation
 // 才能上屏（否则点启动后画面冻在 Flutter 浮层、无游戏画面）。mkxp_run 立即返回，Dart 侧不阻塞；
-// g_engineRunning 由后台线程在引擎真正退出时复位。SDL 事件队列线程安全：退出请求
-// 经 SDL_PushEvent 投递；虚拟按键直接写 EventThread::keyStates（见 mkxp_key），
-// 不再双写 SDL 事件队列，避免后台事件泵迟到的 KEYUP 撤销刚写入的按下。
+// g_engineRunning 由后台线程在引擎真正退出时复位。SDL 事件队列线程安全，按键与退出请求
+// 经 SDL_PushEvent 投递，走引擎原生输入管线。
 // =============================================================================
 
 #include <SDL.h>
@@ -145,40 +144,10 @@ int mkxp_run(const char *gamePath)
     return 0;
 }
 
-/* 修复 A/B 判定探针（纯内存累加、热路径零 I/O）：
- *   edgeLost —— 「按下时该键仍处于 pressed」的次数，是 Input::update 拿不到
- *               triggered 边沿（input.cpp:1024-1026）的直接标志；
- *   hold     —— 同键 down→up 的间隔。KEYUP 被 UIKit 手势识别器 hold 住时，
- *               即使手指只按了几十 ms，这里也会出现几百 ms 尖峰。
- * 两者互补：若「第二次 .touchDown 压根没派发」，edgeLost 测不到，但 hold 仍会爆表。
- * 由 ios_embed.mm 的 [ios-input] 限频汇总读取并清零（reset=1）。修复后 hold 应回落到
- * 实际按压时长、edgeLost 归零。 */
-static uint8_t g_keyHeld[SDL_NUM_SCANCODES] = {0};
-static Uint32  g_keyDownT[SDL_NUM_SCANCODES] = {0};
-static int     g_keyEdgeLost = 0, g_keyDownN = 0;
-static double  g_keyHoldSum = 0, g_keyHoldMax = 0;
-static int     g_keyHoldN = 0, g_keyHoldOver100 = 0;
-
-extern "C" void mkxp_ios_key_edge_stats(int *lost, int *downs,
-                                        double *holdAvg, double *holdMax,
-                                        int *holdOver100, int *holdN,
-                                        int reset) {
-    *lost = g_keyEdgeLost;
-    *downs = g_keyDownN;
-    *holdAvg = g_keyHoldN ? g_keyHoldSum / g_keyHoldN : 0;
-    *holdMax = g_keyHoldMax;
-    *holdOver100 = g_keyHoldOver100;
-    *holdN = g_keyHoldN;
-    if (reset) {
-        g_keyEdgeLost = 0; g_keyDownN = 0;
-        g_keyHoldSum = 0; g_keyHoldMax = 0;
-        g_keyHoldN = 0; g_keyHoldOver100 = 0;
-    }
-}
-
 /* 注入 RGSS 按键。rgssKey 为 Input::ButtonCode（Down=2/Left=4/Right=6/Up=8，
  * A=11/B=12/C=13/X=14/Y=15/Z=16/L=17/R=18/F5=25...）。down 非 0 为按下。
- * 经反查表换算成 SDL scancode 后直接写 EventThread::keyStates。未绑定键静默忽略。 */
+ * 经反查表换算成 SDL scancode 后以 SDL_KEYDOWN/UP 入队，由 EventThread
+ * 的事件循环消费。未绑定的键位静默忽略。 */
 void mkxp_key(int rgssKey, int down)
 {
     if (!g_engineRunning.load())
@@ -210,36 +179,21 @@ void mkxp_key(int rgssKey, int down)
         fprintf(stderr, "[mkxp-key] HIT rgssKey=%d scan=0x%x\n", rgssKey, (unsigned)scan);
     }
 
-    /* 只直写 EventThread::keyStates，不再 SDL_PushEvent 双写。
-     * 原实现既推合成 SDL_KEYDOWN/UP 又直写同一数组；后台 EventThread 事件泵
-     * (eventthread.cpp:389/403) 也会写它，无锁无屏障。若合成事件没被 uikit
-     * 完全丢弃，迟到的 KEYUP 会撤销刚写入的按下，同样表现为快按丢边沿。
-     * 注释早已确认 PushEvent 对虚拟键无效（"光标不动"根因），故删除它
-     * 不改变任何有效行为，只消除这条竞态。Input::update 的 pollBindings 经
-     * KbBinding::sourceActive 读 keyStates，pressed/triggered/repeated/released
-     * 管线照常工作（含光标 repeat）。 */
-    EventThread::keyStates[scan] = down ? 1 : 0;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = down ? SDL_KEYDOWN : SDL_KEYUP;
+    e.key.state = down ? SDL_PRESSED : SDL_RELEASED;
+    e.key.repeat = 0;
+    e.key.keysym.scancode = scan;
+    e.key.keysym.sym = SDL_GetKeyFromScancode(scan);
+    SDL_PushEvent(&e);
 
-    /* A/B 判定探针：纯内存累加，热路径零 I/O（见上方说明）。
-     * mkxp_key（UIKit 触摸回调）与汇总读取（主队列上屏 block）都在主线程，无需加锁。 */
-    if ((unsigned)scan < SDL_NUM_SCANCODES) {
-        Uint32 now = SDL_GetTicks();
-        if (down) {
-            if (g_keyHeld[scan]) ++g_keyEdgeLost;
-            ++g_keyDownN;
-            g_keyDownT[scan] = now;
-        } else if (g_keyHeld[scan]) {
-            /* Uint32 相减自动处理 SDL_GetTicks 的 49 天回绕 */
-            double holdMs = (double)(Uint32)(now - g_keyDownT[scan]);
-            if (holdMs < 60000) {   /* 滤掉异常值（如按键卡住数分钟） */
-                g_keyHoldSum += holdMs;
-                if (holdMs > g_keyHoldMax) g_keyHoldMax = holdMs;
-                ++g_keyHoldN;
-                if (holdMs > 100.0) ++g_keyHoldOver100;
-            }
-        }
-        g_keyHeld[scan] = down ? 1 : 0;
-    }
+    /* iOS 虚拟按键：直接写 EventThread::keyStates，绕过 SDL 事件队列。
+     * uikit 后端丢弃合成 SDL 事件，导致 PushEvent 无效、虚拟键全无反应
+     * （"光标不动"的真正根因）。iOS 无物理键盘，keyStates 仅由虚拟键维护，
+     * 无竞争。Input::update 的 pollBindings 经 KbBinding::sourceActive 读它，
+     * 整条 pressed/triggered/repeated/released 管线自动工作（含光标 repeat）。 */
+    EventThread::keyStates[scan] = down ? 1 : 0;
 }
 
 /* 请求关机：SDL_QUIT -> EventThread::process 置 terminate -> 引擎走完清理

@@ -1,20 +1,116 @@
 import UIKit
-import QuartzCore
+import Foundation
 import MKXP
 
-/// 输入延迟诊断（纯探针，零行为改动）：所有触摸事件都经本浮层窗口的 sendEvent 派发。
-/// UIEvent.timestamp 是硬件触摸发生时刻（基于 mach_absolute_time，与 CACurrentMediaTime
-/// 同一时钟），两者之差即"触摸事件在主线程主队列里排队等待"的耗时。仅调 C 函数做内存累加，
-/// 绝不在触摸热路径写日志/文件（那会自己制造延迟）。汇总由 ios_embed.mm 每 120 帧打印。
-private final class MkxpInputProbeWindow: UIWindow {
-  override func sendEvent(_ event: UIEvent) {
-    if event.type == .touches {
-      let ts = event.timestamp
-      if ts > 0 {
-        mkxp_ios_note_touch_lag((CACurrentMediaTime() - ts) * 1000.0)
-      }
+// MARK: - 虚拟按键布局配置（运行时可调，改位置/大小不再需要重新打包）
+
+/// 坐标一律【归一化】到控件父视图（横屏画布）的宽/高：cx/cy 为中心点，w/h 为尺寸。
+/// 换设备、旋转都不会跑偏。画布尺寸取当前设备的真实横屏尺寸（UIScreen.bounds
+/// 在 iOS 上恒为竖屏坐标，故取长边/短边），与浮层全屏 UIWindow 的 bounds 一致，
+/// 这样 Flutter 编辑器的预览与真机逐点对应。
+///
+/// 关键设计：**默认值不落盘**。`defaultFrames(w:h:)` 是原有硬编码布局公式的
+/// 唯一数据源；未自定义时浮层完全走原公式（零偏差），用户点「重置」只需删除
+/// UserDefaults 覆盖即可回到最初位置。持久化只存用户改动后的归一化坐标。
+enum MkxpControlLayout {
+  static var canvasSize: CGSize {
+    let s = UIScreen.main.bounds.size
+    return CGSize(width: max(s.width, s.height), height: min(s.width, s.height))
+  }
+  static let storeKey = "mkxp.controlLayout.v1"
+
+  static let ids = ["dpad", "act13", "act12", "act11", "act16", "shL", "shR", "menu"]
+  static let labels = ["方向键", "C 确定", "✕ 取消", "Z", "☰ 菜单", "L 肩键", "R 肩键", "⋯ 悬浮菜单"]
+
+  /// 现有布局公式（唯一数据源）：输入画布尺寸，返回各控件默认 frame。
+  /// build 与「默认值预览」「重置」都走这里，避免两处公式漂移。
+  static func defaultFrames(w: CGFloat, h: CGFloat) -> [String: CGRect] {
+    var out: [String: CGRect] = [:]
+    let side: CGFloat = 160, cx: CGFloat = 120, cy = h - 128
+    out["dpad"] = CGRect(x: cx - side / 2, y: cy - side / 2, width: side, height: side)
+
+    let d: CGFloat = 72, gap: CGFloat = 14
+    let block = d * 2 + gap
+    let x0 = w - block - 22, y0 = h - block - 36
+    out["act13"] = CGRect(x: x0,             y: y0,             width: d, height: d)
+    out["act12"] = CGRect(x: x0 + d + gap,   y: y0,             width: d, height: d)
+    out["act11"] = CGRect(x: x0,             y: y0 + d + gap,   width: d, height: d)
+    out["act16"] = CGRect(x: x0 + d + gap,   y: y0 + d + gap,   width: d, height: d)
+
+    let bw: CGFloat = 140, bh: CGFloat = 40, top: CGFloat = 34
+    let lf = CGRect(x: 14, y: top, width: bw, height: bh)
+    out["shL"] = lf
+    out["shR"] = CGRect(x: w - bw - 14, y: top, width: bw, height: bh)
+    out["menu"] = CGRect(x: lf.minX, y: lf.maxY + 12, width: 44, height: 44)
+    return out
+  }
+
+  /// 供 Flutter 编辑器显示的默认布局（按真实横屏画布归一化）。
+  static func defaults() -> [[String: Any]] {
+    let size = canvasSize
+    let f = defaultFrames(w: size.width, h: size.height)
+    return ids.enumerated().map { (i, id) in
+      let r = f[id]!
+      return ["id": id, "label": labels[i],
+              "cx": Double(r.midX / size.width), "cy": Double(r.midY / size.height),
+              "w": Double(r.width / size.width), "h": Double(r.height / size.height)]
     }
-    super.sendEvent(event)
+  }
+
+  static func hasCustom() -> Bool {
+    UserDefaults.standard.array(forKey: storeKey) != nil
+  }
+
+  /// 读取生效配置；自定义项缺失的控件用默认值补齐（版本兼容）。
+  static func load() -> [[String: Any]] {
+    let base = defaults()
+    guard let saved = UserDefaults.standard.array(forKey: storeKey) as? [[String: Any]],
+          !saved.isEmpty else { return base }
+    var merged: [String: [String: Any]] = [:]
+    for item in base { merged[item["id"] as! String] = item }
+    for item in saved {
+      if let id = item["id"] as? String, merged[id] != nil { merged[id] = item }
+    }
+    return ids.compactMap { merged[$0] }
+  }
+
+  /// MethodChannel 传来的数字可能是 NSNumber/Int/Double，统一解析。
+  static func num(_ v: Any?) -> Double? {
+    if let d = v as? Double { return d }
+    if let i = v as? Int { return Double(i) }
+    if let n = v as? NSNumber { return n.doubleValue }   // MethodChannel 的数值
+    return nil
+  }
+
+  /// 保存前把外部输入 clamp 到合法范围，避免把控件挪出屏幕 / 缩成 0 导致点不到。
+  static func sanitize(_ raw: [[String: Any]]) -> [[String: Any]] {
+    let base = defaults()
+    var byId: [String: [String: Any]] = [:]
+    for item in base { byId[item["id"] as! String] = item }
+    for item in raw {
+      guard let id = item["id"] as? String, let d = byId[id] else { continue }
+      let defW = num(d["w"]) ?? 0.1, defH = num(d["h"]) ?? 0.1
+      let w = clamp(num(item["w"]) ?? defW, defW * 0.4, defW * 2.0)
+      let h = clamp(num(item["h"]) ?? defH, defH * 0.4, defH * 2.0)
+      let cx = clamp(num(item["cx"]) ?? num(d["cx"]) ?? 0.5, w / 2, 1 - w / 2)
+      let cy = clamp(num(item["cy"]) ?? num(d["cy"]) ?? 0.5, h / 2, 1 - h / 2)
+      byId[id] = ["id": id, "label": d["label"] as Any,
+                  "cx": cx, "cy": cy, "w": w, "h": h]
+    }
+    return ids.compactMap { byId[$0] }
+  }
+
+  private static func clamp(_ v: Double, _ lo: Double, _ hi: Double) -> Double {
+    guard hi >= lo else { return lo }
+    return min(max(v, lo), hi)
+  }
+
+  static func save(_ raw: [[String: Any]]) {
+    UserDefaults.standard.set(sanitize(raw), forKey: storeKey)
+  }
+
+  static func reset() {
+    UserDefaults.standard.removeObject(forKey: storeKey)
   }
 }
 
@@ -41,6 +137,9 @@ final class MkxpTouchOverlay: NSObject {
   private var menuButton: UIButton?
   private var leftShoulderButton: UIButton?   // L 肩键（"⋯"菜单按钮据此贴其下方定位）
   private var controlsHidden = false
+
+  /// 布局 id → 控件视图。applyLayout() 按配置重排；id 与 MkxpControlLayout.ids 一致。
+  private var controlViews: [String: UIView] = [:]
 
   /// 动作键触感。与圆盘方向键同为 .light，保持手感一致。
   /// prepare() 提前预热 Taptic Engine，避免首次按下时反馈迟到或丢失。
@@ -183,6 +282,7 @@ final class MkxpTouchOverlay: NSObject {
   func show() {
     if let win = window {
       win.isHidden = false
+      applyLayout()            // 复用旧窗口也要重排（用户可能刚在设置里改过布局）
       actionHaptic.prepare()   // 切回前台/重新显示时补一次预热
       showFps()
       return
@@ -195,7 +295,7 @@ final class MkxpTouchOverlay: NSObject {
       MkxpLog.append("[overlay] show FAILED: no active scene")
       return
     }   // 无可用 scene（极少见）：下次 show() 重试
-    let win = MkxpInputProbeWindow(windowScene: scene)
+    let win = UIWindow(windowScene: scene)
     win.windowLevel = UIWindow.Level.alert + 2   // 高于 SDL 与 Flutter 窗口
     let vc = UIViewController()
     vc.view.backgroundColor = .clear
@@ -210,11 +310,14 @@ final class MkxpTouchOverlay: NSObject {
     ctl.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     root.addSubview(ctl)
     controlsView = ctl
+    // 旋转/尺寸变化时按归一化配置重排（自定义坐标与参考画布无关，必须重算）。
+    ctl.onLayout = { [weak self] in self?.applyLayout() }
 
     buildDpad(in: ctl)
     buildActionButtons(in: ctl, root: root)
     buildShoulderButtons(in: ctl, root: root)
     buildMenuButton(in: ctl, root: root)
+    applyLayout()            // 应用用户自定义布局；无自定义时等价于原硬编码布局
     actionHaptic.prepare()   // 预热 Taptic Engine：首次按动作键时不掉反馈
 
     window = win
@@ -257,8 +360,8 @@ final class MkxpTouchOverlay: NSObject {
     let cy = h - 128             // 盘心 y（保持距底边 48px 不变：128 - 80=48）
     let pad = MkxpDpadView(frame: CGRect(
         x: cx - side / 2, y: cy - side / 2, width: side, height: side))
-    pad.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
     ctl.addSubview(pad)
+    controlViews["dpad"] = pad
   }
 
   private func buildActionButtons(in ctl: UIView, root: UIView) {
@@ -280,15 +383,16 @@ final class MkxpTouchOverlay: NSObject {
       CGRect(x: x0,            y: y0 + d + gap,  width: d, height: d),
       CGRect(x: x0 + d + gap,  y: y0 + d + gap,  width: d, height: d),
     ]
+    let ids = ["act13", "act12", "act11", "act16"]
     for (i, (label, key)) in items.enumerated() {
       let b = makeGlassButton(title: label)
       b.frame = positions[i]
-      b.autoresizingMask = [.flexibleLeftMargin, .flexibleTopMargin]
       b.addTarget(self, action: #selector(actionDown(_:)), for: .touchDown)
       b.addTarget(self, action: #selector(actionUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
       b.tag = Int(key)
       ctl.addSubview(b)
       actionButtons.append(b)
+      controlViews[ids[i]] = b
     }
   }
 
@@ -308,13 +412,11 @@ final class MkxpTouchOverlay: NSObject {
       let b = makeShoulderButton(title: label)
       let x = right ? (w - bw - 14) : 14
       b.frame = CGRect(x: x, y: top, width: bw, height: bh)
-      b.autoresizingMask = right
-        ? [.flexibleLeftMargin, .flexibleBottomMargin]
-        : [.flexibleRightMargin, .flexibleBottomMargin]
       b.addTarget(self, action: #selector(actionDown(_:)), for: .touchDown)
       b.addTarget(self, action: #selector(actionUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
       b.tag = Int(key)
       ctl.addSubview(b)
+      controlViews[right ? "shR" : "shL"] = b
       if !right { leftShoulderButton = b }
     }
   }
@@ -325,10 +427,63 @@ final class MkxpTouchOverlay: NSObject {
     let b = makeGlassButton(title: "⋯")
     let lf = leftShoulderButton?.frame ?? CGRect(x: 14, y: 34, width: 140, height: 40)
     b.frame = CGRect(x: lf.minX, y: lf.maxY + 12, width: 44, height: 44)
-    b.autoresizingMask = [.flexibleRightMargin, .flexibleBottomMargin]
     b.addTarget(self, action: #selector(menuTap), for: .touchUpInside)
     ctl.addSubview(b)
     menuButton = b
+    controlViews["menu"] = b
+  }
+
+  // MARK: - 布局应用
+
+  private var applyingLayout = false
+
+  /// 把 MkxpControlLayout 的配置应用到所有控件。
+  /// 无自定义时直接用 defaultFrames(实际 bounds)，与原硬编码布局逐像素一致（重置零偏差）。
+  /// 有自定义时按归一化中心/尺寸换算到当前画布，旋转后也保持相对位置。
+  /// 由 show() / layoutSubviews / MethodChannel 调用，必须主线程。
+  func applyLayout() {
+    if !Thread.isMainThread {
+      DispatchQueue.main.async { [weak self] in self?.applyLayout() }
+      return
+    }
+    guard !applyingLayout,
+          let ctl = controlsView, ctl.bounds.width > 1, ctl.bounds.height > 1 else { return }
+    applyingLayout = true
+    defer { applyingLayout = false }
+
+    let W = ctl.bounds.width, H = ctl.bounds.height
+    let custom = MkxpControlLayout.hasCustom()
+    let native = MkxpControlLayout.defaultFrames(w: W, h: H)
+    let ref = MkxpControlLayout.defaultFrames(w: MkxpControlLayout.canvasSize.width,
+                                              h: MkxpControlLayout.canvasSize.height)
+    for item in MkxpControlLayout.load() {
+      guard let id = item["id"] as? String, let v = controlViews[id] else { continue }
+      let frame: CGRect
+      if custom {
+        let cx = CGFloat(MkxpControlLayout.num(item["cx"]) ?? 0.5) * W
+        let cy = CGFloat(MkxpControlLayout.num(item["cy"]) ?? 0.5) * H
+        let w  = CGFloat(MkxpControlLayout.num(item["w"])  ?? 0.1) * W
+        let h  = CGFloat(MkxpControlLayout.num(item["h"])  ?? 0.1) * H
+        frame = CGRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h)
+      } else {
+        frame = native[id] ?? v.frame
+      }
+      v.frame = frame
+
+      // 圆角与字号在按钮创建时按当时的 frame 算死，改大小后必须重算，
+      // 否则大按钮仍是 36pt 圆角、小字挤在大块里。
+      if let b = v as? UIButton {
+        let shoulder = (id == "shL" || id == "shR")
+        b.layer.cornerRadius = shoulder ? frame.height / 2 : min(frame.width, frame.height) / 2
+        let baseH = ref[id]?.height ?? frame.height
+        let scale = min(max(frame.height / max(baseH, 1), 0.5), 2.5)
+        let base: CGFloat = shoulder ? 20 : 22
+        b.titleLabel?.font = .systemFont(
+          ofSize: min(max(base * scale, 10), 44),
+          weight: shoulder ? .bold : .semibold)
+      }
+      // 圆盘的 CAShapeLayer 由 MkxpDpadView.layoutSubviews 按新 bounds 自动重画。
+    }
   }
 
   // MARK: - 交互
@@ -416,6 +571,13 @@ final class MkxpTouchOverlay: NSObject {
 /// 导致 RGSS Mouse 模块永远收不到输入——Pokémon Amie 等依赖鼠标的插件在 iOS 上失效。
 final class MkxpPassthroughView: UIView {
   private var mouseTouch: UITouch?
+  /// bounds 变化（旋转/窗口尺寸变化）时由浮层按归一化布局重排所有按键。
+  var onLayout: (() -> Void)?
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    onLayout?()
+  }
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -424,15 +586,6 @@ final class MkxpPassthroughView: UIView {
     let spng = UITapGestureRecognizer(target: self, action: #selector(spngTap(_:)))
     spng.numberOfTouchesRequired = 3
     spng.numberOfTapsRequired = 1
-    // 修复「所有按键快按第二下丢失 / 松手后方向粘滞」：本识别器挂在所有虚拟按键
-    // 的共同父视图上，UIKit 默认 delaysTouchesEnded=YES / cancelsTouchesInView=YES，
-    // 单指触摸时识别器进入 .possible，会把 touchesEnded(及 UIControl 的 .touchUpInside)
-    // hold 住几百 ms 等三指判定 —— KEYUP 迟到，Input::update 采不到「松开帧」，
-    // 下次按下的 triggered 边沿被 input.cpp:1024-1026 吞掉。PC 无 UIKit 手势识别器，
-    // 故只有 iOS 卡。三指切换 spng 的功能不受影响（仍正常识别）。
-    spng.delaysTouchesBegan = false
-    spng.delaysTouchesEnded = false
-    spng.cancelsTouchesInView = false
     addGestureRecognizer(spng)
   }
   required init?(coder: NSCoder) { fatalError() }
@@ -475,7 +628,10 @@ final class MkxpPassthroughView: UIView {
 /// 中心小圆环为死区；换向触发轻触感。同一时刻只保留一个方向，
 /// 手指滑动可连续换向、抬起精准释放（旧的多 UIButton 方案会卡键）。
 final class MkxpDpadView: UIView {
-  private let hub: CGFloat = 22        // 中心死区半径（小圆环内不响应；随圆盘 204→160 同步缩小）
+  /// 中心死区半径按圆盘尺寸取比例（默认 160 时 = 22）。用户可改大小，
+  /// 死区必须跟着缩放，否则圆盘缩小后中间一大片都点不动。
+  private var hub: CGFloat { bounds.width * 0.1375 }
+  private var lastDialSize: CGSize = .zero
   private var held: Set<Int32> = []
   private var heldOrder: [Int32] = []   // 按下顺序（最近按下优先保留）
   /// 本视图上仍活动的触摸（自维护）。不能用 event.allTouches：
@@ -499,12 +655,27 @@ final class MkxpDpadView: UIView {
     backgroundColor = .clear
     isMultipleTouchEnabled = true
     buildDial()
+    lastDialSize = bounds.size
   }
   required init?(coder: NSCoder) { fatalError() }
+
+  /// 用户把圆盘调大/调小后，CAShapeLayer 的路径是按创建时的 bounds 算死的，
+  /// 必须按新尺寸重画（否则图形与触摸命中区错位）。
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    if lastDialSize != bounds.size {
+      lastDialSize = bounds.size
+      layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+      wedges.removeAll()
+      arrows.removeAll()
+      buildDial()
+    }
+  }
 
   /// 画圆盘：半透明底盘 + 细描边、4 个高亮楔形（默认隐藏）、4 个灰色箭头、
   /// 中心小圆环（死区指示）。样式对齐用户提供的参考图。
   private func buildDial() {
+    guard bounds.width > 0, bounds.height > 0 else { return }
     let c = CGPoint(x: bounds.midX, y: bounds.midY)
     let r = bounds.width / 2
 
@@ -551,7 +722,7 @@ final class MkxpDpadView: UIView {
   /// 指向 `angle` 方向的三角形（顶点朝外，位于盘心到边缘约 58% 处）
   private func arrowPath(center c: CGPoint, angle: CGFloat) -> CGPath {
     let d = bounds.width * 0.29
-    let s: CGFloat = 15
+    let s: CGFloat = bounds.width * 0.09375   // 箭头大小随圆盘缩放（默认 160→15）
     let dir = CGPoint(x: cos(angle), y: sin(angle))
     let perp = CGPoint(x: -dir.y, y: dir.x)
     let tip = CGPoint(x: c.x + dir.x * (d + s), y: c.y + dir.y * (d + s))
