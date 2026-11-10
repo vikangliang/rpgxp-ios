@@ -42,21 +42,28 @@ static int g_profN = 0;
 static int g_drawW = 0, g_drawH = 0;   // renderbufferStorage 时记录的 drawable 像素尺寸
 
 /* ---- 输入延迟探针（纯诊断，零逻辑改动）----
- * 只查一个主因：iOS 独有的"每帧软上屏 dispatch_async 到主队列"与"UIKit 触摸事件
- * 也在主线程主队列派发"争抢同一队列，是否为所有按键统一延迟几百 ms 的来源。
- * PC 版直接 GL swap，无此链，故 PC 不卡。
- *   A touchQ: UIEvent.timestamp(硬件触摸时刻) → 浮层 UIWindow.sendEvent 派发时刻
- *             = 触摸事件在主线程主队列的排队延迟（决定性判据）。
- *   B mainQ : dispatch_async 提交 → 上屏 block 开始执行 = 同一主队列的排队延迟。
- *   submit/skip: 画面 hash 命中率（图鉴每帧变→每帧上屏→主队列更忙；大世界静止帧跳过）。
- * A 由 Swift 侧调用下面的 C 函数累加，热路径仅几个加法、无文件 I/O；A/B 统计与打印
- * 都在主线程（上屏 block）内进行，submit/skip 都在引擎线程，故无需加锁。
- * 统计统一随每 120 个上屏 block 打印一行并清零，不在触摸线程写日志。 */
+ * touchQ/mainQ/submit-skip 用于测「软上屏与触摸争抢主线程主队列」；8de2acd 真机日志
+ * 已证伪该假设（touchQ max<=17ms、mainQ≈0，图鉴 submit=505 时 mainQ 仍为 0），
+ * 保留仅作回归对照，确认修复不引入主队列回归。
+ *   A touchQ: UIEvent.timestamp(硬件触摸时刻) → 浮层 UIWindow.sendEvent 派发时刻。
+ *   B mainQ : dispatch_async 提交 → 上屏 block 开始执行。
+ *   submit/skip: 画面 hash 命中率。
+ * 新增关键判据 edgeLost/downs（由 mkxp_framework.cpp 纯累加、本函数读取）：
+ *   统计「虚拟键按下时该键仍处于 pressed」的次数 —— KEYUP 迟到时，Input::update
+ *   采不到「松开帧」，下一次按下的 triggered 边沿被吞，正是快按第二下丢失的直接标志。
+ * 修复前（三指 UITapGestureRecognizer hold 住 touchesEnded）应偏高，修复后应归零。
+ * 累加/读取/打印都在主线程，热路径仅几个加法、无文件 I/O。 */
 static double g_inTouchSum = 0, g_inTouchMax = 0;
 static int    g_inTouchN = 0, g_inTouchOver100 = 0;
 static double g_inQSum = 0, g_inQMax = 0;
 static int    g_inQN = 0, g_inQOver100 = 0;
 static int    g_hashSubmitN = 0, g_hashSkipN = 0;
+
+/* mkxp_framework.cpp 导出：取「边沿丢失 + down→up 间隔」统计，reset=1 时清零。 */
+extern "C" void mkxp_ios_key_edge_stats(int *lost, int *downs,
+                                        double *holdAvg, double *holdMax,
+                                        int *holdOver100, int *holdN,
+                                        int reset);
 
 /* Swift 触摸浮层每次 sendEvent 调用；纯累加，绝不做 I/O。 */
 extern "C" void mkxp_ios_note_touch_lag(double ms) {
@@ -778,13 +785,20 @@ static void mkxp_softPresent()
             if (qms > g_inQMax) g_inQMax = qms;
             ++g_inQN;
             if (qms > 100.0) ++g_inQOver100;
-            /* A/B 汇总：每 120 个上屏 block 打一行，触摸热路径不做 I/O */
+            /* 汇总：每 120 个上屏 block 打一行，触摸热路径不做 I/O。
+             * 按键统计由 mkxp_framework.cpp 累加，此处读取并清零。 */
             if (g_inQN >= 120) {
+                int kLost = 0, kDowns = 0, kHoldOver = 0, kHoldN = 0;
+                double kHoldAvg = 0, kHoldMax = 0;
+                mkxp_ios_key_edge_stats(&kLost, &kDowns, &kHoldAvg, &kHoldMax,
+                                        &kHoldOver, &kHoldN, 1);
                 fprintf(stderr, "[ios-input] touchQ avg=%.1f max=%.1f >100ms=%d/%d | "
-                                "mainQ avg=%.1f max=%.1f >100ms=%d/%d (n=%d)\n",
+                                "mainQ avg=%.1f max=%.1f >100ms=%d/%d | "
+                                "key edgeLost=%d/%d hold avg=%.0f max=%.0f >100ms=%d/%d (n=%d)\n",
                         g_inTouchN ? g_inTouchSum / g_inTouchN : 0, g_inTouchMax,
                         g_inTouchOver100, g_inTouchN,
-                        g_inQSum / g_inQN, g_inQMax, g_inQOver100, g_inQN, g_inQN);
+                        g_inQSum / g_inQN, g_inQMax, g_inQOver100, g_inQN,
+                        kLost, kDowns, kHoldAvg, kHoldMax, kHoldOver, kHoldN, g_inQN);
                 g_inTouchSum = g_inTouchMax = g_inQSum = g_inQMax = 0;
                 g_inTouchN = g_inTouchOver100 = g_inQN = g_inQOver100 = 0;
             }

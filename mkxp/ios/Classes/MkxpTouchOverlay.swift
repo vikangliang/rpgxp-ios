@@ -424,6 +424,15 @@ final class MkxpPassthroughView: UIView {
     let spng = UITapGestureRecognizer(target: self, action: #selector(spngTap(_:)))
     spng.numberOfTouchesRequired = 3
     spng.numberOfTapsRequired = 1
+    // 修复「所有按键快按第二下丢失 / 松手后方向粘滞」：本识别器挂在所有虚拟按键
+    // 的共同父视图上，UIKit 默认 delaysTouchesEnded=YES / cancelsTouchesInView=YES，
+    // 单指触摸时识别器进入 .possible，会把 touchesEnded(及 UIControl 的 .touchUpInside)
+    // hold 住几百 ms 等三指判定 —— KEYUP 迟到，Input::update 采不到「松开帧」，
+    // 下次按下的 triggered 边沿被 input.cpp:1024-1026 吞掉。PC 无 UIKit 手势识别器，
+    // 故只有 iOS 卡。三指切换 spng 的功能不受影响（仍正常识别）。
+    spng.delaysTouchesBegan = false
+    spng.delaysTouchesEnded = false
+    spng.cancelsTouchesInView = false
     addGestureRecognizer(spng)
   }
   required init?(coder: NSCoder) { fatalError() }
