@@ -445,30 +445,40 @@ class << Object
           r
         end
       elsif m == :pbSceneStandby
-        # 诊断(决定性): 拆分"进战搭建"三段 + 探测 major GC 次数, 一次性判定首战黑屏 15s
-        # 究竟是【自动 major GC 扫 100万对象】还是【可修的代码 bug】。忠实复刻原方法体,
-        # 仅在各段加计时与 GC.stat[:major_gc_count](rescue 防崩) 探针。每战一次, 量极小。
+        # 诊断(决定性): 拆分"进战搭建"三段 + 探测 major GC 次数, 一次性判定首战黑屏
+        # 究竟是【自动 major GC 扫 100万对象】还是【可修的代码 bug】。每战一次, 量极小。
         #   pre  = disposeSpritesets + RPG::Cache.clear + frame_reset + pbLoadBattleAnimations
-        #   yield= battle.pbStartBattle(战斗场景搭建+入场动画) —— 嫌疑 14.8s 在此
+        #   body = battle.pbStartBattle(战斗场景搭建+入场动画)
         #   post = createSpritesets
-        # 判读: yield 段 mGC 自增1 且耗时≈14s => 自动 major GC(扫100万对象)为真凶;
-        #        yield 段无 majorGC 却耗时≈14s => Ruby 代码热点(bug), 可针对性修掉。
+        # 判读: body 段 mGC 自增1 且耗时≈14s => 自动 major GC(扫100万对象)为真凶;
+        #       body 段无 majorGC 却耗时≈14s => Ruby 代码热点(bug), 可针对性修掉。
+        #
+        # 【崩溃修复】define_method 的 block 内绝不能用 yield —— yield 引用的是词法外层
+        # (method_added) 的 block, 这里没有, 故每次调用必抛 LocalJumpError
+        # "no block given (yield)" -> 进战斗流程中断(981e621 实测)。必须用显式捕获的
+        # &blk + blk.call 转发调用方传入的 block。游戏侧确实传了 block(start_core 的 do..end)。
+        #
+        # 【分段即时打印】汇总行原在方法末尾, 若某段卡死/异常则整行拿不到。改为每段完成
+        # 立刻打一行: 即使 body 段永不返回, 日志也已写明卡在哪一段。仅 4 行/战, 零热路径开销。
         ::Object.send(:define_method, :pbSceneStandby) do |&blk|
           t0 = Time.now.to_f
           g0 = (GC.stat[:major_gc_count] rescue nil)
+          $stderr.puts "[ios-fix] pbSceneStandby: PRE start"
           $scene.disposeSpritesets if $scene.is_a?(Scene_Map)
           RPG::Cache.clear
           Graphics.frame_reset
           pbLoadBattleAnimations
           t1 = Time.now.to_f
           g1 = (GC.stat[:major_gc_count] rescue nil)
-          ret = yield
+          $stderr.puts "[ios-fix] pbSceneStandby: PRE done +#{(t1 - t0).round(2)}s mGC=#{g1 && g0 ? g1 - g0 : '?'}"
+          $stderr.puts "[ios-fix] pbSceneStandby: BODY start"
+          ret = blk.call if blk
           t2 = Time.now.to_f
           g2 = (GC.stat[:major_gc_count] rescue nil)
+          $stderr.puts "[ios-fix] pbSceneStandby: BODY done +#{(t2 - t1).round(2)}s mGC=#{g2 && g1 ? g2 - g1 : '?'}"
           $scene.createSpritesets if $scene.is_a?(Scene_Map)
           t3 = Time.now.to_f
-          $stderr.puts "[ios-fix] pbSceneStandby: pre=#{(t1 - t0).round(2)}s(mGC=#{g1 - g0}) " \
-                       "yield=#{(t2 - t1).round(2)}s(mGC=#{g2 - g1}) post=#{(t3 - t2).round(2)}s " \
+          $stderr.puts "[ios-fix] pbSceneStandby: POST done +#{(t3 - t2).round(2)}s " \
                        "TOTAL=#{(t3 - t0).round(2)}s"
           ret
         end
