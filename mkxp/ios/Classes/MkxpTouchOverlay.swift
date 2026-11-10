@@ -4,20 +4,32 @@ import MKXP
 
 // MARK: - 虚拟按键布局配置（运行时可调，改位置/大小不再需要重新打包）
 
-/// 坐标一律【归一化】到控件父视图（横屏画布）的宽/高：cx/cy 为中心点，w/h 为尺寸。
-/// 换设备、旋转都不会跑偏。画布尺寸取当前设备的真实横屏尺寸（UIScreen.bounds
-/// 在 iOS 上恒为竖屏坐标，故取长边/短边），与浮层全屏 UIWindow 的 bounds 一致，
-/// 这样 Flutter 编辑器的预览与真机逐点对应。
+/// 坐标一律【归一化】到控件父视图的宽/高：cx/cy 为中心点，w/h 为尺寸。
+/// 横屏、竖屏各存一套：两套画布的宽高比互为倒数，共用一套二维坐标必然会把
+/// 控件拉伸变形，所以归一化分母必须按方向分开。
 ///
 /// 关键设计：**默认值不落盘**。`defaultFrames(w:h:)` 是原有硬编码布局公式的
-/// 唯一数据源；未自定义时浮层完全走原公式（零偏差），用户点「重置」只需删除
-/// UserDefaults 覆盖即可回到最初位置。持久化只存用户改动后的归一化坐标。
+/// 唯一数据源；某方向未自定义时浮层完全走原公式（零偏差），用户点「重置」只需
+/// 删除该方向的 UserDefaults 覆盖即可回到最初位置。因此「竖屏没调过」自动等于
+/// 竖屏保持现状，不需要用户额外决定要不要支持竖屏。
+///
+/// 横屏沿用旧 key，升级后此前保存过的横屏布局不会丢。
 enum MkxpControlLayout {
-  static var canvasSize: CGSize {
-    let s = UIScreen.main.bounds.size
-    return CGSize(width: max(s.width, s.height), height: min(s.width, s.height))
+  static let storeKeyLandscape = "mkxp.controlLayout.v1"
+  static let storeKeyPortrait = "mkxp.controlLayout.v1.portrait"
+
+  static func storeKey(landscape: Bool) -> String {
+    landscape ? storeKeyLandscape : storeKeyPortrait
   }
-  static let storeKey = "mkxp.controlLayout.v1"
+
+  /// UIScreen.bounds 在 iOS 上恒为竖屏坐标，横屏取长边/短边，竖屏取短边/长边。
+  /// 与浮层全屏 UIWindow 的 bounds 一致，Flutter 编辑器预览与真机逐点对应。
+  static func canvasSize(landscape: Bool) -> CGSize {
+    let s = UIScreen.main.bounds.size
+    return landscape
+      ? CGSize(width: max(s.width, s.height), height: min(s.width, s.height))
+      : CGSize(width: min(s.width, s.height), height: max(s.width, s.height))
+  }
 
   static let ids = ["dpad", "act13", "act12", "act11", "act16", "shL", "shR", "menu"]
   static let labels = ["方向键", "C 确定", "✕ 取消", "Z", "☰ 菜单", "L 肩键", "R 肩键", "⋯ 悬浮菜单"]
@@ -45,9 +57,9 @@ enum MkxpControlLayout {
     return out
   }
 
-  /// 供 Flutter 编辑器显示的默认布局（按真实横屏画布归一化）。
-  static func defaults() -> [[String: Any]] {
-    let size = canvasSize
+  /// 供 Flutter 编辑器显示的默认布局（按所选方向的真实画布归一化）。
+  static func defaults(landscape: Bool) -> [[String: Any]] {
+    let size = canvasSize(landscape: landscape)
     let f = defaultFrames(w: size.width, h: size.height)
     return ids.enumerated().map { (i, id) in
       let r = f[id]!
@@ -57,15 +69,15 @@ enum MkxpControlLayout {
     }
   }
 
-  static func hasCustom() -> Bool {
-    UserDefaults.standard.array(forKey: storeKey) != nil
+  static func hasCustom(landscape: Bool) -> Bool {
+    UserDefaults.standard.array(forKey: storeKey(landscape: landscape)) != nil
   }
 
   /// 读取生效配置；自定义项缺失的控件用默认值补齐（版本兼容）。
-  static func load() -> [[String: Any]] {
-    let base = defaults()
-    guard let saved = UserDefaults.standard.array(forKey: storeKey) as? [[String: Any]],
-          !saved.isEmpty else { return base }
+  static func load(landscape: Bool) -> [[String: Any]] {
+    let base = defaults(landscape: landscape)
+    guard let saved = UserDefaults.standard.array(forKey: storeKey(landscape: landscape))
+            as? [[String: Any]], !saved.isEmpty else { return base }
     var merged: [String: [String: Any]] = [:]
     for item in base { merged[item["id"] as! String] = item }
     for item in saved {
@@ -83,8 +95,9 @@ enum MkxpControlLayout {
   }
 
   /// 保存前把外部输入 clamp 到合法范围，避免把控件挪出屏幕 / 缩成 0 导致点不到。
-  static func sanitize(_ raw: [[String: Any]]) -> [[String: Any]] {
-    let base = defaults()
+  /// 基准用同方向的默认值，否则竖屏会用横屏的宽高比例去限制尺寸。
+  static func sanitize(_ raw: [[String: Any]], landscape: Bool) -> [[String: Any]] {
+    let base = defaults(landscape: landscape)
     var byId: [String: [String: Any]] = [:]
     for item in base { byId[item["id"] as! String] = item }
     for item in raw {
@@ -105,12 +118,13 @@ enum MkxpControlLayout {
     return min(max(v, lo), hi)
   }
 
-  static func save(_ raw: [[String: Any]]) {
-    UserDefaults.standard.set(sanitize(raw), forKey: storeKey)
+  static func save(_ raw: [[String: Any]], landscape: Bool) {
+    UserDefaults.standard.set(sanitize(raw, landscape: landscape),
+                              forKey: storeKey(landscape: landscape))
   }
 
-  static func reset() {
-    UserDefaults.standard.removeObject(forKey: storeKey)
+  static func reset(landscape: Bool) {
+    UserDefaults.standard.removeObject(forKey: storeKey(landscape: landscape))
   }
 }
 
@@ -438,8 +452,9 @@ final class MkxpTouchOverlay: NSObject {
   private var applyingLayout = false
 
   /// 把 MkxpControlLayout 的配置应用到所有控件。
-  /// 无自定义时直接用 defaultFrames(实际 bounds)，与原硬编码布局逐像素一致（重置零偏差）。
-  /// 有自定义时按归一化中心/尺寸换算到当前画布，旋转后也保持相对位置。
+  /// 方向由当前画布宽高判断（旋转后由 layoutSubviews 再次调用），横竖各读各的配置。
+  /// 某方向无自定义时直接用 defaultFrames(实际 bounds)，与原硬编码布局逐像素一致
+  /// （重置零偏差）；有自定义时按该方向的归一化中心/尺寸换算到当前画布。
   /// 由 show() / layoutSubviews / MethodChannel 调用，必须主线程。
   func applyLayout() {
     if !Thread.isMainThread {
@@ -452,11 +467,12 @@ final class MkxpTouchOverlay: NSObject {
     defer { applyingLayout = false }
 
     let W = ctl.bounds.width, H = ctl.bounds.height
-    let custom = MkxpControlLayout.hasCustom()
+    let landscape = W >= H
+    let custom = MkxpControlLayout.hasCustom(landscape: landscape)
     let native = MkxpControlLayout.defaultFrames(w: W, h: H)
-    let ref = MkxpControlLayout.defaultFrames(w: MkxpControlLayout.canvasSize.width,
-                                              h: MkxpControlLayout.canvasSize.height)
-    for item in MkxpControlLayout.load() {
+    let refSize = MkxpControlLayout.canvasSize(landscape: landscape)
+    let ref = MkxpControlLayout.defaultFrames(w: refSize.width, h: refSize.height)
+    for item in MkxpControlLayout.load(landscape: landscape) {
       guard let id = item["id"] as? String, let v = controlViews[id] else { continue }
       let frame: CGRect
       if custom {

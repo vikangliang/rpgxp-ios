@@ -144,12 +144,14 @@ class MkxpMethodHandler: NSObject {
     case "getFps":
       result(MkxpBridge.fps())
 
-    // MARK: - 虚拟按键布局（运行时可调，改位置/大小无需重新打包）
+    // MARK: - 虚拟按键布局（横竖各一套，运行时可调，无需重新打包）
     case "getControlLayout":
-      let size = MkxpControlLayout.canvasSize
-      let payload: [String: Any] = ["items": MkxpControlLayout.load(),
-                                    "defaults": MkxpControlLayout.defaults(),
-                                    "customized": MkxpControlLayout.hasCustom(),
+      let args = call.arguments as? [String: Any]
+      let landscape = args?["landscape"] as? Bool ?? true
+      let size = MkxpControlLayout.canvasSize(landscape: landscape)
+      let payload: [String: Any] = ["items": MkxpControlLayout.load(landscape: landscape),
+                                    "defaults": MkxpControlLayout.defaults(landscape: landscape),
+                                    "customized": MkxpControlLayout.hasCustom(landscape: landscape),
                                     "canvasW": Double(size.width),
                                     "canvasH": Double(size.height)]
       result(payload)
@@ -159,13 +161,17 @@ class MkxpMethodHandler: NSObject {
         result(FlutterError(code: "badArgs", message: "setControlLayout 需要 items 数组", details: nil))
         return
       }
+      let landscape = args["landscape"] as? Bool ?? true
       let items = raw.compactMap { $0 as? [String: Any] }
-      MkxpControlLayout.save(items)
-      MkxpTouchOverlay.shared.applyLayout()   // 游戏运行中也能即时生效
+      MkxpControlLayout.save(items, landscape: landscape)
+      // 游戏运行中，只有编辑的正是当前方向时才会立刻看到变化；另一套在旋转后生效。
+      MkxpTouchOverlay.shared.applyLayout()
       result(nil)
     case "resetControlLayout":
-      MkxpControlLayout.reset()
-      MkxpTouchOverlay.shared.applyLayout()   // 回到原始硬编码布局（重置起点）
+      let args = call.arguments as? [String: Any]
+      let landscape = args?["landscape"] as? Bool ?? true
+      MkxpControlLayout.reset(landscape: landscape)
+      MkxpTouchOverlay.shared.applyLayout()   // 回到该方向的原始硬编码布局（重置起点）
       result(nil)
     default:
       result(FlutterMethodNotImplemented)

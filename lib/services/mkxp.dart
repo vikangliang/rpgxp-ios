@@ -164,12 +164,13 @@ class Mkxp {
     }
   }
 
-  // MARK: - 虚拟按键布局（原生 UserDefaults 为唯一数据源）
+  // MARK: - 虚拟按键布局（原生 UserDefaults 为唯一数据源，横竖各一套）
 
-  /// items = 当前生效布局，defaults = 原始布局（重置起点）。
-  static Future<ControlLayout> getControlLayout() async {
+  /// items = 该方向当前生效布局，defaults = 该方向原始布局（重置起点）。
+  static Future<ControlLayout> getControlLayout({required bool landscape}) async {
     try {
-      final r = await _ch.invokeMapMethod<String, dynamic>('getControlLayout');
+      final r = await _ch.invokeMapMethod<String, dynamic>(
+          'getControlLayout', {'landscape': landscape});
       if (r == null) return ControlLayout.fallback();
       return ControlLayout.fromMap(r);
     } catch (_) {
@@ -177,18 +178,21 @@ class Mkxp {
     }
   }
 
-  static Future<void> setControlLayout(List<ControlItem> items) async {
+  static Future<void> setControlLayout(
+      List<ControlItem> items, {required bool landscape}) async {
     await _ch.invokeMethod('setControlLayout', {
       'items': items.map((e) => e.toMap()).toList(),
+      'landscape': landscape,
     });
   }
 
-  static Future<void> resetControlLayout() async {
-    await _ch.invokeMethod('resetControlLayout');
+  static Future<void> resetControlLayout({required bool landscape}) async {
+    await _ch.invokeMethod('resetControlLayout', {'landscape': landscape});
   }
 }
 
-/// 单个虚拟按键的归一化布局：cx/cy 为中心点，w/h 为尺寸，均相对横屏画布 0..1。
+/// 单个虚拟按键的归一化布局：cx/cy 为中心点，w/h 为尺寸，相对**所在方向**的
+/// 画布 0..1。横屏与竖屏各存一套，分母不同，不能混用。
 class ControlItem {
   final String id;
   final String label;

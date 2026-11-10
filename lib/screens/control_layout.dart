@@ -6,9 +6,10 @@ import 'package:flutter/services.dart';
 import '../services/mkxp.dart';
 
 /// 虚拟按键布局编辑器。
-/// 进页面切横屏（按键本来就是横屏布局，所见即所得），退出恢复竖屏。
-/// 画布按参考比例 896:414 绘制，控件坐标全部归一化（0..1），换设备不跑偏。
-/// 「重置」调用原生 resetControlLayout 删除自定义配置，回到最初硬编码布局。
+/// 横屏/竖屏各一套独立布局，切换目标方向时把设备方向一起转过去，画布按该方向的
+/// 真实屏幕比例绘制 → 编辑竖屏时看到的就是竖屏游玩时的实际排布。
+/// 两套坐标都归一化（0..1），但各自相对本方向画布，不会因宽高比翻转而拉伸变形。
+/// 某方向没编辑过就不落盘，浮层自动走原硬编码布局；「重置」删除该方向的自定义项。
 class ControlLayoutPage extends StatefulWidget {
   const ControlLayoutPage({super.key});
 
@@ -19,6 +20,7 @@ class ControlLayoutPage extends StatefulWidget {
 class _ControlLayoutPageState extends State<ControlLayoutPage> {
   static const _primary = Color(0xFF4CC2FF);
 
+  bool _landscape = true;   // 当前正在编辑的方向
   double _canvasRatio = 896 / 414;
   double _canvasW = 896, _canvasH = 414;
   List<ControlItem> _items = [];
@@ -32,12 +34,7 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
   @override
   void initState() {
     super.initState();
-    // 与 game_run.dart 一致：先松开 Flutter 的全局竖屏锁，再由原生强制切横屏
-    // （iOS 上只改 preferred orientations 时，设备物理竖屏不会真的旋转）。
-    SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]).then((_) => Mkxp.setOrientation(true));
+    _orientFor(_landscape);
     _load();
   }
 
@@ -48,8 +45,17 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
     super.dispose();
   }
 
+  /// 与 game_run.dart 一致：先松开 Flutter 的全局竖屏锁，再由原生强制切到目标方向
+  /// （iOS 上只改 preferred orientations 时，设备物理竖屏不会真的旋转）。
+  Future<void> _orientFor(bool landscape) async {
+    await SystemChrome.setPreferredOrientations(landscape
+        ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
+        : [DeviceOrientation.portraitUp]);
+    await Mkxp.setOrientation(landscape);
+  }
+
   Future<void> _load() async {
-    final l = await Mkxp.getControlLayout();
+    final l = await Mkxp.getControlLayout(landscape: _landscape);
     if (!mounted) return;
     setState(() {
       _items = l.items.map((e) => e.copy()).toList();
@@ -59,8 +65,50 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
       _canvasW = l.canvasW;
       _canvasH = l.canvasH;
       _loading = false;
+      _selectedId = null;
       _error = _items.isEmpty ? '无法读取原生按键布局（仅 iOS 支持）' : null;
     });
+  }
+
+  /// 切换编辑方向：有未保存改动时先确认，避免两套配置混着丢。
+  Future<void> _switchTarget(bool landscape) async {
+    if (landscape == _landscape) return;
+    if (_dirty) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF16161C),
+          title: const Text('有未保存的改动', style: TextStyle(color: Colors.white)),
+          content: const Text('切换方向会重新载入另一套布局，当前改动需要先处理。',
+              style: TextStyle(color: Colors.white70)),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'),
+                child: const Text('取消')),
+            TextButton(onPressed: () => Navigator.pop(ctx, 'discard'),
+                child: const Text('丢弃', style: TextStyle(color: Colors.orange))),
+            TextButton(onPressed: () => Navigator.pop(ctx, 'save'),
+                child: const Text('保存并切换', style: TextStyle(color: _primary))),
+          ],
+        ),
+      );
+      if (!mounted || choice == null || choice == 'cancel') return;
+      if (choice == 'save') {
+        try {
+          await Mkxp.setControlLayout(_items, landscape: _landscape);
+        } catch (e) {
+          _toast('保存失败：$e');
+          return;
+        }
+        if (!mounted) return;
+      }
+    }
+    setState(() {
+      _landscape = landscape;
+      _dirty = false;
+      _loading = true;
+    });
+    await _orientFor(landscape);
+    await _load();
   }
 
   ControlItem? get _selected {
@@ -122,15 +170,17 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
           duration: const Duration(seconds: 2)));
   }
 
+  String get _targetName => _landscape ? '横屏' : '竖屏';
+
   Future<void> _save() async {
     try {
-      await Mkxp.setControlLayout(_items);
+      await Mkxp.setControlLayout(_items, landscape: _landscape);
       if (!mounted) return;
       setState(() {
         _dirty = false;
         _customized = true;
       });
-      _toast('已保存，进入游戏即生效');
+      _toast('已保存$_targetName布局，进入游戏即生效');
     } catch (e) {
       _toast('保存失败：$e');
     }
@@ -141,9 +191,10 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF16161C),
-        title: const Text('重置按键布局', style: TextStyle(color: Colors.white)),
-        content: const Text('所有按键的位置和大小将恢复到初始布局。',
-            style: TextStyle(color: Colors.white70)),
+        title: Text('重置$_targetName布局', style: const TextStyle(color: Colors.white)),
+        content: Text('$_targetName下所有按键的位置和大小将恢复到初始布局；'
+            '另一方向的布局不受影响。',
+            style: const TextStyle(color: Colors.white70)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false),
               child: const Text('取消')),
@@ -154,7 +205,7 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
     );
     if (ok != true) return;
     try {
-      await Mkxp.resetControlLayout();
+      await Mkxp.resetControlLayout(landscape: _landscape);
       if (!mounted) return;
       setState(() {
         _items = _defaults.map((e) => e.copy()).toList();
@@ -162,7 +213,7 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
         _dirty = false;
         _customized = false;
       });
-      _toast('已恢复初始布局');
+      _toast('已恢复$_targetName初始布局');
     } catch (e) {
       _toast('重置失败：$e');
     }
@@ -178,42 +229,90 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
     return Scaffold(
       backgroundColor: const Color(0xFF0B0B0F),
       body: SafeArea(
-        child: Column(
-          children: [
-            _toolbar(),
+        // 竖屏只有约 390pt 宽，横屏那排工具会溢出；按实际宽度收起次要元素。
+        child: LayoutBuilder(builder: (context, c) {
+          final narrow = c.maxWidth < 620;
+          return Column(children: [
+            _toolbar(narrow),
             Expanded(child: _canvasArea()),
-            _bottomBar(),
-          ],
-        ),
+            _bottomBar(narrow),
+          ]);
+        }),
       ),
     );
   }
 
-  Widget _toolbar() => Padding(
+  Widget _toolbar(bool narrow) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         child: Row(children: [
           IconButton(
               onPressed: _back,
               icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white70, size: 18)),
-          const Text('虚拟按键布局',
+          if (!narrow) const Text('虚拟按键布局',
               style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
+          _orientationSwitch(),
+          const SizedBox(width: 8),
           _badge(),
           const Spacer(),
-          const Text('拖动移动 · 点选后调大小',
-              style: TextStyle(color: Colors.white38, fontSize: 12)),
-          const SizedBox(width: 12),
-          TextButton.icon(
-              onPressed: (_customized || _dirty) ? _reset : null,
-              icon: const Icon(Icons.restart_alt, size: 16),
-              label: const Text('重置')),
+          if (!narrow) ...[
+            const Text('拖动移动 · 点选后调大小',
+                style: TextStyle(color: Colors.white38, fontSize: 12)),
+            const SizedBox(width: 12),
+          ],
+          narrow
+              ? IconButton(
+                  onPressed: (_customized || _dirty) ? _reset : null,
+                  tooltip: '重置',
+                  icon: const Icon(Icons.restart_alt, size: 18))
+              : TextButton.icon(
+                  onPressed: (_customized || _dirty) ? _reset : null,
+                  icon: const Icon(Icons.restart_alt, size: 16),
+                  label: const Text('重置')),
           const SizedBox(width: 4),
-          FilledButton.icon(
-              onPressed: (_loading || _error != null) ? null : _save,
-              icon: const Icon(Icons.save_outlined, size: 16),
-              label: const Text('保存')),
+          narrow
+              ? FilledButton(
+                  onPressed: (_loading || _error != null) ? null : _save,
+                  style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.all(8),
+                      minimumSize: const Size(40, 40)),
+                  child: const Icon(Icons.save_outlined, size: 18))
+              : FilledButton.icon(
+                  onPressed: (_loading || _error != null) ? null : _save,
+                  icon: const Icon(Icons.save_outlined, size: 16),
+                  label: const Text('保存')),
         ]),
       );
+
+  Widget _orientationSwitch() => Container(
+        decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(8)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          _orientBtn('横屏', true, Icons.stay_current_landscape_outlined),
+          _orientBtn('竖屏', false, Icons.stay_current_portrait_outlined),
+        ]),
+      );
+
+  Widget _orientBtn(String text, bool value, IconData icon) {
+    final on = _landscape == value;
+    return InkWell(
+      onTap: () => _switchTarget(value),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+            color: on ? _primary.withValues(alpha: 0.22) : Colors.transparent,
+            borderRadius: BorderRadius.circular(8)),
+        child: Row(children: [
+          Icon(icon, size: 14, color: on ? _primary : Colors.white38),
+          const SizedBox(width: 4),
+          Text(text, style: TextStyle(
+              color: on ? _primary : Colors.white54, fontSize: 12)),
+        ]),
+      ),
+    );
+  }
 
   Widget _badge() => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -245,7 +344,7 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
                 borderRadius: BorderRadius.circular(8),
                 child: Stack(children: [
                   Center(
-                      child: Text('游戏画面（横屏 ${_canvasW.round()} : ${_canvasH.round()} 预览）',
+                      child: Text('游戏画面（$_targetName ${_canvasW.round()} : ${_canvasH.round()} 预览）',
                           style: const TextStyle(color: Colors.white12, fontSize: 13))),
                   for (final it in _items) _control(it, W, H),
                 ]),
@@ -303,21 +402,24 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
     );
   }
 
-  Widget _bottomBar() {
+  Widget _bottomBar(bool narrow) {
     final it = _selected;
     return Container(
-      height: 66,
+      height: narrow ? 58 : 66,
       padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Row(children: [
         SizedBox(
-          width: 110,
-          child: Text(it == null ? '点选一个按键' : it.label,
+          width: narrow ? 62 : 110,
+          child: Text(it == null ? '点选按键' : it.label,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                   color: it == null ? Colors.white38 : Colors.white,
-                  fontSize: 13, fontWeight: FontWeight.w600)),
+                  fontSize: narrow ? 11 : 13, fontWeight: FontWeight.w600)),
         ),
         const SizedBox(width: 8),
-        const Text('大小', style: TextStyle(color: Colors.white54, fontSize: 12)),
+        if (!narrow)
+          const Text('大小', style: TextStyle(color: Colors.white54, fontSize: 12)),
         Expanded(
           child: Slider(
             value: it == null ? 1.0 : _scaleOf(it).clamp(0.4, 2.0).toDouble(),
@@ -329,16 +431,21 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
           ),
         ),
         SizedBox(
-          width: 46,
+          width: 42,
           child: Text(it == null ? '' : '${(_scaleOf(it) * 100).round()}%',
               style: const TextStyle(color: Colors.white70, fontSize: 12)),
         ),
-        if (it != null) ...[
+        // 竖屏宽度有限，只保留最有用的左右微调；上下仍可直接拖动。
+        if (it != null && !narrow) ...[
           const SizedBox(width: 8),
           _nudgeBtn(Icons.arrow_back, () => _nudge(it, -0.01, 0)),
           _nudgeBtn(Icons.arrow_forward, () => _nudge(it, 0.01, 0)),
           _nudgeBtn(Icons.arrow_upward, () => _nudge(it, 0, -0.01)),
           _nudgeBtn(Icons.arrow_downward, () => _nudge(it, 0, 0.01)),
+        ],
+        if (it != null && narrow) ...[
+          _nudgeBtn(Icons.arrow_back, () => _nudge(it, -0.01, 0)),
+          _nudgeBtn(Icons.arrow_forward, () => _nudge(it, 0.01, 0)),
         ],
       ]),
     );
