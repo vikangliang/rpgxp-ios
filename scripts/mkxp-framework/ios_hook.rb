@@ -29,6 +29,7 @@ unless defined?($__mkxp_private_neutered) && $__mkxp_private_neutered
   end
 end
 $__mkxp_rcache = {}
+$__mkxp_dircache = {}
 
 # ---- 诊断总开关（性能关键） ----
 # 默认关：生产版不包装 draw_text / draw_text_ex / pbDrawTextPositions 等每帧热路径。
@@ -47,6 +48,7 @@ def __mkxp_rel?(s)
   t =~ /Followers|Swimming|Levitates|Characters\//
 end
 def __mkxp_log(tag, msg)
+  return unless $__mkxp_diag
   $__mkxp_logs[tag] += 1
   $stderr.puts "[#{tag}##{$__mkxp_logs[tag]}] #{msg}" if $__mkxp_logs[tag] <= 60
 rescue StandardError
@@ -58,7 +60,10 @@ end
 # （彼时 Game_Map/Spriteset_Map/Tilemap/Graphics 均已定义），此后各次进图
 # 打出每阶段 ms 分解——哪一段吃掉 ~10s 一目了然。诊断完把 $__mkxp_timing
 # 改 false（或整段删）即零开销。
-$__mkxp_timing = true
+# 首战黑屏优化：默认关闭。TracePoint / map-timing / Sprite_Character.new 包装
+# 在冷启动期制造大量临时对象与 major GC；autotile cache 在 method_added 开头
+# 独立安装，不经过本开关，功能不受影响。
+$__mkxp_timing = false
 $__mkxp_t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 $__mkxp_timing_done = false
 def __mkxp_ms
@@ -257,6 +262,24 @@ def __mkxp_install_map_timing
 rescue StandardError => e
   $stderr.puts "[map-timing] install failed: #{e.class}"
 end
+# 目录列举缓存：游戏资源目录在运行时静态不变。此前每个未命中路径都会
+# Dir.children(parent) 全目录扫描（扩展名兜底还会再扫最多 4 次），目录不存在时
+# 靠抛异常收尾；首战冷启动期数百次 miss 累积成可观 CPU 与临时对象分配。
+# 只缓存列举结果（成功为字符串数组，失败为空数组），后续同类查询直接哈希命中。
+# 刻意不用 Dir.exist? 守卫：mkxp 的 File/Dir 可能被虚拟文件系统改写，沿用已验证
+# 可用的 Dir.children 语义最稳；内部 rescue 保证任何异常都不冒泡。
+$__mkxp_dirlist = lambda do |parent|
+  cached = $__mkxp_dircache[parent]
+  next cached if cached
+  kids = begin
+    Dir.children(parent)
+  rescue StandardError
+    []
+  end
+  $__mkxp_dircache.clear if $__mkxp_dircache.size > 512
+  $__mkxp_dircache[parent] = kids
+  kids
+end
 $__mkxp_resolve = lambda do |s|
   # 【根治】字符串对象所有权：本解析器返回的字符串绝不能与调用方共享。
   # 此前 `str = s.to_s`（String 时返回自身）+ `next cached`（直接返回缓存对象），
@@ -271,7 +294,7 @@ $__mkxp_resolve = lambda do |s|
   # 精灵 charset 解析探针："？"精灵 = check_graphic_file 全候选失败回退
   # Graphics/Characters/Followers/000.png。逐步复现 orig pbGetFileChar 的每一步，
   # 失败在哪一环当场打出（rgssad 分支 / FileTest / File.open+异常类）。
-  if $__mkxp_probe < 40 &&
+  if $__mkxp_diag && $__mkxp_probe < 40 &&
      (str.index("Characters/Followers") || str.index("Characters/Swimming") ||
       str.index("Characters/Levitates"))
     $__mkxp_probe += 1
@@ -316,19 +339,27 @@ $__mkxp_resolve = lambda do |s|
           parent = "." if parent == ""
           m = nil
           begin
-            m = Dir.children(parent).find { |n| n.casecmp(seg) == 0 || n.delete(" ").casecmp(seg.delete(" ")) == 0 }
+            kids = $__mkxp_dirlist.call(parent)
+            if kids.nil?
+              ok = false
+              break
+            end
+            m = kids.find { |n| n.casecmp(seg) == 0 || n.delete(" ").casecmp(seg.delete(" ")) == 0 }
           rescue StandardError
             ok = false
             break
           end
           if m.nil? && last && [".gif", ".png", ".jpg", ".jpeg"].any? { |e| seg.downcase.end_with?(e) }
             base = seg[0, seg.rindex(".")]
-            [".png", ".gif", ".jpg", ".jpeg"].each do |ext|
-              alt = base + ext
-              mm = Dir.children(parent).find { |n| n.casecmp(alt) == 0 || n.delete(" ").casecmp(alt.delete(" ")) == 0 }
-              if mm
-                m = mm
-                break
+            kids = $__mkxp_dirlist.call(parent)
+            if kids
+              [".png", ".gif", ".jpg", ".jpeg"].each do |ext|
+                alt = base + ext
+                mm = kids.find { |n| n.casecmp(alt) == 0 || n.delete(" ").casecmp(alt.delete(" ")) == 0 }
+                if mm
+                  m = mm
+                  break
+                end
               end
             end
           end
@@ -342,8 +373,10 @@ $__mkxp_resolve = lambda do |s|
       if ok && !acc.empty?
         acc
       else
-        $__mkxp_miss[str] = ($__mkxp_miss[str] || 0) + 1
-        $stderr.puts "[mkxp-fs] miss: #{str}" if $__mkxp_miss[str] == 1
+        if $__mkxp_diag
+          $__mkxp_miss[str] = ($__mkxp_miss[str] || 0) + 1
+          $stderr.puts "[mkxp-fs] miss: #{str}" if $__mkxp_miss[str] == 1
+        end
         str
       end
     end
@@ -394,7 +427,7 @@ class << Object
             rescue StandardError
               false
             end
-            __mkxp_log("gfc", "in=#{file.inspect} r=#{r.inspect} orig=#{ret.inspect} file?=#{exists}") if __mkxp_rel?(r)
+            __mkxp_log("gfc", "in=#{file.inspect} r=#{r.inspect} orig=#{ret.inspect} file?=#{exists}") if $__mkxp_diag && __mkxp_rel?(r)
             if exists
               return "1"
             end
@@ -408,7 +441,7 @@ class << Object
           r = res2.call(x)
           ret = orig2.bind(self).call(r)
           out = nil_or_empty?(ret) ? nil : r
-          __mkxp_log("try", "in=#{x.inspect} -> #{out.inspect}") if __mkxp_rel?(x) || __mkxp_rel?(r)
+          __mkxp_log("try", "in=#{x.inspect} -> #{out.inspect}") if $__mkxp_diag && (__mkxp_rel?(x) || __mkxp_rel?(r))
           next out
         end
       elsif m == :ow_sprite_filename
@@ -421,19 +454,21 @@ class << Object
           unless $__mkxp_cgf_done
             $__mkxp_cgf_done = true
             __mkxp_install_map_timing
-            begin
-              sp = ::GameData::Species
-              ocgf = sp.method(:check_graphic_file)
-              sp.define_singleton_method(:check_graphic_file) do |*a, &b|
-                rr = ocgf.call(*a, &b)
-                __mkxp_log("cgf", "sub=#{a[6].inspect} sp=#{a[1].inspect} " \
-                                  "form=#{a[2].inspect} g=#{a[3].inspect} " \
-                                  "shiny=#{a[4].inspect} shadow=#{a[5].inspect} -> #{rr.inspect}")
-                rr
+            if $__mkxp_diag
+              begin
+                sp = ::GameData::Species
+                ocgf = sp.method(:check_graphic_file)
+                sp.define_singleton_method(:check_graphic_file) do |*a, &b|
+                  rr = ocgf.call(*a, &b)
+                  __mkxp_log("cgf", "sub=#{a[6].inspect} sp=#{a[1].inspect} " \
+                                    "form=#{a[2].inspect} g=#{a[3].inspect} " \
+                                    "shiny=#{a[4].inspect} shadow=#{a[5].inspect} -> #{rr.inspect}")
+                  rr
+                end
+                __mkxp_log("cgf", "check_graphic_file wrapper installed")
+              rescue StandardError => e
+                __mkxp_log("cgf", "cgf wrap failed: #{e.class}")
               end
-              __mkxp_log("cgf", "check_graphic_file wrapper installed")
-            rescue StandardError => e
-              __mkxp_log("cgf", "cgf wrap failed: #{e.class}")
             end
           end
           r = orig3.bind(self).call(*args, &blk)
@@ -450,8 +485,10 @@ class << Object
         #   pre  = disposeSpritesets + RPG::Cache.clear + frame_reset + pbLoadBattleAnimations
         #   body = battle.pbStartBattle(战斗场景搭建+入场动画)
         #   post = createSpritesets
-        # 判读: body 段 mGC 自增1 且耗时≈14s => 自动 major GC(扫100万对象)为真凶;
-        #       body 段无 majorGC 却耗时≈14s => Ruby 代码热点(bug), 可针对性修掉。
+        # 判读（2026-11-10 真机，同进程两战对照）：首战 PRE +6.40s mGC=3，
+        # 第二战 PRE +0.27s mGC=1；两战 BODY mGC=0 且耗时相近 -> 首战额外黑屏
+        # 全在 PRE（冷缓存释放 + major GC），BODY 含整场战斗、不是黑屏。
+        # 下面把 PRE 四步各打一行，下一包即可定位 6.4s 具体落在哪一步。
         #
         # 【崩溃修复】define_method 的 block 内绝不能用 yield —— yield 引用的是词法外层
         # (method_added) 的 block, 这里没有, 故每次调用必抛 LocalJumpError
@@ -459,16 +496,25 @@ class << Object
         # &blk + blk.call 转发调用方传入的 block。游戏侧确实传了 block(start_core 的 do..end)。
         #
         # 【分段即时打印】汇总行原在方法末尾, 若某段卡死/异常则整行拿不到。改为每段完成
-        # 立刻打一行: 即使 body 段永不返回, 日志也已写明卡在哪一段。仅 4 行/战, 零热路径开销。
+        # 立刻打一行: 即使 body 段永不返回, 日志也已写明卡在哪一段。每战约 9 行，
+        # 只在战斗切换时输出，零每帧热路径开销。
         ::Object.send(:define_method, :pbSceneStandby) do |&blk|
           t0 = Time.now.to_f
           g0 = (GC.stat[:major_gc_count] rescue nil)
           $stderr.puts "[ios-fix] pbSceneStandby: PRE start"
+          q0 = Time.now.to_f
           $scene.disposeSpritesets if $scene.is_a?(Scene_Map)
+          q1 = Time.now.to_f
+          ($stderr.puts "[ios-fix] pbSceneStandby: PRE disposeSpritesets +#{(q1 - q0).round(2)}s" rescue nil)
           RPG::Cache.clear
+          q2 = Time.now.to_f
+          ($stderr.puts "[ios-fix] pbSceneStandby: PRE RPG::Cache.clear +#{(q2 - q1).round(2)}s" rescue nil)
           Graphics.frame_reset
+          q3 = Time.now.to_f
+          ($stderr.puts "[ios-fix] pbSceneStandby: PRE Graphics.frame_reset +#{(q3 - q2).round(2)}s" rescue nil)
           pbLoadBattleAnimations
           t1 = Time.now.to_f
+          ($stderr.puts "[ios-fix] pbSceneStandby: PRE pbLoadBattleAnimations +#{(t1 - q3).round(2)}s" rescue nil)
           g1 = (GC.stat[:major_gc_count] rescue nil)
           $stderr.puts "[ios-fix] pbSceneStandby: PRE done +#{(t1 - t0).round(2)}s mGC=#{g1 && g0 ? g1 - g0 : '?'}"
           $stderr.puts "[ios-fix] pbSceneStandby: BODY start"
@@ -512,7 +558,7 @@ class << Object
                 end
                 if fi == true
                   __mkxp_log("rbm", "bypass hit in=#{x.inspect} rr=#{rr.inspect} " \
-                                    "exist=#{ex} file=#{fi} enc=#{rr.encoding}")
+                                    "exist=#{ex} file=#{fi} enc=#{rr.encoding}") if $__mkxp_diag
                   found = rr
                   break
                 end
@@ -521,7 +567,7 @@ class << Object
             end
             ret = found
           end
-          __mkxp_log("rbm", "in=#{x.inspect} -> #{ret.inspect}") if __mkxp_rel?(x) || __mkxp_rel?(ret.to_s)
+          __mkxp_log("rbm", "in=#{x.inspect} -> #{ret.inspect}") if $__mkxp_diag && (__mkxp_rel?(x) || __mkxp_rel?(ret.to_s))
           ret
         end
       elsif m == :pbDrawTextPositions
@@ -948,6 +994,7 @@ end
 # 且每次重定义都要重新包一层，才能最终包住真正生效的那个版本。
 # 只做计数 + 限频日志，不改任何渲染/排版行为。
 def __mkxp_install_lbc_diag
+  return unless $__mkxp_diag
   return unless ::Object.method_defined?(:getLineBrokenChunks) ||
                 ::Object.private_method_defined?(:getLineBrokenChunks)
   begin
@@ -1002,7 +1049,7 @@ end
 # 早晚出现"指向随时间变化的 tint/效果路径。GPU 上 src==dst 的 blit 属 feedback
 # loop，Metal-GL 下结果未定义，典型表现正是局部行错乱(横线)。此处只检测+限频
 # 日志(<=30)，不改变任何绘制行为；equal? 判断每帧几次调用可忽略。
-unless defined?($__mkxp_selfblit)
+if $__mkxp_diag && !defined?($__mkxp_selfblit)
   $__mkxp_selfblit = true
   begin
     if defined?(::Bitmap)
