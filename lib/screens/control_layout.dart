@@ -226,7 +226,8 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
             _toolbar(narrow),
             Expanded(
               child: LayoutBuilder(builder: (context, area) {
-                const barT = 48.0;
+                // 与十字微调盘及底部条同厚：旋转后竖条宽度要容得下 3 行按键。
+                const barT = 72.0;
                 return Row(children: [
                   SizedBox(
                     width: barT,
@@ -487,7 +488,7 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
   Widget _bottomBar(bool narrow, [double? height]) {
     final it = _selected;
     return Container(
-      height: height ?? (narrow ? 58 : 66),
+      height: height ?? (narrow ? 72 : 66),
       padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Row(children: [
         SizedBox(
@@ -517,7 +518,7 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
           child: Text(it == null ? '' : '${(_scaleOf(it) * 100).round()}%',
               style: const TextStyle(color: Colors.white70, fontSize: 12)),
         ),
-        // 竖屏宽度有限，只保留最有用的左右微调；上下仍可直接拖动。
+        // 宽屏仍用一排四键；竖屏手机改成十字微调盘，补上上下键。
         if (it != null && !narrow) ...[
           const SizedBox(width: 8),
           _nudgeBtn(Icons.arrow_back, () => _nudge(it, -0.01, 0)),
@@ -525,25 +526,44 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
           _nudgeBtn(Icons.arrow_upward, () => _nudge(it, 0, -0.01)),
           _nudgeBtn(Icons.arrow_downward, () => _nudge(it, 0, 0.01)),
         ],
-        if (it != null && narrow) ...[
-          _nudgeBtn(Icons.arrow_back, () => _nudge(it, -0.01, 0)),
-          _nudgeBtn(Icons.arrow_forward, () => _nudge(it, 0.01, 0)),
-        ],
+        if (it != null && narrow) _nudgePad(it),
       ]),
     );
   }
 
-  Widget _nudgeBtn(IconData icon, VoidCallback onTap) => Padding(
+  /// 十字方向微调：上下键补在左右键的正上 / 正下方。整块随 _bottomBar
+  /// 一起旋转，横屏预览里视觉上就成为红框标的左右两侧，与画布方向一致。
+  Widget _nudgePad(ControlItem it) {
+    const s = 22.0;
+    const rowW = 2 * (s + 2);
+    Widget b(IconData icon, double dx, double dy) =>
+        _nudgeBtn(icon, () => _nudge(it, dx, dy), s);
+    Widget centered(Widget child) =>
+        SizedBox(width: rowW, child: Center(child: child));
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        centered(b(Icons.arrow_upward, 0, -0.01)),
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          b(Icons.arrow_back, -0.01, 0),
+          b(Icons.arrow_forward, 0.01, 0),
+        ]),
+        centered(b(Icons.arrow_downward, 0, 0.01)),
+      ],
+    );
+  }
+
+  Widget _nudgeBtn(IconData icon, VoidCallback onTap, [double size = 30]) => Padding(
         padding: const EdgeInsets.only(left: 2),
         child: InkWell(
           onTap: onTap,
           borderRadius: BorderRadius.circular(6),
           child: Container(
-            width: 30, height: 30,
+            width: size, height: size,
             decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(6)),
-            child: Icon(icon, size: 15, color: Colors.white60),
+            child: Icon(icon, size: size * 0.5, color: Colors.white60),
           ),
         ),
       );
