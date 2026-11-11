@@ -212,10 +212,38 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
         // 竖屏只有约 390pt 宽，横屏那排工具会溢出；按实际宽度收起次要元素。
         child: LayoutBuilder(builder: (context, c) {
           final narrow = c.maxWidth < 620;
+          // 横屏预览在竖屏手机上整体旋转 90°，底部滑块栏也跟着转 90° 并
+          // 拉长成左侧竖条；否则它会横在旋转后的画布下面，方向对不上。
+          final rotated = _landscape && narrow;
+          if (!rotated) {
+            return Column(children: [
+              _toolbar(narrow),
+              Expanded(child: _canvasArea(narrow)),
+              _bottomBar(narrow),
+            ]);
+          }
           return Column(children: [
             _toolbar(narrow),
-            Expanded(child: _canvasArea(narrow)),
-            _bottomBar(narrow),
+            Expanded(
+              child: LayoutBuilder(builder: (context, area) {
+                const barT = 48.0;
+                return Row(children: [
+                  SizedBox(
+                    width: barT,
+                    child: RotatedBox(
+                      quarterTurns: 1,
+                      // child 尺寸与旋转后的占用互换：(宽,高) -> (高,宽)
+                      child: SizedBox(
+                        width: area.maxHeight,
+                        height: barT,
+                        child: _bottomBar(narrow, barT),
+                      ),
+                    ),
+                  ),
+                  Expanded(child: _canvasArea(narrow)),
+                ]);
+              }),
+            ),
           ]);
         }),
       ),
@@ -455,10 +483,11 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
     );
   }
 
-  Widget _bottomBar(bool narrow) {
+  /// [height] 供旋转成左侧竖条时指定厚度；不传则沿用原来的底部条高度。
+  Widget _bottomBar(bool narrow, [double? height]) {
     final it = _selected;
     return Container(
-      height: narrow ? 58 : 66,
+      height: height ?? (narrow ? 58 : 66),
       padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Row(children: [
         SizedBox(
