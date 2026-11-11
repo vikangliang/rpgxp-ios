@@ -1,6 +1,7 @@
 import Flutter
 import UIKit
 import AVFAudio
+import ObjectiveC
 
 /// mkxp 插件的 iOS 入口。由 GeneratedPluginRegistrant 自动调用 register(with:)，
 /// 负责注册 MethodChannel 与平台视图工厂。无需修改 AppDelegate。
@@ -8,9 +9,11 @@ public class MkxpPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
     installCrashLogger()
     installAudioResume()
+    installOrientationMask()
 
     let channel = FlutterMethodChannel(name: "com.yourapp.mkxp",
                                         binaryMessenger: registrar.messenger())
+    MkxpMethodHandler.channel = channel
     let handler = MkxpMethodHandler()
     channel.setMethodCallHandler(handler.handle)
 
@@ -48,6 +51,11 @@ private func installCrashLogger() {
 /// MethodChannel 处理器。M1：launch/quit/key 已接 MKXP.framework；
 /// listGames/importZip 等属 M2。
 class MkxpMethodHandler: NSObject {
+  /// 原生浮层「退出游戏」时反向通知 Flutter 复位 preferred orientations。
+  /// 用 strong 持有：FlutterMethodChannel 只作为 messenger 上的名字存在，
+  /// register 返回后局部量会被释放。
+  static var channel: FlutterMethodChannel?
+
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "listGames":
@@ -103,6 +111,7 @@ class MkxpMethodHandler: NSObject {
                             details: nil))
       }
     case "quit":
+      MkxpOrientation.endGame()
       MkxpBridge.quit()
       MkxpTouchOverlay.shared.hide()
       result(nil)
@@ -126,8 +135,13 @@ class MkxpMethodHandler: NSObject {
     case "setOrientation":
       // 游戏方向只由设置「固定横屏游戏」传入；布尔桥接失败时不能静默忽略，
       // 否则会停在上一局的方向。用兼容解析并显式回退到竖屏。
+      // active=false 表示退出游戏（Dart _cleanup），收敛到同一入口复位。
       let args = call.arguments as? [String: Any]
-      MkxpOrientation.lockLandscape(mkxpBool(args, "landscape", false))
+      if mkxpBool(args, "active", true) {
+        MkxpOrientation.setGameOrientation(landscape: mkxpBool(args, "landscape", false))
+      } else {
+        MkxpOrientation.endGame()
+      }
       result(nil)
     case "haptic":
       MkxpHaptic.tap(); result(nil)
@@ -294,17 +308,100 @@ enum MkxpFileFix {
 }
 
 // MARK: - 横竖屏锁定（M2 设置：固定横屏游戏）
+
+/// 浮层窗口的 rootVC：动态返回持久方向掩码。裸 UIViewController 默认
+/// .allButUpsideDown，controlsWindow 成为 key window 后会架空 Flutter 的方向锁。
+final class MkxpOrientationRootViewController: UIViewController {
+  override var supportedInterfaceOrientations: UIInterfaceOrientationMask { MkxpOrientation.mask }
+  override var shouldAutorotate: Bool { true }
+  override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
+    MkxpOrientation.isLandscape ? .landscapeRight : .portrait
+  }
+}
+
+/// 方向状态的唯一数据源。旧的 lockLandscape 只是「一次性旋转请求」，设备一转
+/// 系统就按 key window / Info.plist 重新选方向 → 跟着手机转。现在改为持久掩码：
+/// AppDelegate 层（对所有窗口生效）+ 三个浮层 rootVC + 一次性 geometry 请求。
 final class MkxpOrientation {
-  static func lockLandscape(_ on: Bool) {
-    let ori: UIDeviceOrientation = on ? .landscapeRight : .portrait
+  /// 仅主线程读写（MethodChannel / UIKit 回调都在主线程）。
+  private(set) static var isLandscape = false
+  private(set) static var gameActive = false
+
+  static var mask: UIInterfaceOrientationMask {
+    isLandscape ? .landscape : .portrait
+  }
+
+  static func makeRootViewController() -> UIViewController {
+    MkxpOrientationRootViewController()
+  }
+
+  /// 进游戏：写入开关决定的方向，并立刻让系统重新评估。
+  static func setGameOrientation(landscape: Bool) {
+    gameActive = true
+    isLandscape = landscape
+    apply()
+  }
+
+  /// 退出游戏：复位为 App 默认竖屏（不残留上一局方向）。
+  static func endGame() {
+    gameActive = false
+    isLandscape = false
+    apply()
+  }
+
+  /// 让系统按新掩码重新评估方向。geometry 请求带 errorHandler，
+  /// 方向白名单不含目标方向时只记日志，不抛异常崩溃。
+  static func apply() {
+    if !Thread.isMainThread {
+      DispatchQueue.main.async { apply() }
+      return
+    }
+    let target = mask
+    if !orientationMaskInstalled { installOrientationMask() }
+    if #available(iOS 16.0, *) {
+      for scene in UIApplication.shared.connectedScenes {
+        guard let ws = scene as? UIWindowScene else { continue }
+        for win in ws.windows {
+          win.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        }
+      }
+    }
+    let ori: UIDeviceOrientation = isLandscape ? .landscapeRight : .portrait
     UIDevice.current.setValue(ori.rawValue, forKey: "orientation")
     UIViewController.attemptRotationToDeviceOrientation()
     if #available(iOS 16.0, *) {
       let scene = UIApplication.shared.connectedScenes
         .first { $0.activationState == .foregroundActive } as? UIWindowScene
-      scene?.requestGeometryUpdate(.iOS(interfaceOrientations: on ? .landscapeRight : .portrait))
+      let prefs = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: target)
+      scene?.requestGeometryUpdate(prefs) { error in
+        MkxpLog.append("[orientation] geometry update rejected: \(error.localizedDescription)")
+      }
     }
   }
+}
+
+/// App 里有 Flutter / SDL / 3 个浮层多个 UIWindow，iOS 会按 key window 询问方向；
+/// 任一窗口放开就会随设备转。AppDelegate 由 CI 的 flutter create 生成、不入库，
+/// 因此运行时注入 application:supportedInterfaceOrientationsForWindow:：
+/// 已实现则替换 IMP，未实现则补上，统一返回持久掩码。
+private var orientationMaskInstalled = false
+private func installOrientationMask() {
+  guard !orientationMaskInstalled else { return }
+  // register 时 delegate 可能尚未就绪；不在此时置位，由 apply() 再兜底安装。
+  guard let delegate = UIApplication.shared.delegate else { return }
+  orientationMaskInstalled = true
+  let cls: AnyClass = type(of: delegate)
+  let sel = NSSelectorFromString("application:supportedInterfaceOrientationsForWindow:")
+  let block: @convention(block) (AnyObject, UIApplication, UIWindow?) -> UInt = { _, _, _ in
+    UInt(MkxpOrientation.mask.rawValue)
+  }
+  let imp = imp_implementationWithBlock(unsafeBitCast(block, to: AnyObject.self))
+  // NSUInteger (*)(id, SEL, UIApplication *, UIWindow *)
+  let types = "Q@:@@"
+  if !class_addMethod(cls, sel, imp, types) {
+    if let m = class_getInstanceMethod(cls, sel) { method_setImplementation(m, imp) }
+  }
+  MkxpLog.append("[orientation] persistent mask installed")
 }
 
 // MARK: - 控制器振动（M2 设置：控制器振动）

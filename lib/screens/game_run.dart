@@ -21,11 +21,23 @@ class _GameRunPageState extends State<GameRunPage> {
   String _status = '正在启动…';
   bool _failed = false;
   DateTime? _enteredAt; // 本次游玩开始时间（退出时累计游玩时长）
+  bool _cleaned = false; // dispose / 原生退出可能同时到达，清理只做一次
+  bool _engineQuitByNative = false; // 原生浮层已关引擎，勿再发一次 quit
 
   @override
   void initState() {
     super.initState();
+    Mkxp.setGameExitedHandler(_onNativeExit);
     _start();
+  }
+
+  /// 原生浮层「退出游戏」：引擎已关、方向已复位；这里只把 Flutter 侧状态
+  /// 收回竖屏，不 pop 路由（保持原有「按返回键回游戏库」交互）。
+  void _onNativeExit() {
+    if (!mounted) return;
+    _engineQuitByNative = true;
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    Mkxp.setKeepAwake(false);
   }
 
   Future<void> _start() async {
@@ -43,6 +55,7 @@ class _GameRunPageState extends State<GameRunPage> {
     await Mkxp.setOrientation(settings.lockLandscape);
     await AppSettings.touchLastPlayed(widget.game.name);
     await AppSettings.addPlayCount(widget.game.name);
+    if (!mounted) return; // 启动等待期间已退出：不要再拉起引擎
     try {
       await Mkxp.launchGame('games/${widget.game.name}');
       if (!mounted) return;
@@ -62,15 +75,20 @@ class _GameRunPageState extends State<GameRunPage> {
   }
 
   Future<void> _cleanup() async {
+    if (_cleaned) return;
+    _cleaned = true;
+    Mkxp.setGameExitedHandler(null);
     final entered = _enteredAt;
+    _enteredAt = null;
     if (entered != null) {
       await AppSettings.addPlaytime(
           widget.game.name, DateTime.now().difference(entered).inSeconds);
     }
     await Mkxp.setKeepAwake(false);
-    await Mkxp.setOrientation(false);
+    // 原生侧统一复位持久方向掩码（active=false），再回竖屏偏好。
+    await Mkxp.setOrientation(false, active: false);
     await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    await Mkxp.quitGame();
+    if (!_engineQuitByNative) await Mkxp.quitGame();
   }
 
   @override

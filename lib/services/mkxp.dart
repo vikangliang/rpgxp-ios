@@ -99,10 +99,31 @@ class Mkxp {
     try { await _ch.invokeMethod('toggleControls'); } catch (_) {}
   }
 
-  static Future<void> setOrientation(bool landscape) async {
+  /// [active] = false 表示退出游戏：原生侧收敛到同一入口复位持久方向掩码。
+  static Future<void> setOrientation(bool landscape, {bool active = true}) async {
     try {
-      await _ch.invokeMethod('setOrientation', {'landscape': landscape});
+      await _ch.invokeMethod('setOrientation',
+          {'landscape': landscape, 'active': active});
     } catch (_) {}
+  }
+
+  /// 原生浮层「退出游戏」的反向通知：引擎已由原生关闭，Flutter 侧需要
+  /// 复位 preferred orientations / 常亮，否则残留横屏偏好会在系统方向锁
+  /// 关闭时把 App 转回横屏。
+  static void Function()? _onGameExited;
+  static bool _exitHandlerInstalled = false;
+
+  static void setGameExitedHandler(void Function()? handler) {
+    _onGameExited = handler;
+    if (_exitHandlerInstalled) return;
+    _exitHandlerInstalled = true;
+    _ch.setMethodCallHandler((call) async {
+      if (call.method == 'gameExited') {
+        _onGameExited?.call();
+        return null;
+      }
+      throw MissingPluginException('未处理的方法: ${call.method}');
+    });
   }
 
   static Future<void> haptic() async {

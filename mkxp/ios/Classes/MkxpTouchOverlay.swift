@@ -182,7 +182,8 @@ final class MkxpTouchOverlay: NSObject {
     win.backgroundColor = .clear
     // 关键：HUD 窗口必须【不接收触摸】，否则全屏窗口会挡住下层触摸浮层的所有按键
     win.isUserInteractionEnabled = false
-    let vc = UIViewController()
+    // 受限 rootVC：窗口成为 key window 时按持久掩码回答方向，别放开旋转
+    let vc = MkxpOrientation.makeRootViewController()
     vc.view.backgroundColor = .clear
     let box = UIView(frame: CGRect(x: 0, y: 0, width: size.width, height: size.height))
     box.backgroundColor = UIColor(white: 0.07, alpha: 0.86)
@@ -250,7 +251,7 @@ final class MkxpTouchOverlay: NSObject {
     win.windowLevel = UIWindow.Level(rawValue: 2004)  // 高于 SDL 引擎窗(1999)，低于加载 HUD(2005)
     win.backgroundColor = .clear
     win.isUserInteractionEnabled = false
-    let vc = UIViewController()
+    let vc = MkxpOrientation.makeRootViewController()
     vc.view.backgroundColor = .clear
     let label = UILabel()
     label.text = "-- FPS"
@@ -311,7 +312,8 @@ final class MkxpTouchOverlay: NSObject {
     }   // 无可用 scene（极少见）：下次 show() 重试
     let win = UIWindow(windowScene: scene)
     win.windowLevel = UIWindow.Level.alert + 2   // 高于 SDL 与 Flutter 窗口
-    let vc = UIViewController()
+    // 这个窗口会 makeKeyAndVisible，必须用受限 rootVC 锁住方向
+    let vc = MkxpOrientation.makeRootViewController()
     vc.view.backgroundColor = .clear
     win.rootViewController = vc
 
@@ -337,6 +339,8 @@ final class MkxpTouchOverlay: NSObject {
     window = win
     win.isHidden = false
     win.makeKeyAndVisible()
+    // key window 换成浮层后重新收敛一次方向（引擎的 SDL 窗口也可能抢过 key）。
+    MkxpOrientation.apply()
     MkxpLog.append("[overlay] show OK level=\(win.windowLevel.rawValue)")
     showFps()
   }
@@ -467,7 +471,12 @@ final class MkxpTouchOverlay: NSObject {
     defer { applyingLayout = false }
 
     let W = ctl.bounds.width, H = ctl.bounds.height
-    let landscape = W >= H
+    // 游戏运行期以持久方向状态为准：旋转过渡期 bounds 可能仍是上一方向，
+    // 用 W>=H 会读错那套 UserDefaults。非运行期（编辑器保存/重置）维持原推断，
+    // 保持布局编辑器「只换预览、不旋转设备」的行为不变。
+    let landscape = MkxpOrientation.gameActive
+      ? MkxpOrientation.isLandscape
+      : (W >= H)
     let custom = MkxpControlLayout.hasCustom(landscape: landscape)
     let native = MkxpControlLayout.defaultFrames(w: W, h: H)
     let refSize = MkxpControlLayout.canvasSize(landscape: landscape)
@@ -543,10 +552,14 @@ final class MkxpTouchOverlay: NSObject {
     vc.present(a, animated: true)
   }
 
-  /// 退出游戏：收浮层 → 转回竖屏 → 引擎走 SDL_QUIT 清理（窗口销毁后露出 Flutter）。
+  /// 退出游戏：收浮层 → 复位持久方向掩码 → 通知 Flutter 复位 preferred orientations
+  /// → 引擎走 SDL_QUIT 清理（窗口销毁后露出 Flutter）。
+  /// 不 pop Flutter 路由（保持原有「按返回键回游戏库」交互），但方向/常亮由
+  /// Dart 侧复位，否则残留横屏偏好会在系统方向锁关闭时把 App 转回横屏。
   private func exitGame() {
     hide()
-    MkxpOrientation.lockLandscape(false)
+    MkxpOrientation.endGame()
+    MkxpMethodHandler.channel?.invokeMethod("gameExited", arguments: nil)
     MkxpBridge.quit()
   }
 
