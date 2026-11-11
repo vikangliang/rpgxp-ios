@@ -1,6 +1,7 @@
 import Flutter
 import UIKit
 import AVFAudio
+import Foundation
 import ObjectiveC
 
 /// mkxp 插件的 iOS 入口。由 GeneratedPluginRegistrant 自动调用 register(with:)，
@@ -10,6 +11,7 @@ public class MkxpPlugin: NSObject, FlutterPlugin {
     installCrashLogger()
     installAudioResume()
     installOrientationMask()
+    installRotationGuard()
 
     let channel = FlutterMethodChannel(name: "com.yourapp.mkxp",
                                         binaryMessenger: registrar.messenger())
@@ -321,7 +323,7 @@ final class MkxpOrientationRootViewController: UIViewController {
 
 /// 方向状态的唯一数据源。旧的 lockLandscape 只是「一次性旋转请求」，设备一转
 /// 系统就按 key window / Info.plist 重新选方向 → 跟着手机转。现在改为持久掩码：
-/// AppDelegate 层（对所有窗口生效）+ 三个浮层 rootVC + 一次性 geometry 请求。
+/// AppDelegate 层 + 所有窗口 rootVC（含 SDL）+ geometry 请求 + 偏离自愈回正。
 final class MkxpOrientation {
   /// 仅主线程读写（MethodChannel / UIKit 回调都在主线程）。
   private(set) static var isLandscape = false
@@ -357,7 +359,11 @@ final class MkxpOrientation {
       return
     }
     let target = mask
+    MkxpLog.append("[orientation] apply landscape=\(isLandscape) active=\(gameActive) mask=\(target.rawValue)")
     if !orientationMaskInstalled { installOrientationMask() }
+    installRotationGuard()
+    installRootVCMask()
+    scheduleWindowScan()
     if #available(iOS 16.0, *) {
       for scene in UIApplication.shared.connectedScenes {
         guard let ws = scene as? UIWindowScene else { continue }
@@ -375,6 +381,46 @@ final class MkxpOrientation {
       let prefs = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: target)
       scene?.requestGeometryUpdate(prefs) { error in
         MkxpLog.append("[orientation] geometry update rejected: \(error.localizedDescription)")
+      }
+    }
+  }
+
+  /// 兜底：任何一层没锁住（SDL 窗口晚创建、系统重新选方向）导致实际界面方向
+  /// 偏离目标时，把方向拉回。UIDevice.setValue 自身也会触发方向通知，所以
+  /// 用 correcting 标志挡住递归；只在游戏运行期生效。
+  static func checkAndCorrect() {
+    guard gameActive, !correctingOrientation else { return }
+    correctingOrientation = true
+    // 系统旋转是异步的：0.25s 时可能还没转完，0.8s 再复查一次。
+    // reassert() 会再次触发设备方向通知，correctingOrientation 挡住递归。
+    for delay in [0.25, 0.8] {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+        installRootVCMask()        // 补装这次才出现的窗口（SDL 引擎窗）
+        guard gameActive,
+              let scene = UIApplication.shared.connectedScenes
+                .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene
+        else { return }
+        if scene.interfaceOrientation.isLandscape != isLandscape {
+          reassert()               // 单一具体方向强硬回正
+          MkxpLog.append("[orientation] corrected deviation")
+        }
+      }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { correctingOrientation = false }
+  }
+
+  /// apply() 用的是允许左右 180° 翻转的 .landscape；回正用单一具体方向。
+  private static func reassert() {
+    let ori: UIDeviceOrientation = isLandscape ? .landscapeRight : .portrait
+    UIDevice.current.setValue(ori.rawValue, forKey: "orientation")
+    UIViewController.attemptRotationToDeviceOrientation()
+    if #available(iOS 16.0, *) {
+      let scene = UIApplication.shared.connectedScenes
+        .first { $0.activationState == .foregroundActive } as? UIWindowScene
+      let prefs = UIWindowScene.GeometryPreferences.iOS(
+        interfaceOrientations: isLandscape ? .landscapeRight : .portrait)
+      scene?.requestGeometryUpdate(prefs) { error in
+        MkxpLog.append("[orientation] reassert rejected: \(error.localizedDescription)")
       }
     }
   }
@@ -402,6 +448,69 @@ private func installOrientationMask() {
     if let m = class_getInstanceMethod(cls, sel) { method_setImplementation(m, imp) }
   }
   MkxpLog.append("[orientation] persistent mask installed")
+}
+
+/// 逐窗口收敛 rootVC 的方向能力。
+///
+/// 只靠 AppDelegate 的方向方法不够：UIKit 启动时会缓存 delegate 的能力探测，
+/// 运行时 addMethod 未必被调用；更关键的是引擎的 SDL 窗口在 ios_embed.mm
+/// mkxp_show() 里 makeKeyAndVisible()，它的 SDL_uikitviewcontroller 按
+/// SDL_HINT_ORIENTATIONS（mkxp_framework.cpp 写死「Portrait LandscapeLeft
+/// LandscapeRight」）放开三个方向，成为 key window 后系统就按它选方向 → 随手机转。
+/// 这里不动视图层级，只把每个 rootVC 的 supportedInterfaceOrientations 收敛到掩码。
+private var patchedRootVCClasses = Set<String>()
+
+private func installRootVCMask() {
+  let sel = NSSelectorFromString("supportedInterfaceOrientations")
+  for scene in UIApplication.shared.connectedScenes {
+    guard let ws = scene as? UIWindowScene else { continue }
+    for win in ws.windows {
+      guard let vc = win.rootViewController,
+            let cls = object_getClass(vc) else { continue }
+      let name = NSStringFromClass(cls)
+      // 我们自己的 rootVC 已经按掩码回答；也不重复处理同一个类。
+      if name == NSStringFromClass(MkxpOrientationRootViewController.self) { continue }
+      guard !patchedRootVCClasses.contains(name) else { continue }
+      patchedRootVCClasses.insert(name)
+
+      let block: @convention(block) (AnyObject) -> UInt = { _ in
+        UInt(MkxpOrientation.mask.rawValue)
+      }
+      let imp = imp_implementationWithBlock(unsafeBitCast(block, to: AnyObject.self))
+      // class_addMethod 只检查「本类自己」的方法列表：成功=本类原本没实现，
+      // 新增方法覆盖继承；失败=本类重写过，替换的也只会是本类的方法。
+      // 因此绝不会动到 UIViewController 基类，UIAlertController 等不受影响。
+      if !class_addMethod(cls, sel, imp, "Q@:") {
+        if let m = class_getInstanceMethod(cls, sel) { method_setImplementation(m, imp) }
+      }
+      MkxpLog.append("[orientation] constrained rootVC \(name)")
+    }
+  }
+}
+
+/// SDL 引擎窗口在后台线程启动后才创建，晚于 Flutter 的 setOrientation；
+/// 进游戏后分几次补扫，确保它一出现就被收进方向掩码。
+private var windowScanScheduled = false
+private func scheduleWindowScan() {
+  guard !windowScanScheduled else { return }
+  windowScanScheduled = true
+  for delay in [0.2, 0.8, 2.0, 4.0] {
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { installRootVCMask() }
+  }
+}
+
+private var rotationGuardInstalled = false
+private var correctingOrientation = false
+
+private func installRotationGuard() {
+  guard !rotationGuardInstalled else { return }
+  rotationGuardInstalled = true
+  UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+  NotificationCenter.default.addObserver(
+      forName: UIDevice.orientationDidChangeNotification,
+      object: nil, queue: .main) { _ in
+    MkxpOrientation.checkAndCorrect()
+  }
 }
 
 // MARK: - 控制器振动（M2 设置：控制器振动）
