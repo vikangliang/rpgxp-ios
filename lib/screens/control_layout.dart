@@ -330,56 +330,81 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
         ]),
       ),
       Expanded(
-        child: Center(
-          child: AspectRatio(
-            aspectRatio: _canvasRatio,
-            child: LayoutBuilder(builder: (context, c) {
-              final W = c.maxWidth, H = c.maxHeight;
-              return GestureDetector(
-                onTap: () => setState(() => _selectedId = null),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF101018),
-                    border: Border.all(
-                        color: _primary.withValues(alpha: 0.55), width: 1.5),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Stack(children: [
-                      Center(
-                          child: Text(
-                              '游戏画面（$_targetName ${_canvasW.round()} : ${_canvasH.round()}）',
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                  color: Colors.white38, fontSize: 12))),
-                      // 左上角方向角标：画布再窄也不会看不出是横还是竖。
-                      Positioned(
-                        left: 6, top: 6,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                              color: _primary.withValues(alpha: 0.22),
-                              borderRadius: BorderRadius.circular(6)),
-                          child: Text(_targetName,
-                              style: const TextStyle(
-                                  color: _primary, fontSize: 10)),
-                        ),
-                      ),
-                      for (final it in _items) _control(it, W, H),
-                    ]),
-                  ),
-                ),
-              );
-            }),
-          ),
-        ),
+        child: LayoutBuilder(builder: (context, area) {
+          // 竖屏手机上横屏画布原本只是一条 896:414 的扁带，按键太小不好拖。
+          // 只把【画布】整体旋转 90°（画布内的按键/文字一起转），让它以
+          // 414:896 的竖向比例铺满黄框区域；工具栏、方向切换、底部滑块等
+          // 画布外的 app 布局一律不旋转，设备方向也不改。
+          final rotated = _landscape && narrow;
+          if (!rotated) {
+            return Center(
+              child: AspectRatio(
+                aspectRatio: _canvasRatio,
+                child: LayoutBuilder(builder: (context, cc) =>
+                    _canvasBody(cc.maxWidth, cc.maxHeight, false)),
+              ),
+            );
+          }
+          final r = _canvasH / _canvasW;
+          final drawW = math.min(area.maxWidth, area.maxHeight * r);
+          final drawH = drawW / r;
+          return Center(
+            child: RotatedBox(
+              quarterTurns: 1,
+              // child 尺寸与旋转后的屏幕占用互换：(宽,高) -> (高,宽)
+              child: SizedBox(
+                width: drawH,
+                height: drawW,
+                child: _canvasBody(drawH, drawW, true),
+              ),
+            ),
+          );
+        }),
       ),
     ]);
   }
 
-  Widget _control(ControlItem it, double W, double H) {
+  Widget _canvasBody(double W, double H, bool rotated) {
+    return GestureDetector(
+      onTap: () => setState(() => _selectedId = null),
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF101018),
+          border: Border.all(
+              color: _primary.withValues(alpha: 0.55), width: 1.5),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Stack(children: [
+            Center(
+                child: Text(
+                    '游戏画面（$_targetName ${_canvasW.round()} : ${_canvasH.round()}）',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 12))),
+            // 左上角方向角标：旋转后随画布一起转，歪头看仍是正的。
+            Positioned(
+              left: 6, top: 6,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                    color: _primary.withValues(alpha: 0.22),
+                    borderRadius: BorderRadius.circular(6)),
+                child: Text(_targetName,
+                    style: const TextStyle(
+                        color: _primary, fontSize: 10)),
+              ),
+            ),
+            for (final it in _items) _control(it, W, H, rotated),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _control(ControlItem it, double W, double H, bool rotated) {
     final w = it.w * W, h = it.h * H;
     final selected = _selectedId == it.id;
     final shoulder = it.id == 'shL' || it.id == 'shR';
@@ -393,8 +418,13 @@ class _ControlLayoutPageState extends State<ControlLayoutPage> {
         onTap: () => setState(() => _selectedId = it.id),
         onPanUpdate: (d) => setState(() {
           _selectedId = it.id;
-          it.cx = _clampCenter(it.cx + d.delta.dx / W, it.w);
-          it.cy = _clampCenter(it.cy + d.delta.dy / H, it.h);
+          // DragUpdateDetails.delta 是【屏幕】位移，不受 RotatedBox 变换影响。
+          // 画布顺时针转 90° 后：屏幕 (dx,dy) -> 画布 (du,dv) = (dy,-dx)，
+          // 否则拖动手感会与视觉方向相反。
+          final du = rotated ? d.delta.dy : d.delta.dx;
+          final dv = rotated ? -d.delta.dx : d.delta.dy;
+          it.cx = _clampCenter(it.cx + du / W, it.w);
+          it.cy = _clampCenter(it.cy + dv / H, it.h);
           _dirty = true;
         }),
         child: Container(
