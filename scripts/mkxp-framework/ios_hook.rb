@@ -1568,3 +1568,183 @@ begin
 rescue StandardError => e
   $stderr.puts "[dexprof] frame hook failed: #{e.class}: #{e.message}"
 end
+
+# ============================================================================
+# [fcfix] findCenter 快速路径 —— 常驻修复，与上方临时诊断块相互独立
+#
+# 真机取证（BUILD=f5b410e，52 个慢帧 / 23814.8ms 墙钟）：
+#   findCenter 自身耗时 13441.8ms / 108 次 = 124.46ms/次，占 56.4%；
+#   每帧 2~6 次 → 240~1274ms，正是用户报告的"图鉴翻页至少几百 ms"。
+#   对照：Deluxe#refresh 自身仅 27.1ms（0.1%），"展开动画条"假设被证伪。
+# 根因：[DBK_009]/[003] Pokemon UI.rb:123-151 的 findCenter 逐像素调用
+#   Bitmap#get_pixel(...).alpha。C++ getPixel（bitmap.cpp:1217）只是内存读，
+#   但每次都要跨 Ruby→C++ 边界、new Color + wrapObject，几万次累计上百毫秒。
+# 修法：用引擎已有的 Bitmap#raw_data（bitmap-binding.cpp:390，一次
+#   memcpy/ReadPixels 返回 w*h*4 字节）取回整幅像素；循环结构逐字复刻原实现
+#   （含 a1/a2 的 width/height 混用、越界返回 alpha 0、coords 赋值与整数除法），
+#   只把 `get_pixel(...).alpha <= 0` 换成 `raw.getbyte(idx) == 0`。
+# 字节序：bitmap.cpp:246 用 SDL_AllocFormat(SDL_PIXELFORMAT_ABGR8888)，小端内存
+#   布局为 R,G,B,A；getRaw 的 gl.ReadPixels(GL_RGBA) 同样是 R,G,B,A，故 alpha
+#   在每 4 字节的第 3 位（0-based）。为防任何偏差，算出的 4 个命中点还会用原
+#   get_pixel 逐个校验（每次仅 4 次 C++ 调用），任一不符即整体回退原实现；
+#   连续回退 20 次则永久禁用快速路径，绝不产生错误的 UI 定位。
+# 安装：findCenter 是顶层 def，ios_hook 注入时不存在，故挂在 class << Object
+#   的 method_added 链上惰性包装；插件重定义会重复触发，靠 @wrapping 与
+#   @wrapped_owner 去重。不依赖帧钩子/诊断块，诊断块删除后本修复仍生效。
+# ============================================================================
+module MkxpFindCenterFast
+  ALPHA_OFF     = 3
+  MAX_FALLBACK  = 20
+  MAX_PIXELS    = 1_000_000
+  LOG_LINES     = 5
+  LOG_HITS      = 20   # 前 N 次成功调用打印自身耗时，供真机对比 124.46ms
+
+  @wrapping = false
+  @disabled = false
+  @fallbacks = 0
+  @soft_fallbacks = 0
+  @wrapped_owner = nil
+  @hits = 0
+
+  class << self
+    def wrapping?
+      @wrapping
+    end
+
+    # fatal=true 才计入熔断：仅"引擎接口/字节序不兼容"需要永久停用快速路径。
+    # 全透明位图等正常输入只回退原实现，不能把快速路径误禁用。
+    def fallback(reason, fatal = true)
+      unless fatal
+        @soft_fallbacks += 1
+        $stderr.puts "[fcfix] soft-fallback ##{@soft_fallbacks}: #{reason}" if @soft_fallbacks <= LOG_LINES
+        return nil
+      end
+      @fallbacks += 1
+      $stderr.puts "[fcfix] fallback ##{@fallbacks}: #{reason}" if @fallbacks <= LOG_LINES
+      if @fallbacks >= MAX_FALLBACK && !@disabled
+        @disabled = true
+        $stderr.puts "[fcfix] disabled after #{MAX_FALLBACK} fallbacks; using original findCenter"
+      end
+      nil
+    end
+
+    # 返回 [offsetX, offsetY]；返回 nil 表示调用方须回退原实现。
+    def fast(bitmap)
+      return nil if @disabled
+      t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC) if @hits < LOG_HITS
+      return [0, 0] if !bitmap
+      return fallback('no raw_data') unless bitmap.respond_to?(:raw_data)
+      w = bitmap.width
+      h = bitmap.height
+      return fallback('bad dimensions') if w <= 0 || h <= 0 || w * h > MAX_PIXELS
+      begin
+        raw = bitmap.raw_data
+      rescue StandardError => e
+        return fallback("raw_data raised #{e.class}: #{e.message}")
+      end
+      return fallback('raw_data size mismatch') unless raw.is_a?(String) && raw.bytesize >= w * h * 4
+
+      coords = []
+      hit = []
+      4.times do |i|
+        a1 = (i <= 1) ? w : h
+        a2 = (i >= 2) ? h : w
+        # 越界坐标在原实现里必然 get_pixel 越界 → alpha 0 → next；
+        # 这里直接把内层上限收敛到有效范围，语义等价但省掉大量空转。
+        lim = a2
+        lim = h if (i <= 1) && lim > h
+        lim = w if (i >= 2) && lim > w
+        (1..a1).each do |p1|
+          break if coords[i]
+          lim.times do |p2|
+            if i.even?
+              if i <= 1
+                x = p1
+                y = p2
+              else
+                x = p2
+                y = p1
+              end
+            elsif i <= 1
+              x = a1 - p1
+              y = p2
+            else
+              x = p2
+              y = a1 - p1
+            end
+            next if x < 0 || y < 0 || x >= w || y >= h
+            next if raw.getbyte((y * w + x) * 4 + ALPHA_OFF).to_i <= 0
+            coords[i] = i.even? ? p1 : p1 - 1
+            hit[i] = [x, y]
+            break
+          end
+        end
+      end
+      # 原实现在整行/整列全透明时 coords 含 nil，末尾做减法会抛错；
+      # 此时回退，让原实现产生完全一致的结果/异常。
+      return fallback('no opaque edge', false) if coords.length < 4 || coords.any?(&:nil?)
+
+      # 校验 alpha 字节位置假设：4 个命中点必须真的不透明。
+      hit.each do |xy|
+        next unless xy
+        begin
+          c = bitmap.get_pixel(xy[0], xy[1])
+        rescue StandardError => e
+          return fallback("verify get_pixel raised #{e.class}: #{e.message}")
+        end
+        return fallback('alpha offset mismatch') if c.nil? || c.alpha.to_i <= 0
+      end
+
+      if t0
+        dt = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000.0
+        @hits += 1
+        $stderr.puts "[fcfix] hit ##{@hits} #{w}x#{h} t=#{dt.round(2)}ms" if @hits <= LOG_HITS
+      end
+      [((coords[1] - coords[0]) / 2).ceil, ((coords[3] - coords[2]) / 2).ceil]
+    rescue StandardError => e
+      fallback("fast raised #{e.class}: #{e.message}")
+    end
+
+    def wrap
+      return if @wrapping || @disabled
+      @wrapping = true
+      begin
+        cur = ::Object.instance_method(:findCenter)
+        return if @wrapped_owner == cur
+        orig = cur
+        ::Object.send(:define_method, :findCenter) do |bitmap|
+          r = MkxpFindCenterFast.fast(bitmap)
+          r.nil? ? orig.bind(self).call(bitmap) : r
+        end
+        @wrapped_owner = ::Object.instance_method(:findCenter)
+      rescue StandardError => e
+        $stderr.puts "[fcfix] wrap failed: #{e.class}: #{e.message}"
+      ensure
+        @wrapping = false
+      end
+    end
+  end
+end
+
+# 挂在现有 Object.method_added 之后（alias 链，不覆盖既有钩子）。
+# 原钩子内部 define_method 时 $__mkxp_busy 为 true，本钩子据此跳过，避免递归。
+class << Object
+  unless method_defined?(:__mkxp_fc_orig_method_added)
+    alias_method :__mkxp_fc_orig_method_added, :method_added
+  end
+  def method_added(m)
+    __mkxp_fc_orig_method_added(m)
+    return if $__mkxp_busy || MkxpFindCenterFast.wrapping?
+    MkxpFindCenterFast.wrap if m == :findCenter
+  end
+end
+
+# 若 findCenter 在 ios_hook 注入前已存在（脚本预编译/热重载），method_added
+# 不会触发，此处立即补一次包装；wrap 内部幂等，重复调用无副作用。
+begin
+  if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:findCenter)
+    MkxpFindCenterFast.wrap
+  end
+rescue StandardError => e
+  $stderr.puts "[fcfix] eager wrap failed: #{e.class}: #{e.message}"
+end
