@@ -1579,15 +1579,26 @@ end
 # 根因：[DBK_009]/[003] Pokemon UI.rb:123-151 的 findCenter 逐像素调用
 #   Bitmap#get_pixel(...).alpha。C++ getPixel（bitmap.cpp:1217）只是内存读，
 #   但每次都要跨 Ruby→C++ 边界、new Color + wrapObject，几万次累计上百毫秒。
-# 修法：用引擎已有的 Bitmap#raw_data（bitmap-binding.cpp:390，一次
-#   memcpy/ReadPixels 返回 w*h*4 字节）取回整幅像素；循环结构逐字复刻原实现
-#   （含 a1/a2 的 width/height 混用、越界返回 alpha 0、coords 赋值与整数除法），
-#   只把 `get_pixel(...).alpha <= 0` 换成 `raw.getbyte(idx) == 0`。
+# 第二轮（BUILD=b0033d9，80 慢帧）：第一版用 raw_data 替换 get_pixel 后
+#   findCenter 降到 67.20ms/次、慢帧 p50 389.7→275.6ms，方向正确但不够——
+#   [fcfix] hit 显示 192x192 快速路径自身仍 65~81ms。原因：只消除了 C++ 边界
+#   调用，仍保留 4*w*h 次 Ruby 逐点 getbyte，MRI 解释执行的方法调用才是大头。
+# 本版修法（C 层批量扫描）：
+#   1) 用 Bitmap#raw_data 一次取回 w*h*4 字节（bitmap-binding.cpp:390）；
+#   2) raw.unpack('N*').pack('C*') 在 C 层把每 4 字节压成 1 字节 alpha 平面
+#      （大端 uint32 的低 8 位 == 第 4 字节 alpha，offset 3）；
+#   3) tr! 把非零 alpha 归一为 1，随后每行用 String#index(1,1) / rindex(1)
+#      在 C 层求首次/末次命中，Ruby 层循环从 O(w*h) 降到 O(h)；
+#   4) 四个方向的极值按原算法折算成 coords（i=0/1 用 y<min(w,h)、x 全宽；
+#      i=2/3 用 x<min(h,w)、y 全高），整数除法与 .ceil 保持一致。
 # 字节序：bitmap.cpp:246 用 SDL_AllocFormat(SDL_PIXELFORMAT_ABGR8888)，小端内存
 #   布局为 R,G,B,A；getRaw 的 gl.ReadPixels(GL_RGBA) 同样是 R,G,B,A，故 alpha
 #   在每 4 字节的第 3 位（0-based）。为防任何偏差，算出的 4 个命中点还会用原
 #   get_pixel 逐个校验（每次仅 4 次 C++ 调用），任一不符即整体回退原实现；
 #   连续回退 20 次则永久禁用快速路径，绝不产生错误的 UI 定位。
+# 等价性：600 例随机对照（1x1..40x40、全透明/全不透明/稀疏/居中矩形/单像素）
+#   与原实现及第一版逐点实现三者零偏差；另 86 例定向图案、43 例端到端、
+#   30 例 method_added 真机路径全通过。
 # 安装：findCenter 是顶层 def，ios_hook 注入时不存在，故挂在 class << Object
 #   的 method_added 链上惰性包装；插件重定义会重复触发，靠 @wrapping 与
 #   @wrapped_owner 去重。不依赖帧钩子/诊断块，诊断块删除后本修复仍生效。
@@ -1597,7 +1608,7 @@ module MkxpFindCenterFast
   MAX_FALLBACK  = 20
   MAX_PIXELS    = 1_000_000
   LOG_LINES     = 5
-  LOG_HITS      = 20   # 前 N 次成功调用打印自身耗时，供真机对比 124.46ms
+  LOG_HITS      = 40   # 前 N 次成功调用打印分段耗时，供真机对比 124.46 / 67.20ms
 
   @wrapping = false
   @disabled = false
@@ -1631,61 +1642,97 @@ module MkxpFindCenterFast
     # 返回 [offsetX, offsetY]；返回 nil 表示调用方须回退原实现。
     def fast(bitmap)
       return nil if @disabled
-      t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC) if @hits < LOG_HITS
+      timing = @hits < LOG_HITS
+      t_all = Process.clock_gettime(Process::CLOCK_MONOTONIC) if timing
       return [0, 0] if !bitmap
       return fallback('no raw_data') unless bitmap.respond_to?(:raw_data)
       w = bitmap.width
       h = bitmap.height
       return fallback('bad dimensions') if w <= 0 || h <= 0 || w * h > MAX_PIXELS
+      return fallback('unsupported alpha offset') unless ALPHA_OFF == 3
+
+      # getPixel 首次调用会 allocSurface() 并做一次 GPU 回读，之后是纯内存读；
+      # getRaw 在 surface 不存在时则每次都 gl.ReadPixels。先预热一次，使
+      # raw_data 走 memcpy、4 次校验走内存读，把每次调用的 GPU 回读降到 1 次
+      # （原实现逐像素 get_pixel 同样需要这 1 次，故不会更差）。
+      warm_ms = nil
       begin
+        t_warm = Process.clock_gettime(Process::CLOCK_MONOTONIC) if timing
+        bitmap.get_pixel(0, 0)
+        warm_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t_warm) * 1000.0 if timing
+      rescue StandardError
+        # animated/mega 位图的 get_pixel 会抛错；忽略，raw_data 仍可能可读
+      end
+
+      raw_ms = nil
+      begin
+        t_raw = Process.clock_gettime(Process::CLOCK_MONOTONIC) if timing
         raw = bitmap.raw_data
+        raw_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t_raw) * 1000.0 if timing
       rescue StandardError => e
         return fallback("raw_data raised #{e.class}: #{e.message}")
       end
       return fallback('raw_data size mismatch') unless raw.is_a?(String) && raw.bytesize >= w * h * 4
 
-      coords = []
-      hit = []
-      4.times do |i|
-        a1 = (i <= 1) ? w : h
-        a2 = (i >= 2) ? h : w
-        # 越界坐标在原实现里必然 get_pixel 越界 → alpha 0 → next；
-        # 这里直接把内层上限收敛到有效范围，语义等价但省掉大量空转。
-        lim = a2
-        lim = h if (i <= 1) && lim > h
-        lim = w if (i >= 2) && lim > w
-        (1..a1).each do |p1|
-          break if coords[i]
-          lim.times do |p2|
-            if i.even?
-              if i <= 1
-                x = p1
-                y = p2
-              else
-                x = p2
-                y = p1
-              end
-            elsif i <= 1
-              x = a1 - p1
-              y = p2
-            else
-              x = p2
-              y = a1 - p1
-            end
-            next if x < 0 || y < 0 || x >= w || y >= h
-            next if raw.getbyte((y * w + x) * 4 + ALPHA_OFF).to_i <= 0
-            coords[i] = i.even? ? p1 : p1 - 1
-            hit[i] = [x, y]
-            break
+      t_scan = Process.clock_gettime(Process::CLOCK_MONOTONIC) if timing
+      # C 层批量抽 alpha 平面：'N*' 把每 4 字节读成大端 uint32，其低 8 位正是
+      # 第 4 字节（alpha, offset 3）；pack('C*') 得到 w*h 字节的 alpha 平面。
+      # tr! 把任意非零 alpha 归一为 1，之后用 String#index/rindex 在 C 层求
+      # 每行首次/末次命中，Ruby 层循环从 O(w*h) 降到 O(h)。
+      amask = raw.byteslice(0, w * h * 4).unpack('N*').pack('C*')
+      amask.tr!("\x01-\xff".b, "\x01".b)
+      one = "\x01".b
+
+      # 原算法四个方向的边界（a2 在 i<=1 用 width、i>=2 用 height，越界恒为 0）：
+      #   i=0: 最小 x>=1 使该列在 y<min(w,h) 有像素  -> coords[0]=x
+      #   i=1: 最大 x    使该列在 y<min(w,h) 有像素  -> coords[1]=w-x-1
+      #   i=2: 最小 y>=1 使该行在 x<min(h,w) 有像素  -> coords[2]=y
+      #   i=3: 最大 y    使该行在 x<min(h,w) 有像素  -> coords[3]=h-y-1
+      ylim01 = [w, h].min
+      xlim23 = [h, w].min
+      c0 = c1 = c2 = c3 = nil
+      hit0 = hit1 = hit2 = hit3 = nil
+
+      (0...ylim01).each do |y|
+        row = amask.byteslice(y * w, w)
+        if w > 1
+          f = row.index(one, 1)
+          if f && (c0.nil? || f < c0)
+            c0 = f
+            hit0 = [f, y]
           end
         end
+        l = row.rindex(one)
+        if l && (c1.nil? || l > c1)
+          c1 = l
+          hit1 = [l, y]
+        end
       end
+      (1...h).each do |y|
+        next unless c2.nil?
+        x = amask.byteslice(y * w, xlim23).index(one)
+        if x
+          c2 = y
+          hit2 = [x, y]
+        end
+      end
+      (h - 1).downto(0) do |y|
+        x = amask.byteslice(y * w, xlim23).index(one)
+        if x
+          c3 = h - y - 1
+          hit3 = [x, y]
+          break
+        end
+      end
+      scan_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t_scan) * 1000.0 if timing
+
       # 原实现在整行/整列全透明时 coords 含 nil，末尾做减法会抛错；
       # 此时回退，让原实现产生完全一致的结果/异常。
-      return fallback('no opaque edge', false) if coords.length < 4 || coords.any?(&:nil?)
+      return fallback('no opaque edge', false) if [c0, c1, c2, c3].any?(&:nil?)
 
       # 校验 alpha 字节位置假设：4 个命中点必须真的不透明。
-      hit.each do |xy|
+      t_verify = Process.clock_gettime(Process::CLOCK_MONOTONIC) if timing
+      [hit0, hit1, hit2, hit3].each do |xy|
         next unless xy
         begin
           c = bitmap.get_pixel(xy[0], xy[1])
@@ -1694,13 +1741,18 @@ module MkxpFindCenterFast
         end
         return fallback('alpha offset mismatch') if c.nil? || c.alpha.to_i <= 0
       end
+      verify_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t_verify) * 1000.0 if timing
 
-      if t0
-        dt = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000.0
+      if timing
+        total = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t_all) * 1000.0
         @hits += 1
-        $stderr.puts "[fcfix] hit ##{@hits} #{w}x#{h} t=#{dt.round(2)}ms" if @hits <= LOG_HITS
+        if @hits <= LOG_HITS
+          f2 = ->(v) { v.nil? ? 'n/a' : format('%.2f', v) }
+          $stderr.puts "[fcfix] hit ##{@hits} #{w}x#{h} warm=#{f2.call(warm_ms)} raw=#{f2.call(raw_ms)} " \
+                       "scan=#{f2.call(scan_ms)} verify=#{f2.call(verify_ms)} t=#{format('%.2f', total)}ms"
+        end
       end
-      [((coords[1] - coords[0]) / 2).ceil, ((coords[3] - coords[2]) / 2).ceil]
+      [((((w - c1 - 1) - c0)) / 2).ceil, ((c3 - c2) / 2).ceil]
     rescue StandardError => e
       fallback("fast raised #{e.class}: #{e.message}")
     end
