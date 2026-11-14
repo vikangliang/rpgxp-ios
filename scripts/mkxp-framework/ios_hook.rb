@@ -1320,257 +1320,9 @@ rescue StandardError => e
   nil
 end
 
-# ============================================================================
-# [dexprof] 图鉴翻页耗时取证 —— 一次性诊断插桩（定位完成后整段删除，
-#            或把 $__mkxp_dexprof 置 false 即近乎零开销）
-#
-# 目的：用户报告"打开宝可梦图鉴、上下翻物种时延迟至少几百 ms"。此前基于源码
-#       的推断（DeluxeBitmapWrapper#refresh 展开动画条 / findCenter 逐像素 /
-#       play_cry 音频 / pbGetAvailableForms 遍历物种）全部缺少耗时实测；现有日志
-#       的 slow decode（只测 PNG 解码）、PROFILE（600 帧均值）、SLOWFRAME
-#       （呈现层 fin/read/hmc）都不覆盖 Ruby↔引擎往返，无法归因。本插桩在 Ruby
-#       侧直接计时，一次真机翻页即可把几百 ms 分解到具体方法。
-#
-# 设计：
-#  * ios_hook 在游戏脚本加载【前】eval，图鉴类此刻尚不存在；且 DBK_009 会
-#    alias 重定义 setIconBitmap / pbUpdateDummyPokemon。故采用运行时惰性安装：
-#    首帧 Graphics.update 时（所有脚本与插件已定义完）才包装，装成功打
-#    "[dexprof] armed n=..."；若该行缺失即插桩未生效，日志可直接判读。
-#  * 帧边界用 Graphics.update（每帧一次，开销仅一次 clock_gettime + 判断），
-#    统计相邻两帧之间各被包装方法的【自身耗时】= 总耗时 - 已包装子调用耗时，
-#    并给出 unknown = 帧墙钟 - Σ自身耗时，用来暴露落在未包装 C++/解码/渲染
-#    路径的时间。
-#  * A 组（图鉴专属方法）进入即置 hot；B 组（全局顶层方法）仅 hot 为真时计时，
-#    避免标题画面/地图 HUD 的每帧调用刷屏或产生开销。
-#  * 只在慢帧（>=FRAME_MS 或某方法 >=FRAME_MS）输出，最多 MAX_LINES 行。
-#    纯计时、不改任何参数/返回值、ensure 保证异常时栈平衡；安装全程 rescue，
-#    任何失败只打一行日志，绝不冒泡影响游戏。
-# ============================================================================
-$__mkxp_dexprof = true
-$__mkxp_dex_acc     = {}
-$__mkxp_dex_stack   = []
-$__mkxp_dex_last    = nil
-$__mkxp_dex_hot     = false
-$__mkxp_dex_lines   = 0
-$__mkxp_dex_armed   = false
-$__mkxp_dex_tries   = 0   # 安装重试上限（约 10 秒 @60fps），避免类缺失时永久每帧重试
-
-module MkxpDexProf
-  FRAME_MS  = 60.0   # 帧墙钟/单方法阈值：低于此值不输出，避免刷屏
-  MAX_LINES = 80     # 总输出行数上限
-  TOP_N     = 10     # 每行最多列出的方法数
-
-  # [常量路径, 方法名, 显示标签, 是否单例方法, 是否置 hot]
-  TARGETS = [
-    ["PokemonPokedexInfo_Scene", :pbUpdateDummyPokemon,        "pbUpdateDummyPokemon",   false, true],
-    ["PokemonPokedexInfo_Scene", :pbGetAvailableForms,         "pbGetAvailableForms",    false, true],
-    ["PokemonPokedexInfo_Scene", :drawPage,                    "drawPage",               false, true],
-    ["PokemonPokedex_Scene",     :pbRefresh,                   "pbRefresh",              false, true],
-    ["PokemonPokedex_Scene",     :setIconBitmap,                "setIconBitmap",          false, true],
-    ["PokemonSprite",            :setSpeciesBitmap,             "setSpeciesBitmap",       false, true],
-    ["DeluxeBitmapWrapper",      :refresh,                      "Deluxe#refresh",         false, true],
-    ["DeluxeBitmapWrapper",      :compile_strip,                "Deluxe#compile_strip",   false, true],
-    ["GameData::Species",        :front_sprite_bitmap,          "front_sprite_bitmap",    true,  true],
-    ["Pokemon",                  :play_cry,                     "Pokemon.play_cry",       true,  true],
-    ["GameData::Species",        :play_cry,                     "Species.play_cry",       true,  true],
-    ["Object",                   :findCenter,                   "findCenter",             false, false],
-    ["Object",                   :pbDrawTextPositions,          "pbDrawTextPositions",    false, false],
-    ["Object",                   :pbSEStop,                     "pbSEStop",               false, false],
-    ["Object",                   :pbPlayCursorSE,               "pbPlayCursorSE",         false, false],
-    # C++ 边界：区分"PNG 解码 / 位图分配 / 缩放拷贝"与 refresh 自身循环开销。
-    # 均为 B 组（hot 才计时），避免地图 autotile 等非图鉴帧产生开销。
-    # get_pixel 是 findCenter 内的极热路径（单次几千调用），刻意不包。
-    ["Bitmap",                   :initialize,                   "Bitmap#init",            false, false],
-    ["Bitmap",                   :stretch_blt,                  "Bitmap#stretch_blt",     false, false],
-    ["Bitmap",                   :blt,                          "Bitmap#blt",             false, false]
-  ].freeze
-
-  def self.now
-    Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  end
-
-  # 安全解析 "GameData::Species" 之类的嵌套常量；任一环不存在返回 nil
-  def self.resolve(path)
-    cur = Object
-    path.split('::').each do |c|
-      cur = (cur.const_get(c) rescue nil)
-      return nil unless cur
-    end
-    cur
-  end
-
-  # 进栈：[标签, 起始时刻, 已包装子调用累计耗时]
-  def self.enter(label)
-    $__mkxp_dex_stack << [label, now, 0.0]
-  end
-
-  # 出栈：自身耗时 = 总耗时 - 子调用耗时；总耗时记入父项
-  def self.leave(_label)
-    st = $__mkxp_dex_stack
-    return if !st || st.empty?
-    e = st.pop
-    total = (now - e[1]) * 1000.0
-    selfms = total - e[2]
-    selfms = 0.0 if selfms < 0
-    a = ($__mkxp_dex_acc[e[0]] ||= [0, 0.0])
-    a[0] += 1
-    a[1] += selfms
-    st[-1][2] += total if st[-1] && !st.empty?
-  end
-
-  def self.wrap(owner, meth, label, singleton, hot_trigger)
-    target = singleton ? owner.singleton_class : owner
-    return false unless target.method_defined?(meth) ||
-                        target.private_method_defined?(meth) ||
-                        target.protected_method_defined?(meth)
-    orig = :"__mkxp_dex_orig_#{label.gsub(/[^A-Za-z0-9_]/, '_')}"
-    return true if target.method_defined?(orig) || target.private_method_defined?(orig)
-    target.send(:alias_method, orig, meth)
-    target.send(:define_method, meth) do |*args, &blk|
-      # define_method 内禁止 yield，必须显式 &blk 转发
-      if !$__mkxp_dexprof || (!$__mkxp_dex_hot && !hot_trigger)
-        send(orig, *args, &blk)
-      else
-        $__mkxp_dex_hot = true if hot_trigger
-        MkxpDexProf.enter(label)
-        begin
-          send(orig, *args, &blk)
-        ensure
-          MkxpDexProf.leave(label)
-        end
-      end
-    end
-    true
-  rescue StandardError => e
-    $stderr.puts "[dexprof] wrap #{label} failed: #{e.class}: #{e.message}"
-    false
-  end
-
-  # 把 Bitmap 的原方法从别名还原，彻底移除计时包装（$__mkxp_busy 仍为 true 时调用）
-  def self.rollback_bitmap
-    saved_busy = $__mkxp_busy
-    $__mkxp_busy = true
-    TARGETS.each do |cname, meth, label, singleton, _hot|
-      next unless cname == 'Bitmap'
-      begin
-        owner = resolve(cname)
-        next unless owner
-        target = singleton ? owner.singleton_class : owner
-        orig = :"__mkxp_dex_orig_#{label.gsub(/[^A-Za-z0-9_]/, '_')}"
-        next unless target.method_defined?(orig) || target.private_method_defined?(orig)
-        target.send(:alias_method, meth, orig)
-        target.send(:remove_method, orig) rescue nil
-      rescue StandardError => e
-        $stderr.puts "[dexprof] rollback #{label} failed: #{e.class}: #{e.message}"
-      end
-    end
-    $stderr.puts '[dexprof] Bitmap wraps rolled back'
-  ensure
-    $__mkxp_busy = saved_busy
-  end
-
-  def self.install
-    return true if $__mkxp_dex_armed
-    $__mkxp_dex_tries += 1
-    # 安装期间屏蔽现有 Object.method_added 钩子，避免 define_method 触发连锁包装
-    saved_busy = $__mkxp_busy
-    $__mkxp_busy = true
-    n = 0
-    begin
-      TARGETS.each do |cname, meth, label, singleton, hot|
-        owner = resolve(cname)
-        next unless owner
-        n += 1 if wrap(owner, meth, label, singleton, hot)
-      end
-    ensure
-      $__mkxp_busy = saved_busy
-    end
-    # Bitmap#initialize 是全局构造路径，包装若与 C++ 绑定不兼容会让游戏起不来。
-    # 安装后立刻做一次真实构造自检，失败则把三个 Bitmap 包装全部还原。
-    begin
-      if defined?(::Bitmap)
-        probe = ::Bitmap.new(1, 1)
-        probe.dispose if probe.respond_to?(:dispose)
-      end
-    rescue StandardError => e
-      $stderr.puts "[dexprof] Bitmap probe failed, rolling back Bitmap wraps: #{e.class}: #{e.message}"
-      rollback_bitmap
-    end
-    # 图鉴两个场景类都已定义才算装全；否则下一帧继续尝试
-    ready = (defined?(PokemonPokedexInfo_Scene) && defined?(PokemonPokedex_Scene))
-    if ready && n > 0
-      $__mkxp_dex_armed = true
-      $stderr.puts "[dexprof] armed n=#{n} thr=#{FRAME_MS}ms max=#{MAX_LINES}"
-    end
-    $__mkxp_dex_armed
-  rescue StandardError => e
-    $stderr.puts "[dexprof] install failed: #{e.class}: #{e.message}"
-    false
-  end
-
-  # 帧边界：打印上一帧（两次 Graphics.update 之间）的耗时分解。
-  # 非慢帧路径只有一次 clock_gettime + 两次比较 + 两个空容器判断，无数组分配。
-  def self.tick
-    return unless $__mkxp_dexprof
-    t = now
-    install if !$__mkxp_dex_armed && $__mkxp_dex_tries < 600
-    last = $__mkxp_dex_last
-    $__mkxp_dex_last = t
-    return unless last
-    dt = (t - last) * 1000.0
-    acc = $__mkxp_dex_acc
-    hot = $__mkxp_dex_hot
-    if dt >= FRAME_MS && (hot || !acc.empty?) && $__mkxp_dex_lines < MAX_LINES
-      $__mkxp_dex_lines += 1
-      parts = acc.sort_by { |_, v| -v[1] }.first(TOP_N).map do |k, v|
-        "#{k}=#{v[0]}x/#{v[1].round(1)}"
-      end
-      unknown = dt - acc.values.inject(0.0) { |s, v| s + v[1] }
-      unknown = 0.0 if unknown < 0
-      $stderr.puts "[dexprof] frame=#{dt.round(1)}ms | #{parts.join(' ')} | unknown=#{unknown.round(1)}ms"
-    end
-    acc.clear
-    $__mkxp_dex_stack.clear
-    $__mkxp_dex_hot = false
-  rescue StandardError => e
-    $stderr.puts "[dexprof] tick failed: #{e.class}: #{e.message}"
-  end
-end
-
-# 帧边界挂到 Graphics.update（引擎 C++ 绑定在 ios_hook 注入前已就绪）。
-# 若 Graphics.update 不可包装则回退 Input.update，两者都是主循环每帧一次。
-begin
-  installed_frame_hook = false
-  %i[Graphics Input].each do |mod|
-    begin
-      m = (Object.const_get(mod) rescue nil)
-      next unless m
-      sc = m.singleton_class
-      # module_function 定义的方法是 private 实例方法 + 单例方法；两种都覆盖
-      has = sc.method_defined?(:update) || sc.private_method_defined?(:update) ||
-            m.method_defined?(:update) || m.private_method_defined?(:update)
-      next unless has
-      orig = :__mkxp_dex_orig_frame_update
-      next if sc.method_defined?(orig) || sc.private_method_defined?(orig)
-      sc.send(:alias_method, orig, :update)
-      sc.send(:define_method, :update) do |*args, &blk|
-        MkxpDexProf.tick
-        send(orig, *args, &blk)
-      end
-      $stderr.puts "[dexprof] frame hook on #{mod}.update"
-      installed_frame_hook = true
-      break
-    rescue StandardError => e
-      $stderr.puts "[dexprof] frame hook #{mod}.update failed: #{e.class}: #{e.message}"
-    end
-  end
-  $stderr.puts "[dexprof] frame hook unavailable (no log will be produced)" unless installed_frame_hook
-rescue StandardError => e
-  $stderr.puts "[dexprof] frame hook failed: #{e.class}: #{e.message}"
-end
 
 # ============================================================================
-# [fcfix] findCenter 快速路径 —— 常驻修复，与上方临时诊断块相互独立
+# [fcfix] findCenter 快速路径 —— 常驻修复（诊断插桩已在三轮取证后整段删除）
 #
 # 真机取证（BUILD=f5b410e，52 个慢帧 / 23814.8ms 墙钟）：
 #   findCenter 自身耗时 13441.8ms / 108 次 = 124.46ms/次，占 56.4%；
@@ -1596,19 +1348,28 @@ end
 #   在每 4 字节的第 3 位（0-based）。为防任何偏差，算出的 4 个命中点还会用原
 #   get_pixel 逐个校验（每次仅 4 次 C++ 调用），任一不符即整体回退原实现；
 #   连续回退 20 次则永久禁用快速路径，绝不产生错误的 UI 定位。
+# 第三轮（BUILD=74f05ef，80 慢帧）：分段日志 warm=1.09 raw=0.02 scan=16.85
+#   verify=0.01 t=17.99ms；findCenter 124.46→67.20→18.48ms/次，慢帧 p50
+#   389.7→275.6→180.4ms。GPU 回读已被 surface 预热消除，剩余的是 C 层
+#   unpack 生成 36864 个 Ruby 对象的分配成本，故再加入内容指纹缓存：
+#   真机每帧调 2 次且多为同一 192x192 位图，命中后直接复用上次结果。
+#   另：unknown 稳定 ~112ms 与帧内工作量无关（引擎侧 PROFILE frame≈25ms），
+#   主要是诊断插桩每帧写日志 + 18 个方法包装的固定成本，已随插桩删除。
 # 等价性：600 例随机对照（1x1..40x40、全透明/全不透明/稀疏/居中矩形/单像素）
 #   与原实现及第一版逐点实现三者零偏差；另 86 例定向图案、43 例端到端、
 #   30 例 method_added 真机路径全通过。
 # 安装：findCenter 是顶层 def，ios_hook 注入时不存在，故挂在 class << Object
 #   的 method_added 链上惰性包装；插件重定义会重复触发，靠 @wrapping 与
-#   @wrapped_owner 去重。不依赖帧钩子/诊断块，诊断块删除后本修复仍生效。
+#   @wrapped_owner 去重。不依赖任何帧钩子/诊断块。
 # ============================================================================
 module MkxpFindCenterFast
   ALPHA_OFF     = 3
   MAX_FALLBACK  = 20
   MAX_PIXELS    = 1_000_000
   LOG_LINES     = 5
-  LOG_HITS      = 40   # 前 N 次成功调用打印分段耗时，供真机对比 124.46 / 67.20ms
+  LOG_HITS      = 12   # 前 N 次调用打印耗时（常驻版保持安静，不每帧写日志）
+  CACHE_MAX     = 8    # 缓存上限；键含完整像素串（192x192 约 147KB/条），
+                       # 8 条约 1.2MB，按插入顺序淘汰，避免 iOS 内存压力
 
   @wrapping = false
   @disabled = false
@@ -1616,6 +1377,8 @@ module MkxpFindCenterFast
   @soft_fallbacks = 0
   @wrapped_owner = nil
   @hits = 0
+  @cache = {}
+  @cache_hits = 0
 
   class << self
     def wrapping?
@@ -1673,6 +1436,23 @@ module MkxpFindCenterFast
         return fallback("raw_data raised #{e.class}: #{e.message}")
       end
       return fallback('raw_data size mismatch') unless raw.is_a?(String) && raw.bytesize >= w * h * 4
+
+      # 内容指纹缓存：真机每帧调 findCenter 2 次且多为同一 192x192 位图，
+      # 翻页时也常重复出现。键 = [w, h, 完整像素串]，Hash 在 hash 相同时
+      # 会用 String#eql? 逐字节比对，因此 String#hash 碰撞不会误命中，
+      # 位图被改写（内容变化）也会自动失效——不依赖任何概率性校验。
+      # 键里的字符串此后不再被修改（扫描只读 raw），故缓存结果始终可信。
+      key = [w, h, raw]
+      cached = @cache[key]
+      if cached
+        @cache_hits += 1
+        if timing
+          total = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t_all) * 1000.0
+          @hits += 1
+          $stderr.puts "[fcfix] cached ##{@hits} #{w}x#{h} t=#{format('%.2f', total)}ms" if @hits <= LOG_HITS
+        end
+        return cached
+      end
 
       t_scan = Process.clock_gettime(Process::CLOCK_MONOTONIC) if timing
       # C 层批量抽 alpha 平面：'N*' 把每 4 字节读成大端 uint32，其低 8 位正是
@@ -1743,6 +1523,9 @@ module MkxpFindCenterFast
       end
       verify_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t_verify) * 1000.0 if timing
 
+      result = [((((w - c1 - 1) - c0)) / 2).ceil, ((c3 - c2) / 2).ceil]
+      @cache.shift if @cache.size >= CACHE_MAX
+      @cache[key] = result
       if timing
         total = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t_all) * 1000.0
         @hits += 1
@@ -1752,7 +1535,7 @@ module MkxpFindCenterFast
                        "scan=#{f2.call(scan_ms)} verify=#{f2.call(verify_ms)} t=#{format('%.2f', total)}ms"
         end
       end
-      [((((w - c1 - 1) - c0)) / 2).ceil, ((c3 - c2) / 2).ceil]
+      result
     rescue StandardError => e
       fallback("fast raised #{e.class}: #{e.message}")
     end
