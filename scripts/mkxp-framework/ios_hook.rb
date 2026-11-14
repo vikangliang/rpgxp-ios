@@ -1594,6 +1594,23 @@ end
 # 逐行 text_size、以及一次性场景构建（00312:243-298）。缺少实测无法归因，
 # 故先在 Ruby 侧按【自身耗时】分解取证，一次真机操作即可定位。
 #
+# 第二轮（首轮 42 慢帧 / 18936.6ms，覆盖率 93%，unknown 均值 30.8ms 与
+# 引擎侧 frame≈25ms 吻合，说明测量未被插桩污染）：
+#   Mart#pbRefresh 39.1% (221.69ms/次) + pbDrawTextPositions 30.6%
+#   (11.16ms/次) + Bitmap#blt 24.5% (0.69ms/次, 6225 次)，三者合计 94.2%。
+#   但 pbRefresh 的"自身耗时"里 3 次 text= 触发的窗口 refresh 尚未拆开；
+#   另有 Bitmap#blt=388x/250ms 且无 pbRefresh 的周期性帧，源码显示
+#   windowskin=(00081:364) 无条件 privRefresh(true) → tileBitmap 九宫格，
+#   而 skinformat=(00081:372) 自带幂等守卫。能否幂等化取决于每帧传入的
+#   是否同一 Bitmap 对象、以及 privRefresh(true) 的频次 —— 缺少实测，
+#   故本轮只补取证、不动功能：
+#     * 新增 10 个计时目标（Adv/Unf 的 text=/setText/refresh、
+#       SpriteWindow 的 windowskin=/privRefresh/tileBitmap/update）
+#     * 新增 2 个纯计数目标（Bitmap#draw_text / text_size，不取时钟，
+#       避免计时包装污染测量；次数用于判断 Ruby→C++ 边界调用是否过多）
+#     * 帧行末尾输出 privT/privF/skinSame/skinDiff/draw_text/text_size
+#     * TOP_N 10→14（首轮 28/42 帧触及上限）、MAX_LINES 80→120
+#
 # 设计要点：
 #  * ios_hook 在游戏脚本加载【前】eval，商店类此刻不存在 → 首帧
 #    Graphics.update 时惰性安装，成功打印 "[martprof] armed n=.."；
@@ -1626,13 +1643,19 @@ $__mkxp_mart_tries   = 0
 $__mkxp_mart_buf      = []
 $__mkxp_mart_since    = 0
 $__mkxp_mart_prev_act = 0
+# 第二轮细粒度取证计数器（每帧清零，只在商店会话内累加）
+$__mkxp_mart_priv_t    = 0   # privRefresh(true) 次数 = 强制重建皮肤位图
+$__mkxp_mart_priv_f    = 0   # privRefresh(false) 次数
+$__mkxp_mart_skin_same = 0   # windowskin= 传入与 @_windowskin 同一对象（可幂等跳过）
+$__mkxp_mart_skin_diff = 0   # windowskin= 传入不同对象（首次/真实换肤）
+$__mkxp_mart_counts    = Hash.new(0)
 
 module MkxpMartProf
   FRAME_MS       = 60.0   # 慢帧墙钟阈值
   SLOW_METHOD_MS = 40.0   # 单次方法自身耗时阈值
-  MAX_LINES      = 80     # 帧分解输出上限
-  SLOW_LINES     = 20     # 单次慢方法输出上限
-  TOP_N          = 10
+  MAX_LINES      = 120    # 第二轮方法更细、慢帧更多
+  SLOW_LINES     = 32
+  TOP_N          = 14     # 首轮 28/42 帧触及 10 项上限，会漏掉次级方法
 
   # [常量路径, 方法名, 显示标签, 是否单例方法, 是否置 hot]
   # A 组：商店专属、单帧内完成的方法，进入即置 hot。
@@ -1661,7 +1684,27 @@ module MkxpMartProf
     ["Bitmap",                 :stretch_blt,           "Bitmap#stretch_blt",  false, false],
     ["Object",                 :pbDrawTextPositions,   "pbDrawTextPositions", false, false],
     ["Object",                 :pbDoEnsureBitmap,      "pbDoEnsureBitmap",    false, false],
-    ["Object",                 :pbUpdateSpriteHash,    "pbUpdateSpriteHash",  false, false]
+    ["Object",                 :pbUpdateSpriteHash,    "pbUpdateSpriteHash",  false, false],
+    # ---- 第二轮新增：拆开 Mart#pbRefresh 的 221ms 自身耗时 ----
+    ["Window_UnformattedTextPokemon", :text=,        "Unf#text_set",       false, false],
+    ["Window_UnformattedTextPokemon", :refresh,      "Unf#refresh",        false, false],
+    ["Window_AdvancedTextPokemon",    :text=,        "Adv#text_set",       false, false],
+    ["Window_AdvancedTextPokemon",    :setText,      "Adv#setText",        false, false],
+    ["Window_AdvancedTextPokemon",    :refresh,      "Adv#refresh",        false, false],
+    # ---- 第二轮新增：拆开 Bitmap#blt=388x/帧 的来源 ----
+    ["SpriteWindow",                  :windowskin=,  "Win#skin_set",       false, false],
+    ["SpriteWindow",                  :privRefresh,  "Win#privRefresh",    false, false],
+    ["SpriteWindow",                  :tileBitmap,   "Win#tileBitmap",     false, false],
+    ["SpriteWindow",                  :update,       "Win#update",         false, false],
+    ["SpriteWindow_Base",             :update,       "WinBase#update",     false, false]
+  ].freeze
+
+  # 只计调用次数、不进耗时栈：draw_text / text_size 每帧数百次，
+  # 用 enter/leave 计时包装本身就会污染测量，但次数是判断
+  # 「Ruby→C++ 边界调用过多」的关键证据（与图鉴 findCenter 同源）。
+  COUNT_TARGETS = [
+    ["Bitmap", :draw_text, "draw_text"],
+    ["Bitmap", :text_size, "text_size"]
   ].freeze
 
   # 跨帧主循环：只维护会话计数，绝不进耗时栈
@@ -1743,6 +1786,15 @@ module MkxpMartProf
         send(orig, *args, &blk)
       else
         $__mkxp_mart_hot = true if hot_trigger
+        # 轻量观察：判定 privRefresh(true) 的调用频次、以及 windowskin=
+        # 每帧传入的是否同一 Bitmap 对象（决定幂等化能否成立）。
+        case label
+        when 'Win#privRefresh'
+          if args[0] then $__mkxp_mart_priv_t += 1 else $__mkxp_mart_priv_f += 1 end
+        when 'Win#skin_set'
+          cur = (instance_variable_get(:@_windowskin) rescue nil)
+          if args[0].equal?(cur) then $__mkxp_mart_skin_same += 1 else $__mkxp_mart_skin_diff += 1 end
+        end
         MkxpMartProf.enter(label)
         begin
           send(orig, *args, &blk)
@@ -1755,6 +1807,27 @@ module MkxpMartProf
     true
   rescue StandardError => e
     $stderr.puts "[martprof] wrap #{label} failed: #{e.class}: #{e.message}"
+    false
+  end
+
+  # 纯计数包装：不取时钟、不入耗时栈，只累加调用次数。
+  # 用于 draw_text / text_size 这类每帧数百次的 C++ 边界方法。
+  def self.wrap_count(owner, meth, label)
+    return false unless owner.method_defined?(meth) ||
+                        owner.private_method_defined?(meth) ||
+                        owner.protected_method_defined?(meth)
+    orig = orig_name("count_#{label}")
+    return true if owner.method_defined?(orig) || owner.private_method_defined?(orig)
+    was_private = owner.private_method_defined?(meth)
+    owner.send(:alias_method, orig, meth)
+    owner.send(:define_method, meth) do |*args, &blk|
+      $__mkxp_mart_counts[label] += 1 if $__mkxp_mart_active > 0 || $__mkxp_mart_hot
+      send(orig, *args, &blk)
+    end
+    owner.send(:private, meth) if was_private
+    true
+  rescue StandardError => e
+    $stderr.puts "[martprof] count wrap #{label} failed: #{e.class}: #{e.message}"
     false
   end
 
@@ -1816,6 +1889,7 @@ module MkxpMartProf
     $__mkxp_busy = true
     n = 0
     m = 0
+    c = 0
     begin
       TARGETS.each do |cname, meth, label, singleton, hot|
         owner = resolve(cname)
@@ -1827,6 +1901,11 @@ module MkxpMartProf
         next unless owner
         m += 1 if wrap_marker(owner, meth, label, false)
       end
+      COUNT_TARGETS.each do |cname, meth, label|
+        owner = resolve(cname)
+        next unless owner
+        c += 1 if wrap_count(owner, meth, label)
+      end
     ensure
       $__mkxp_busy = saved_busy
     end
@@ -1834,7 +1913,7 @@ module MkxpMartProf
     ready = defined?(PokemonMart_Scene) && defined?(Window_PokemonMart) && defined?(PokemonMartScreen)
     if ready && n > 0
       $__mkxp_mart_armed = true
-      $stderr.puts "[martprof] armed n=#{n} markers=#{m} thr=#{FRAME_MS}ms max=#{MAX_LINES}"
+      $stderr.puts "[martprof] armed n=#{n} markers=#{m} counts=#{c} thr=#{FRAME_MS}ms max=#{MAX_LINES} top=#{TOP_N}"
       begin
         if defined?(::Bitmap)
           probe = ::Bitmap.new(1, 1)
@@ -1872,7 +1951,12 @@ module MkxpMartProf
       end
       unknown = dt - acc.values.inject(0.0) { |s, v| s + v[1] }
       unknown = 0.0 if unknown < 0
-      emit "[martprof] frame=#{dt.round(1)}ms | #{parts.join(' ')} | unknown=#{unknown.round(1)}ms"
+      cnt = $__mkxp_mart_counts
+      emit "[martprof] frame=#{dt.round(1)}ms | #{parts.join(' ')} | " \
+           "unknown=#{unknown.round(1)}ms | " \
+           "privT=#{$__mkxp_mart_priv_t} privF=#{$__mkxp_mart_priv_f} " \
+           "skinSame=#{$__mkxp_mart_skin_same} skinDiff=#{$__mkxp_mart_skin_diff} " \
+           "draw_text=#{cnt['draw_text']} text_size=#{cnt['text_size']}"
     end
     # 会话刚结束（active 从 >0 归零）时强制刷出，避免最后几行滞留在缓冲区
     ended = $__mkxp_mart_prev_act > 0 && active <= 0
@@ -1881,6 +1965,11 @@ module MkxpMartProf
     acc.clear
     $__mkxp_mart_stack.clear
     $__mkxp_mart_hot = false
+    $__mkxp_mart_priv_t = 0
+    $__mkxp_mart_priv_f = 0
+    $__mkxp_mart_skin_same = 0
+    $__mkxp_mart_skin_diff = 0
+    $__mkxp_mart_counts.clear
   rescue StandardError => e
     $stderr.puts "[martprof] tick failed: #{e.class}: #{e.message}"
   end
