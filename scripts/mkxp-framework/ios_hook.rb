@@ -1583,3 +1583,336 @@ begin
 rescue StandardError => e
   $stderr.puts "[fcfix] eager wrap failed: #{e.class}: #{e.message}"
 end
+
+# ============================================================================
+# [martprof] 商店(pbPokemonMart)耗时取证 —— 一次性诊断插桩（定位完成后整段删除）
+#
+# 用户报告商店页面出现延迟。源码核查（00312_UI_PokeMart.rb）显示商店链路
+# 不经过 findCenter（图标是 ItemIconSprite，不是 PokemonSprite），此前图鉴的
+# 修复对它无效。候选热点分散在：窗口全量 refresh（00082:1144-1153 逐行
+# drawItem）、每次切换物品重建 AnimatedBitmap（00269:73-93）、pbDrawTextPositions
+# 逐行 text_size、以及一次性场景构建（00312:243-298）。缺少实测无法归因，
+# 故先在 Ruby 侧按【自身耗时】分解取证，一次真机操作即可定位。
+#
+# 设计要点：
+#  * ios_hook 在游戏脚本加载【前】eval，商店类此刻不存在 → 首帧
+#    Graphics.update 时惰性安装，成功打印 "[martprof] armed n=.."；
+#    该行缺失即插桩未生效，日志可直接判读。
+#  * pbPokemonMart / pbBuyScreen / pbChooseBuyItem 等是【跨帧主循环】
+#    （内部有 Graphics.update），绝不能进 enter/leave 栈，否则帧边界会
+#    把整个会话算成一帧。它们只维护 $__mkxp_mart_active 会话计数。
+#  * 帧边界 Graphics.update：统计一帧内各方法的自身耗时（扣除嵌套子调用），
+#    并给 unknown = 帧墙钟 - Σ自身耗时，暴露落在未包装 C++/解码/渲染路径
+#    的时间。仅商店会话期间（active>0 或 A 组方法触发）计时并输出慢帧。
+#  * 额外抓一次性慢方法：某方法自身耗时 >= SLOW_METHOD_MS 时单独打一行，
+#    用于定位"打开商店页面"这种不在常规慢帧阈值内的单次卡顿。
+#  * 全程 rescue；Bitmap#initialize 包装后立刻做真实构造自检，失败即回滚
+#    三个 Bitmap 包装；独立开关 $__mkxp_martprof，非商店帧只有一次布尔判断
+#    + send 透传，零日志；总输出行数受限，避免每帧写日志污染测量。
+# ============================================================================
+$__mkxp_martprof     = true
+$__mkxp_mart_acc     = {}
+$__mkxp_mart_stack   = []
+$__mkxp_mart_last    = nil
+$__mkxp_mart_hot     = false
+$__mkxp_mart_active  = 0
+$__mkxp_mart_lines   = 0
+$__mkxp_mart_slow    = 0
+$__mkxp_mart_armed   = false
+$__mkxp_mart_tries   = 0
+# 批量输出：每帧 $stderr.puts 在 iOS 上有固定 IO 成本（图鉴取证时实测
+# unknown 稳定 ~112ms 且与工作量无关），逐帧写日志会自己制造延迟。
+# 这里累积到 8 行 / 会话结束 / 距上次输出 120 帧才写一次。
+$__mkxp_mart_buf      = []
+$__mkxp_mart_since    = 0
+$__mkxp_mart_prev_act = 0
+
+module MkxpMartProf
+  FRAME_MS       = 60.0   # 慢帧墙钟阈值
+  SLOW_METHOD_MS = 40.0   # 单次方法自身耗时阈值
+  MAX_LINES      = 80     # 帧分解输出上限
+  SLOW_LINES     = 20     # 单次慢方法输出上限
+  TOP_N          = 10
+
+  # [常量路径, 方法名, 显示标签, 是否单例方法, 是否置 hot]
+  # A 组：商店专属、单帧内完成的方法，进入即置 hot。
+  # B 组：全局热路径，仅商店会话期间计时。
+  TARGETS = [
+    ["PokemonMart_Scene",      :pbStartBuyOrSellScene, "Mart#startScene",     false, true],
+    ["PokemonMart_Scene",      :pbRefresh,             "Mart#pbRefresh",      false, true],
+    ["PokemonMart_Scene",      :update,                "Mart_Scene#update",   false, true],
+    ["Window_PokemonMart",     :drawItem,              "Mart#drawItem",       false, true],
+    ["PokemonMartAdapter",     :getDisplayName,        "Adapter#name",        false, true],
+    ["PokemonMartAdapter",     :getDisplayPrice,       "Adapter#price",       false, true],
+    ["BuyAdapter",             :getDisplayName,        "Buy#name",            false, true],
+    ["BuyAdapter",             :getDisplayPrice,       "Buy#price",           false, true],
+    ["SellAdapter",            :getDisplayName,        "Sell#name",           false, true],
+    ["SellAdapter",            :getDisplayPrice,       "Sell#price",          false, true],
+    ["Window_DrawableCommand", :refresh,               "Window#refresh",      false, false],
+    ["Window_DrawableCommand", :update,                "Window#update",       false, false],
+    ["Window_DrawableCommand", :drawCursor,            "Window#drawCursor",   false, false],
+    ["ItemIconSprite",         :item=,                 "Icon#item_set",       false, false],
+    ["ItemIconSprite",         :update,                "Icon#update",         false, false],
+    ["ItemIconSprite",         :update_frame,          "Icon#update_frame",   false, false],
+    ["AnimatedBitmap",         :initialize,            "AnimBitmap#init",     false, false],
+    ["AnimatedBitmap",         :update,                "AnimBitmap#update",   false, false],
+    ["Bitmap",                 :initialize,            "Bitmap#init",         false, false],
+    ["Bitmap",                 :blt,                   "Bitmap#blt",          false, false],
+    ["Bitmap",                 :stretch_blt,           "Bitmap#stretch_blt",  false, false],
+    ["Object",                 :pbDrawTextPositions,   "pbDrawTextPositions", false, false],
+    ["Object",                 :pbDoEnsureBitmap,      "pbDoEnsureBitmap",    false, false],
+    ["Object",                 :pbUpdateSpriteHash,    "pbUpdateSpriteHash",  false, false]
+  ].freeze
+
+  # 跨帧主循环：只维护会话计数，绝不进耗时栈
+  MARKERS = [
+    ["Object",             :pbPokemonMart,     "pbPokemonMart"],
+    ["PokemonMartScreen",  :pbBuyScreen,       "pbBuyScreen"],
+    ["PokemonMartScreen",  :pbSellScreen,      "pbSellScreen"],
+    ["PokemonMart_Scene",  :pbChooseBuyItem,   "pbChooseBuyItem"],
+    ["PokemonMart_Scene",  :pbChooseSellItem,  "pbChooseSellItem"]
+  ].freeze
+
+  def self.now
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  # 安全解析嵌套常量；任一环不存在返回 nil
+  def self.resolve(path)
+    cur = Object
+    path.split('::').each do |c|
+      cur = (cur.const_get(c) rescue nil)
+      return nil unless cur
+    end
+    cur
+  end
+
+  def self.emit(line)
+    $__mkxp_mart_buf << line
+  end
+
+  # force=true 时无条件刷出；否则按行数/帧数节流，会话结束也会强制刷出
+  def self.flush(force = false)
+    buf = $__mkxp_mart_buf
+    return if buf.empty?
+    return if !force && buf.size < 8 && $__mkxp_mart_since < 120
+    $stderr.puts buf.join("\n")
+    buf.clear
+    $__mkxp_mart_since = 0
+  rescue StandardError => e
+    $stderr.puts "[martprof] flush failed: #{e.class}: #{e.message}"
+  end
+
+  def self.enter(label)
+    $__mkxp_mart_stack << [label, now, 0.0]
+  end
+
+  # 出栈：自身耗时 = 总耗时 - 已包装子调用耗时；总耗时记入父项
+  def self.leave(_label)
+    st = $__mkxp_mart_stack
+    return if !st || st.empty?
+    e = st.pop
+    total = (now - e[1]) * 1000.0
+    selfms = total - e[2]
+    selfms = 0.0 if selfms < 0
+    a = ($__mkxp_mart_acc[e[0]] ||= [0, 0.0])
+    a[0] += 1
+    a[1] += selfms
+    st[-1][2] += total if st[-1] && !st.empty?
+    if selfms >= SLOW_METHOD_MS && $__mkxp_mart_slow < SLOW_LINES
+      $__mkxp_mart_slow += 1
+      emit "[martprof] slow #{e[0]} self=#{selfms.round(1)}ms total=#{total.round(1)}ms"
+    end
+  end
+
+  def self.orig_name(label)
+    :"__mkxp_mart_orig_#{label.gsub(/[^A-Za-z0-9_]/, '_')}"
+  end
+
+  def self.wrap(owner, meth, label, singleton, hot_trigger)
+    target = singleton ? owner.singleton_class : owner
+    return false unless target.method_defined?(meth) ||
+                        target.private_method_defined?(meth) ||
+                        target.protected_method_defined?(meth)
+    orig = orig_name(label)
+    return true if target.method_defined?(orig) || target.private_method_defined?(orig)
+    was_private = target.private_method_defined?(meth)
+    target.send(:alias_method, orig, meth)
+    target.send(:define_method, meth) do |*args, &blk|
+      if !$__mkxp_martprof || (!$__mkxp_mart_hot && $__mkxp_mart_active <= 0 && !hot_trigger)
+        send(orig, *args, &blk)
+      else
+        $__mkxp_mart_hot = true if hot_trigger
+        MkxpMartProf.enter(label)
+        begin
+          send(orig, *args, &blk)
+        ensure
+          MkxpMartProf.leave(label)
+        end
+      end
+    end
+    target.send(:private, meth) if was_private
+    true
+  rescue StandardError => e
+    $stderr.puts "[martprof] wrap #{label} failed: #{e.class}: #{e.message}"
+    false
+  end
+
+  # 跨帧方法：只做会话计数，不做 enter/leave（否则会把整个会话算成一帧）
+  def self.wrap_marker(owner, meth, label, singleton)
+    target = singleton ? owner.singleton_class : owner
+    return false unless target.method_defined?(meth) ||
+                        target.private_method_defined?(meth) ||
+                        target.protected_method_defined?(meth)
+    orig = orig_name("marker_#{label}")
+    return true if target.method_defined?(orig) || target.private_method_defined?(orig)
+    target.send(:alias_method, orig, meth)
+    target.send(:define_method, meth) do |*args, &blk|
+      if !$__mkxp_martprof
+        send(orig, *args, &blk)
+      else
+        $__mkxp_mart_active += 1
+        begin
+          send(orig, *args, &blk)
+        ensure
+          $__mkxp_mart_active -= 1
+        end
+      end
+    end
+    true
+  rescue StandardError => e
+    $stderr.puts "[martprof] marker #{label} failed: #{e.class}: #{e.message}"
+    false
+  end
+
+  # Bitmap#initialize 是全局构造路径，包装若与 C++ 绑定不兼容会让游戏起不来
+  def self.rollback_bitmap
+    saved_busy = $__mkxp_busy
+    $__mkxp_busy = true
+    TARGETS.each do |cname, meth, label, singleton, _hot|
+      next unless cname == 'Bitmap'
+      begin
+        owner = resolve(cname)
+        next unless owner
+        target = singleton ? owner.singleton_class : owner
+        orig = orig_name(label)
+        next unless target.method_defined?(orig) || target.private_method_defined?(orig)
+        target.send(:alias_method, meth, orig)
+        target.send(:remove_method, orig) rescue nil
+        target.send(:private, meth) if meth == :initialize
+      rescue StandardError => e
+        $stderr.puts "[martprof] rollback #{label} failed: #{e.class}: #{e.message}"
+      end
+    end
+    $stderr.puts '[martprof] Bitmap wraps rolled back'
+  ensure
+    $__mkxp_busy = saved_busy
+  end
+
+  def self.install
+    return true if $__mkxp_mart_armed
+    $__mkxp_mart_tries += 1
+    saved_busy = $__mkxp_busy
+    $__mkxp_busy = true
+    n = 0
+    m = 0
+    begin
+      TARGETS.each do |cname, meth, label, singleton, hot|
+        owner = resolve(cname)
+        next unless owner
+        n += 1 if wrap(owner, meth, label, singleton, hot)
+      end
+      MARKERS.each do |cname, meth, label|
+        owner = resolve(cname)
+        next unless owner
+        m += 1 if wrap_marker(owner, meth, label, false)
+      end
+    ensure
+      $__mkxp_busy = saved_busy
+    end
+    # 商店两个核心类都已定义才算装全；否则下一帧继续尝试
+    ready = defined?(PokemonMart_Scene) && defined?(Window_PokemonMart) && defined?(PokemonMartScreen)
+    if ready && n > 0
+      $__mkxp_mart_armed = true
+      $stderr.puts "[martprof] armed n=#{n} markers=#{m} thr=#{FRAME_MS}ms max=#{MAX_LINES}"
+      begin
+        if defined?(::Bitmap)
+          probe = ::Bitmap.new(1, 1)
+          probe.dispose if probe.respond_to?(:dispose)
+          $stderr.puts '[martprof] Bitmap probe OK'
+        end
+      rescue StandardError => e
+        $stderr.puts "[martprof] Bitmap probe failed, rolling back: #{e.class}: #{e.message}"
+        rollback_bitmap
+      end
+    end
+    $__mkxp_mart_armed
+  rescue StandardError => e
+    $stderr.puts "[martprof] install failed: #{e.class}: #{e.message}"
+    false
+  end
+
+  # 帧边界：打印上一帧（两次 Graphics.update 之间）的耗时分解
+  def self.tick
+    return unless $__mkxp_martprof
+    t = now
+    install if !$__mkxp_mart_armed && $__mkxp_mart_tries < 600
+    last = $__mkxp_mart_last
+    $__mkxp_mart_last = t
+    return unless last
+    dt = (t - last) * 1000.0
+    acc = $__mkxp_mart_acc
+    active = $__mkxp_mart_active
+    hot = $__mkxp_mart_hot || active > 0
+    $__mkxp_mart_since += 1
+    if hot && dt >= FRAME_MS && $__mkxp_mart_lines < MAX_LINES
+      $__mkxp_mart_lines += 1
+      parts = acc.sort_by { |_, v| -v[1] }.first(TOP_N).map do |k, v|
+        "#{k}=#{v[0]}x/#{v[1].round(1)}"
+      end
+      unknown = dt - acc.values.inject(0.0) { |s, v| s + v[1] }
+      unknown = 0.0 if unknown < 0
+      emit "[martprof] frame=#{dt.round(1)}ms | #{parts.join(' ')} | unknown=#{unknown.round(1)}ms"
+    end
+    # 会话刚结束（active 从 >0 归零）时强制刷出，避免最后几行滞留在缓冲区
+    ended = $__mkxp_mart_prev_act > 0 && active <= 0
+    $__mkxp_mart_prev_act = active
+    flush(ended)
+    acc.clear
+    $__mkxp_mart_stack.clear
+    $__mkxp_mart_hot = false
+  rescue StandardError => e
+    $stderr.puts "[martprof] tick failed: #{e.class}: #{e.message}"
+  end
+end
+
+# 帧边界挂到 Graphics.update（引擎 C++ 绑定在 ios_hook 注入前已就绪），
+# 若不可包装则回退 Input.update；两者都是主循环每帧一次。
+begin
+  installed_frame_hook = false
+  %i[Graphics Input].each do |mod|
+    begin
+      m = (Object.const_get(mod) rescue nil)
+      next unless m
+      sc = m.singleton_class
+      has = sc.method_defined?(:update) || sc.private_method_defined?(:update) ||
+            m.method_defined?(:update) || m.private_method_defined?(:update)
+      next unless has
+      orig = :__mkxp_mart_orig_frame_update
+      next if sc.method_defined?(orig) || sc.private_method_defined?(orig)
+      sc.send(:alias_method, orig, :update)
+      sc.send(:define_method, :update) do |*args, &blk|
+        MkxpMartProf.tick
+        send(orig, *args, &blk)
+      end
+      $stderr.puts "[martprof] frame hook on #{mod}.update"
+      installed_frame_hook = true
+      break
+    rescue StandardError => e
+      $stderr.puts "[martprof] frame hook #{mod}.update failed: #{e.class}: #{e.message}"
+    end
+  end
+  $stderr.puts '[martprof] frame hook unavailable (no log will be produced)' unless installed_frame_hook
+rescue StandardError => e
+  $stderr.puts "[martprof] frame hook failed: #{e.class}: #{e.message}"
+end
