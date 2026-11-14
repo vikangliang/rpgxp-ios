@@ -2005,3 +2005,202 @@ begin
 rescue StandardError => e
   $stderr.puts "[martprof] frame hook failed: #{e.class}: #{e.message}"
 end
+
+# ============================================================================
+# [martfix] Bitmap#text_size 结果缓存 —— 常驻修复，与上方诊断插桩相互独立
+#
+# 真机取证（BUILD=a64006f，22 慢帧 / 10231.2ms，覆盖率 96.6%，unknown
+# 均值 15.8ms）：pbDrawTextPositions 37.8% + Unf#refresh 25.4% +
+# Adv#refresh 20.2% = 83.4%，全部是文本绘制；每帧 draw_text≈272、
+# text_size≈357 次 Ruby→C++ 边界调用（单次约 0.7ms），与图鉴 findCenter
+# 的逐像素 get_pixel 同源。Mart#pbRefresh 自身仅剩 1.07ms/次，说明首轮
+# 那 221.69ms 全是被当时未包装的三个窗口 refresh 吸收的。
+#
+# 关键放大点：00004_MKXP_Compatibility.rb:18-27 重写的 Bitmap#draw_text
+# 在 6 参数形式下丢弃调用方传入的 height，每次重新 text_size(text)；
+# 而 00087_DrawText.rb:1060-1073 的 pbDrawShadowText 每条文本画 4 次
+# （3 阴影 + 1 正文），故同一字符串被重复测量 4~5 次。缓存可让这些
+# 重复测量全部命中，且翻页时列表 16 行的物品名/价格跨帧不变，命中率高。
+#
+# 同时证伪了上一轮的两个怀疑：skinSame 合计 0、Win#skin_set 仅 3 次、
+# privT p50=1（只在打开商店那帧 62），说明 windowskin= 根本不是每帧
+# 调用；Bitmap#blt=388x/250ms 的两帧是【打开商店新建窗口】的首次皮肤
+# 构建且 draw_text=0，幂等化对此无效，故不动它。
+#
+# 修法：包装 Bitmap#text_size，按 [字体代, 字符串] 缓存 width/height
+# 数值。命中返回纯 Ruby 的 Size（提供 width/height/x/y/set/empty?，
+# 零 C++ 调用）。所有 text_size 调用点已逐条核实（00004/00005/00082/
+# 00087/00089/00192/00298/00299/00307/00309/00310/00312/00313）只读
+# .width/.height，无一写入 Rect 或把结果再传给 C++。
+#   * 不缓存 Rect 对象：mkxp 可能复用内部 Rect；且返回新 Size 可避免
+#     调用方万一修改结果时污染缓存。
+#   * Font 的 [a-z_]xxx= setter（排除 color=：颜色不影响字形宽度，
+#     且 pbDrawShadowText 每帧改它数十次）与 Bitmap#font= 都会递增
+#     $__mkxp_font_gen；代变化时清空所有缓存，字体/字号变化后绝不
+#     返回过期尺寸。注意 grep(/=$/) 会误匹配 ==/!=/>= 等，已用
+#     \A[a-z_][A-Za-z0-9_]*=\z 过滤。
+#   * 只缓存单参数 String 查询；多参数/非 String 直接透传原方法。
+#   * 缓存挂在 Bitmap 实例上（@__mkxp_ts_cache），位图销毁即随之回收；
+#     每实例上限 CACHE_MAX 条，超限时整体清空，避免无限增长。
+#
+# 安全：只缓存只读查询结果，不改变任何绘制流程/状态机；全程 rescue；
+# 带开关 $__mkxp_tsfix（false 时包装直接透传）；安装后做真实构造自检，
+# 任一异常即置开关为 false 安全降级。Font#name= 已被 [mkxp-fontfix]
+# 包装，本修复的别名链挂在其外层，不冲突。
+# ============================================================================
+$__mkxp_tsfix    = true
+$__mkxp_font_gen = 0
+
+module MkxpTextSizeFast
+  CACHE_MAX = 1024
+  LOG_EVERY = 200
+  LOG_LINES = 10
+
+  # 纯 Ruby 的尺寸对象：零 C++ 调用，接口覆盖 Rect 的只读用法
+  class Size
+    attr_accessor :width, :height
+    def initialize(w, h)
+      @width = w
+      @height = h
+    end
+    def x; 0; end
+    def y; 0; end
+    def x=(v); v; end
+    def y=(v); v; end
+    def set(_x = 0, _y = 0, w = 0, h = 0)
+      @width = w
+      @height = h
+      self
+    end
+    def empty?; @width <= 0 || @height <= 0; end
+    def inspect; "#<MkxpTextSizeFast::Size #{@width}x#{@height}>"; end
+    def to_s; inspect; end
+  end
+
+  @armed = false
+  @hits = 0
+  @misses = 0
+  @logged = 0
+  @setters = []
+
+  class << self
+    def armed?; @armed; end
+    def setters; @setters; end
+    def stats; [@hits, @misses]; end
+
+    def bump
+      $__mkxp_font_gen += 1
+    end
+
+    def note(hit)
+      hit ? (@hits += 1) : (@misses += 1)
+      n = @hits + @misses
+      if @logged < LOG_LINES && n % LOG_EVERY == 0
+        @logged += 1
+        $stderr.puts "[martfix] text_size hits=#{@hits} misses=#{@misses} gen=#{$__mkxp_font_gen}"
+      end
+    end
+
+    def install
+      return true if @armed
+      return false unless defined?(::Bitmap) && defined?(::Font)
+      bm = ::Bitmap
+
+      unless bm.method_defined?(:__mkxp_ts_orig_text_size) ||
+             bm.private_method_defined?(:__mkxp_ts_orig_text_size)
+        bm.send(:alias_method, :__mkxp_ts_orig_text_size, :text_size)
+        bm.send(:define_method, :text_size) do |*args, &blk|
+          s = args[0]
+          if !$__mkxp_tsfix || args.length != 1 || !s.is_a?(String)
+            send(:__mkxp_ts_orig_text_size, *args, &blk)
+          else
+            gen = $__mkxp_font_gen
+            cache = @__mkxp_ts_cache
+            if !cache || @__mkxp_ts_gen != gen
+              @__mkxp_ts_cache = cache = {}
+              @__mkxp_ts_gen = gen
+            end
+            v = cache[s]
+            if v
+              MkxpTextSizeFast.note(true)
+              MkxpTextSizeFast::Size.new(v[0], v[1])
+            else
+              r = send(:__mkxp_ts_orig_text_size, *args, &blk)
+              # 引擎若返回非 Rect 值，原样透传，绝不因包装引入新异常。
+              if !r.respond_to?(:width) || !r.respond_to?(:height)
+                MkxpTextSizeFast.note(false)
+                r
+              else
+                w = r.width
+                h = r.height
+                # 逐条淘汰最老条目，保留热点（Hash 保序）。整体 clear 会让
+                # 命中率周期性归零，物品名/价格这类每帧复用的键被无谓丢弃。
+                cache.shift if cache.size >= MkxpTextSizeFast::CACHE_MAX
+                cache[s] = [w, h].freeze
+                MkxpTextSizeFast.note(false)
+                MkxpTextSizeFast::Size.new(w, h)
+              end
+            end
+          end
+        end
+      end
+
+      # 只包真正的属性 setter；color= 排除（不影响字形宽度、每帧高频）
+      ::Font.instance_methods.map(&:to_s).select do |s|
+        s =~ /\A[a-z_][A-Za-z0-9_]*=\z/ && s != 'color='
+      end.each do |s|
+        m = s.to_sym
+        getter = s.sub(/=$/, '').to_sym
+        an = :"__mkxp_ts_orig_#{s.sub(/=$/, '')}="
+        next if ::Font.method_defined?(an) || ::Font.private_method_defined?(an)
+        has_getter = ::Font.method_defined?(getter) || ::Font.private_method_defined?(getter)
+        ::Font.send(:alias_method, an, m)
+        ::Font.send(:define_method, m) do |val|
+          # 仅当值真正变化才失效。drawSingleFormattedChar(00087:949-963)
+          # 逐字符赋 size/bold/italic/name，无条件 bump 会让缓存每字符
+          # 清空、命中率归零；这些赋值几乎都是重复写同一个值。
+          begin
+            MkxpTextSizeFast.bump if !has_getter || (send(getter) != val)
+          rescue StandardError
+            MkxpTextSizeFast.bump   # getter 异常时保守失效
+          end
+          send(an, val)
+        end
+        @setters << s
+      end
+
+      if bm.method_defined?(:font=) || bm.private_method_defined?(:font=)
+        unless bm.method_defined?(:__mkxp_ts_orig_font_set) ||
+               bm.private_method_defined?(:__mkxp_ts_orig_font_set)
+          bm.send(:alias_method, :__mkxp_ts_orig_font_set, :font=)
+          bm.send(:define_method, :font=) do |v|
+            MkxpTextSizeFast.bump unless (respond_to?(:font) && send(:font).equal?(v))
+            send(:__mkxp_ts_orig_font_set, v)
+          end
+          @setters << 'Bitmap#font='
+        end
+      end
+
+      probe = bm.new(4, 4)
+      p1 = probe.text_size('X')
+      p2 = probe.text_size('X')
+      p3 = probe.text_size('WWW')
+      ok = p1.respond_to?(:width) && p1.width > 0 &&
+           p2.width == p1.width && p2.height == p1.height &&
+           p3.width >= p1.width
+      probe.dispose if probe.respond_to?(:dispose)
+      raise 'text_size self-check failed' unless ok
+
+      @armed = true
+      $stderr.puts "[martfix] armed setters=#{@setters.join(',')} cache=#{CACHE_MAX}"
+      true
+    end
+  end
+end
+
+begin
+  MkxpTextSizeFast.install
+rescue StandardError => e
+  $__mkxp_tsfix = false
+  $stderr.puts "[martfix] install failed (disabled): #{e.class}: #{e.message}"
+end
