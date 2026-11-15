@@ -63,7 +63,6 @@ struct MkxpLog {
   /// Flutter 诊断页与 HUD 浮层据此展示帧耗时/慢帧归因/闪退，无需读整个大文件。
   static func readLastDiag() -> [String: Any]? {
     let tail = readTail()
-    guard let tail = tail, !tail.isEmpty else { return nil }
     for line in tail.components(separatedBy: "\n").reversed() {
       guard let range = line.range(of: "[diag] "), range.upperBound < line.endIndex else { continue }
       let jsonStr = String(line[range.upperBound...])
