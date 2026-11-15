@@ -1666,12 +1666,7 @@ repl_a = (
     "        if (__pfreq > 0) {\n"
     "            g_iosProfDelay += (double)(__ppc1 - __ppc0) * 1000.0 / __pfreq;\n"
     "            g_iosProfSwap += (double)(__ppc2 - __ppc1) * 1000.0 / __pfreq;\n"
-    "        }\n"
-    "\n"
-    "        ++frameCount;\n"
-    "\n"
-    "        threadData->ethread->notifyFrame();\n"
-    "    }\n")
+    "        }\n")
 
 anchor_b = ("    void redrawScreen() {\n"
             "        screen.composite();\n")
