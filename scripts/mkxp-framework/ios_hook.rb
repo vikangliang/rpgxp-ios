@@ -423,16 +423,19 @@ class << Object
         self.send(:public, m)
       rescue StandardError
       end
-      # 诊断器帧入口：Scene#update 是 Essentials 每帧必经之路（实例方法）。
+      # 诊断器帧入口 / 归因目标：这些方法由【游戏脚本】定义（Essentials），
+      # 而本 hook 在游戏脚本加载前执行，所以它们此刻还不存在——只能在
+      # method_added（方法刚定义完）这一刻包住。
       # 必须挂在这个【已生效】的 method_added 钩子里：本文件另有一处
       # Module 级的 method_added 钩子，但 #<Class:Object> 上的本钩子在祖先链中
       # 更靠前，会把它完全遮蔽（Ruby 按名字查找，只取最靠前的那份）。
       begin
-        if $__mkxp_diag_on && m == :update && self.name == 'Scene'
-          __diag_wrap_instance(self, :update, 'Scene#update')
+        if $__mkxp_diag_on && m == :update
+          __diag_wrap_instance(self, :update, "#{self.name}#update") if
+            %w[Scene Sprite Window Sprite_Picture LayerSprite].include?(self.name)
         end
       rescue StandardError => __e
-        $stderr.puts "[diag] Scene hook error: #{__e.class}: #{__e.message}" if $__mkxp_diag_on
+        $stderr.puts "[diag] update hook error: #{__e.class}: #{__e.message}" if $__mkxp_diag_on
       end
       __mkxp_install_autotile_cache if defined?(::TilemapRenderer) && ::TilemapRenderer.const_defined?(:AutotileExpander)
       # 包装一律替换 Object 的【实例】方法（顶层 def 的真实落点），
@@ -1766,10 +1769,12 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
         h[:ruby_samples] << dt_ms
         h[:ruby_samples].shift while h[:ruby_samples].size > 120
         fc = h[:frame_comp]
-        if dt_ms >= h[:slow_thr] && fc.any?
-          top = fc.max_by { |_, v| v }
+        # 慢帧判定：帧内若没有任何组件被计时（fc 为空），此前会整帧漏记
+        # （实测出现"最大 156ms 但慢帧 0 次"）。这里改为仍记录，归因标"未归因"。
+        if dt_ms >= h[:slow_thr]
+          top = fc.any? ? fc.max_by { |_, v| v } : nil
           h[:slow_count] += 1
-          rec = { :at => __diag_now, :ms => dt_ms.round(1), :comp => top[0] }
+          rec = { :at => __diag_now, :ms => dt_ms.round(1), :comp => (top ? top[0] : '未归因') }
           h[:last_slow] = rec
           h[:slow_samples] << rec
           h[:slow_samples].shift while h[:slow_samples].size > 60
@@ -1786,7 +1791,15 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
         return if !force && (now - h[:last_flush]) < 0.25
         h[:last_flush] = now
         begin
-          comp = h[:comp].sort_by { |_, v| -v }.first(8).map { |k, v| { :name => k, :ms => v.round(1) } }
+          # 组件归因：ms 是【会话累计】耗时，容易被误读成单帧耗时，故同时给出
+          # 每帧均值 avgMs 与占 Ruby 总耗时百分比 pct。
+          __n = h[:ruby_n] > 0 ? h[:ruby_n] : 1
+          comp = h[:comp].sort_by { |_, v| -v }.first(8).map { |k, v|
+            { :name => k,
+              :ms => v.round(1),
+              :avgMs => (v / __n).round(3),
+              :pct => (h[:ruby_sum] > 0 ? (v / h[:ruby_sum] * 100.0) : 0.0).round(1) }
+          }
           ruby_avg = h[:ruby_n] > 0 ? (h[:ruby_sum] / h[:ruby_n]).round(2) : 0.0
           obj = {
             :updated => now.round(3),

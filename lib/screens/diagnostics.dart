@@ -71,10 +71,13 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
   List get components => _list(_diag?['components']);
   Map get lastSlow => _map(_diag?['lastSlow']);
   List get crashes => _list(_diag?['crashes']);
-  double get _compMax => components.fold(
-      0.0,
-      (m, e) =>
-          e is Map && _num((e as Map)['ms']) > m ? _num((e as Map)['ms']) : m);
+  /// 条形归一基准：取所有组件里最大的【每帧均值】。
+  /// 兼容旧数据（只有 ms 没有 avgMs）：此时退回用累计值。
+  double get _compMax => components.fold(0.0, (m, e) {
+    if (e is! Map) return m;
+    final v = _num(e['avgMs']) > 0 ? _num(e['avgMs']) : _num(e['ms']);
+    return v > m ? v : m;
+  });
 
   bool get _hasData => rubyN > 0;
 
@@ -223,12 +226,22 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
     final max = _compMax;
     return _cardBox('组件耗时归因（Top ${components.length}）',
         children: [
+          const Padding(
+            padding: EdgeInsets.only(bottom: 6),
+            child: Text(
+                '条形按「每帧均值」归一（对照 16.7ms 的 60fps 帧预算）；括号内为会话累计与占比。',
+                style: TextStyle(color: Colors.white38, fontSize: 12, height: 1.5)),
+          ),
           for (final e in components)
-            if (e is Map) _bar(e['name']?.toString() ?? '?', _num(e['ms']), max),
+            if (e is Map)
+              _bar(e['name']?.toString() ?? '?', _num(e['avgMs']),
+                  _num(e['ms']), _num(e['pct']), max),
         ]);
   }
 
-  Widget _bar(String name, double ms, double max) => Padding(
+  /// [avgMs] 每帧均值（条形归一基准）、[totalMs] 会话累计、[pct] 占 Ruby 总耗时比例。
+  Widget _bar(String name, double avgMs, double totalMs, double pct, double max) =>
+      Padding(
         padding: const EdgeInsets.symmetric(vertical: 5),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -238,7 +251,8 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                 Expanded(
                     child: Text(name,
                         style: const TextStyle(color: Colors.white, fontSize: 13))),
-                Text('${ms.toStringAsFixed(1)} ms',
+                Text(
+                    '${avgMs.toStringAsFixed(2)} ms/帧  (${totalMs.toStringAsFixed(0)} ms · ${pct.toStringAsFixed(1)}%)',
                     style: const TextStyle(color: Colors.white54, fontSize: 12)),
               ],
             ),
@@ -246,13 +260,13 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
             ClipRRect(
               borderRadius: BorderRadius.circular(3),
               child: LinearProgressIndicator(
-                value: max > 0 ? (ms / max).clamp(0, 1) : 0,
+                value: max > 0 ? (avgMs / max).clamp(0, 1) : 0,
                 minHeight: 6,
                 backgroundColor: Colors.white10,
                 valueColor: AlwaysStoppedAnimation<Color>(
-                  ms >= 40
+                  avgMs >= 40
                       ? const Color(0xFFFF453A)
-                      : ms >= 16
+                      : avgMs >= 16
                           ? const Color(0xFFFFD60A)
                           : _primary,
                 ),
