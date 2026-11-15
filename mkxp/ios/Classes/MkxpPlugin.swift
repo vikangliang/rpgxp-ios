@@ -113,7 +113,8 @@ class MkxpMethodHandler: NSObject {
       // 启动前修复 zip 导入产生的乱码文件名（GBK 名被 Latin-1 误解码，
       // 会导致中文名 BGM/贴图找不到：切图 BGM 静音、精灵显示"?"）
       MkxpFileFix.normalize(URL(fileURLWithPath: MkxpBridge.resolve(path)))
-      setenv("MKXP_DIAG", MkxpPlugin.diagEnabled ? "1" : "0", 1)
+      let diagVal = MkxpPlugin.diagEnabled ? "1" : "0"
+      diagVal.withCString { v in setenv("MKXP_DIAG", v, 1) }
       let rc = MkxpBridge.run(gamePath: path)
       if rc == 0 {
         MkxpTouchOverlay.shared.show()       // 原生触摸浮层（SDL 窗口之上）
