@@ -423,6 +423,17 @@ class << Object
         self.send(:public, m)
       rescue StandardError
       end
+      # 诊断器帧入口：Scene#update 是 Essentials 每帧必经之路（实例方法）。
+      # 必须挂在这个【已生效】的 method_added 钩子里：本文件另有一处
+      # Module 级的 method_added 钩子，但 #<Class:Object> 上的本钩子在祖先链中
+      # 更靠前，会把它完全遮蔽（Ruby 按名字查找，只取最靠前的那份）。
+      begin
+        if $__mkxp_diag_on && m == :update && self.name == 'Scene'
+          __diag_wrap_instance(self, :update, 'Scene#update')
+        end
+      rescue StandardError => __e
+        $stderr.puts "[diag] Scene hook error: #{__e.class}: #{__e.message}" if $__mkxp_diag_on
+      end
       __mkxp_install_autotile_cache if defined?(::TilemapRenderer) && ::TilemapRenderer.const_defined?(:AutotileExpander)
       # 包装一律替换 Object 的【实例】方法（顶层 def 的真实落点），
       # 使 main 上下文与类上下文的所有调用都被拦截；此前定义在
@@ -1593,10 +1604,41 @@ class << Object
   unless method_defined?(:__mkxp_fc_orig_method_added)
     alias_method :__mkxp_fc_orig_method_added, :method_added
   end
+  # 说明：本钩子通过 __mkxp_fc_orig_method_added（alias 链）调用约 413 行的
+  # 核心钩子（强制方法 public / autotile 缓存 / getPlayTime 包装等），两者都会执行。
+  # 因此【Scene#update 的诊断帧钩子】加在 413 行那个核心钩子里即可生效，
+  # 无需、也不应在此再定义一份（同名 method_added 会互相遮蔽）。
   def method_added(m)
     __mkxp_fc_orig_method_added(m)
     return if $__mkxp_busy || MkxpFindCenterFast.wrapping?
     MkxpFindCenterFast.wrap if m == :findCenter
+  end
+end
+
+# ---- 诊断器帧入口钩子 ----
+# 注意（勿再踩）：本文件在 #<Class:Object> 上已有一个【生效中】的 method_added
+# 钩子（约 413 行，做"强制方法 public"/autotile 缓存等）。Ruby 查找 method_added
+# 按名字取祖先链中最靠前的那份，因此 Module 级再定义 method_added 会被完全遮蔽、
+# 永不触发——Scene#update 这类实例方法钩子必须挂进那个已生效的钩子里。
+#
+# singleton_method_added 则没有遮蔽问题（无处先定义），定义在 Module 上即可覆盖
+# 所有 module 的单例方法定义（SceneManager.update 即 module function）。
+class Module
+  unless method_defined?(:__mkxp_diag_orig_sm_added)
+    alias_method :__mkxp_diag_orig_sm_added, :singleton_method_added
+  end
+  def singleton_method_added(m)
+    __mkxp_diag_orig_sm_added(m)
+    begin
+      if $__mkxp_diag_on && m == :update
+        $stderr.puts "[diag] singleton_method_added fired: #{self.name}##{m}"
+        if self.name == 'SceneManager'
+          __diag_wrap_singleton(self, :update, 'SceneManager.update')
+        end
+      end
+    rescue StandardError => e
+      $stderr.puts "[diag] singleton hook error: #{e.class}: #{e.message}" if $__mkxp_diag_on
+    end
   end
 end
 
@@ -1620,7 +1662,7 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
     # 诊断页与实时 HUD 浮层读取。全部 begin/rescue，绝不影响正常游戏逻辑。
     # =====================================================================
     $stderr.puts "[diag-block] reached (top-level diagnostics section executing)"
-    __mkxp_diag_on = false
+    $__mkxp_diag_on = false
     __diag_probe = []
     # 关键：iOS 静态 Ruby 可能没编进 json 扩展，require 'json' 会抛 LoadError，
     # 而 LoadError < ScriptError（非 StandardError），rescue nil / rescue StandardError
@@ -1657,16 +1699,16 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
             __v = __so["diagEnabled"] if __so.is_a?(Hash)
           end
           __v = (__txt =~ /"diagEnabled"\s*:\s*true/) ? true : false if __v.nil?
-          __mkxp_diag_on = !!__v
-          break if __mkxp_diag_on
+          $__mkxp_diag_on = !!__v
+          break if $__mkxp_diag_on
         end
       end
-      __mkxp_diag_on = true if ENV['MKXP_DIAG'] == '1'   # 兜底（部分环境可读 env）
+      $__mkxp_diag_on = true if ENV['MKXP_DIAG'] == '1'   # 兜底（部分环境可读 env）
     rescue Exception => e
       __diag_probe << "err=#{e.class}:#{e.message}"
     end
-    $stderr.puts "[diag-gate] on=#{__mkxp_diag_on} home=#{(ENV['HOME']||'').inspect} pwd=#{(Dir.pwd rescue '?').inspect} #{__diag_probe.join(' ')}"
-    if __mkxp_diag_on
+    $stderr.puts "[diag-gate] on=#{$__mkxp_diag_on} home=#{(ENV['HOME']||'').inspect} pwd=#{(Dir.pwd rescue '?').inspect} #{__diag_probe.join(' ')}"
+    if $__mkxp_diag_on
       begin
         require 'json'
       rescue LoadError, StandardError
@@ -1733,7 +1775,8 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
           h[:slow_samples].shift while h[:slow_samples].size > 60
         end
         h[:frame_comp] = {}
-        __diag_flush(true) if h[:frame] % 600 == 0
+        # 每 600 帧或每 2 秒 flush 一次（不能只靠帧数：低帧率时 600 帧要等很久）
+        __diag_flush if h[:frame] % 600 == 0 || (__diag_now - h[:last_flush]) >= 2.0
       rescue StandardError
       end
 
@@ -1803,28 +1846,68 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
         $stderr.puts "[diag] wrap #{label} failed: #{e.class}"
       end
 
-      # 帧入口：Ruby 侧每帧耗时（包住 rescue 以捕获并上报逐帧异常）
-      begin
-        if defined?(::Graphics)
-          im = ::Graphics.instance_method(:update) rescue nil
-          if im
-            ::Graphics.send(:define_method, :update) do |*a, &b|
-              t = __diag_now
-              begin
-                r = im.bind(self).call(*a, &b)
-              rescue StandardError => e
-                __diag_record_crash(e)
-                raise
-              end
-              __diag_record_ruby((__diag_now - t) * 1000.0)
-              r
-            end
-            $stderr.puts "[diag] Graphics.update wrapped"
+      # 已生效的帧钩子名（用于日志自检：哪个入口真的被调到）
+      $__diag_hooks = []
+
+      # 单例方法帧钩子包装（如 Graphics.update / SceneManager.update）。
+      # 关键：Graphics.update 由 _rb_define_module_function 注册（module_function），
+      # 单例方法与私有实例方法是两份独立方法体——只 define_method 实例方法
+      # 对 "Graphics.update" 这种单例调用完全无效，必须 define_singleton_method。
+      def __diag_wrap_singleton(mod, mname, label)
+        return if !mod || !mod.respond_to?(mname)
+        wkey = :"@__diag_wrapped_#{mname}"
+        return if mod.singleton_class.instance_variable_get(wkey)
+        orig = mod.method(mname)
+        mod.singleton_class.instance_variable_set(wkey, true)
+        mod.send(:define_singleton_method, mname) do |*a, &b|
+          __t = __diag_now
+          begin
+            __r = orig.call(*a, &b)
+          rescue StandardError => __e
+            __diag_record_crash(__e)
+            raise
           end
+          __diag_record_ruby((__diag_now - __t) * 1000.0)
+          __r
         end
+        $__diag_hooks << label
+        $stderr.puts "[diag] hook armed: #{label}"
       rescue StandardError => e
-        $stderr.puts "[diag] frame wrap failed: #{e.class}"
+        $stderr.puts "[diag] hook #{label} failed: #{e.class}: #{e.message}"
       end
+
+      # 实例方法帧钩子包装（如 Scene#update）
+      def __diag_wrap_instance(cls, mname, label)
+        return if !cls
+        wkey = :"@__diag_wrapped_#{mname}"
+        return if cls.instance_variable_get(wkey)
+        im = (cls.instance_method(mname) rescue nil)
+        return if !im
+        cls.instance_variable_set(wkey, true)
+        cls.send(:define_method, mname) do |*a, &b|
+          __t = __diag_now
+          begin
+            __r = im.bind(self).call(*a, &b)
+          rescue StandardError => __e
+            __diag_record_crash(__e)
+            raise
+          end
+          __diag_record_ruby((__diag_now - __t) * 1000.0)
+          __r
+        end
+        $__diag_hooks << label
+        $stderr.puts "[diag] hook armed: #{label}"
+      rescue StandardError => e
+        $stderr.puts "[diag] hook #{label} failed: #{e.class}: #{e.message}"
+      end
+
+      # 帧入口 A：Graphics.update（引擎内建，游戏脚本加载前已存在）
+      begin
+        __diag_wrap_singleton(::Graphics, :update, 'Graphics.update') if defined?(::Graphics)
+      rescue StandardError
+      end
+      # 帧入口 B/C：SceneManager.update / Scene#update 由游戏脚本定义，
+      # 已在上面的 method_added / singleton_method_added 钩子里按需包装。
 
       # 归因目标（仅包裹已存在的方法；缺失自动跳过）
       __diag_wrap(::MkxpFindCenterFast, :findCenter, "findCenter") if defined?(::MkxpFindCenterFast)
@@ -1838,9 +1921,20 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
       __diag_wrap(::PokemonSprite, :front_sprite_bitmap, "精灵合成") if defined?(::PokemonSprite)
 
       begin
-        at_exit { __diag_flush(true) }
+        # 退出时补一次 flush；若一帧都没采到，说明帧钩子没命中——明确打印，
+        # 免得"无数据"变成无信息死角。
+        at_exit do
+          begin
+            if $__diag && $__diag[:frame].to_i == 0
+              $stderr.puts "[diag] no-frames-captured armed=#{($__diag_hooks || []).join(',')}"
+            end
+            __diag_flush(true)
+          rescue StandardError => e
+            $stderr.puts "[diag] at_exit flush failed: #{e.class}"
+          end
+        end
       rescue StandardError
       end
 
-      $stderr.puts "[diag] diagnostics installed (gated by MKXP_DIAG)"
+      $stderr.puts "[diag] diagnostics installed (gated by MKXP_DIAG) armed=#{($__diag_hooks || []).join(',')}"
     end
