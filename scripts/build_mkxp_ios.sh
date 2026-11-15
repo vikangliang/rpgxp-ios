@@ -1624,27 +1624,38 @@ with open(p, 'rb') as f:
 crlf = b'\r\n' in raw
 s = raw.decode('utf-8').replace('\r\n', '\n')
 
+# ---- 顶层埋点块 ----
+# 必须放在【所有 namespace 之外】：若放进 Graphics::Private 类里，static 变量会被
+# 当成类成员，而 C++ 规定非 const 静态数据成员不允许在类内初始化
+# （编译错误: non-const static data member must be initialized out of line）。
+# 锚点用 ios-winsize.patch 加的顶层 extern "C" 函数首行（该字符串在 graphics.cpp
+# 里唯一：声明在 ios_embed.mm，定义只有这一处）。
+top_anchor = "extern \"C\" void mkxp_ios_getScene(GLuint *tex, GLuint *fbo, int *sw, int *sh,\n"
+top_repl = (
+    "/* ---- iOS 帧分段埋点（诊断用）：只累加，不改任何渲染行为 ----\n"
+    " * redraw = 场景合成 + GL 提交 + swap 总耗时（RAII 守卫覆盖所有 return 路径）\n"
+    " * delay  = fpsLimiter.delay()（等 vsync 的 sleep）\n"
+    " * swap   = SDL_GL_SwapWindow（提交 + 等 GPU 完成，含阻塞）\n"
+    " * 由 mkxp_ios_getProf() 以 extern \"C\" 导出给 iOS 侧，并入 PROFILE 行。\n"
+    " * 计时用 SDL_GetPerformanceCounter（SDL 已在本文件使用），不引入 <chrono>\n"
+    " * ——在命名空间内包含标准库头是未定义行为。 */\n"
+    "static double g_iosProfRedraw = 0, g_iosProfDelay = 0, g_iosProfSwap = 0;\n"
+    "static int g_iosProfN = 0;\n"
+    "extern \"C\" void mkxp_ios_getProf(double *out) {\n"
+    "    if (!out) return;\n"
+    "    double n = g_iosProfN > 0 ? (double)g_iosProfN : 1.0;\n"
+    "    out[0] = g_iosProfRedraw / n;\n"
+    "    out[1] = g_iosProfDelay / n;\n"
+    "    out[2] = g_iosProfSwap / n;\n"
+    "    out[3] = (double)g_iosProfN;\n"
+    "}\n"
+    "\n"
+    + top_anchor)
+
 anchor_a = ("    void swapGLBuffer() {\n"
             "        fpsLimiter.delay();\n"
             "        SDL_GL_SwapWindow(threadData->window);\n")
 repl_a = (
-    "    /* 计时用 SDL_GetPerformanceCounter：SDL 已在本文件使用；\n"
-    "     * 不引入 <chrono>——在命名空间内包含标准库头是未定义行为。 */\n"
-    "    /* ---- iOS 帧分段埋点（诊断用）：只累加，不改任何渲染行为 ----\n"
-    "     * redraw = 场景合成 + GL 提交 + swap 总耗时（RAII 守卫覆盖所有 return 路径）\n"
-    "     * delay  = fpsLimiter.delay()（等 vsync 的 sleep）\n"
-    "     * swap   = SDL_GL_SwapWindow（提交 + 等 GPU 完成，含阻塞）\n"
-    "     * 由 mkxp_ios_getProf() 以 extern \"C\" 导出给 iOS 侧，并入 PROFILE 行。 */\n"
-    "    static double g_iosProfRedraw = 0, g_iosProfDelay = 0, g_iosProfSwap = 0;\n"
-    "    static int g_iosProfN = 0;\n"
-    "    extern \"C\" void mkxp_ios_getProf(double *out) {\n"
-    "        if (!out) return;\n"
-    "        double n = g_iosProfN > 0 ? (double)g_iosProfN : 1.0;\n"
-    "        out[0] = g_iosProfRedraw / n;\n"
-    "        out[1] = g_iosProfDelay / n;\n"
-    "        out[2] = g_iosProfSwap / n;\n"
-    "        out[3] = (double)g_iosProfN;\n"
-    "    }\n"
     "    void swapGLBuffer() {\n"
     "        Uint64 __ppc0 = SDL_GetPerformanceCounter();\n"
     "        fpsLimiter.delay();\n"
@@ -1683,12 +1694,14 @@ repl_b = (
 
 ca = s.count(anchor_a)
 cb = s.count(anchor_b)
-if ca != 1 or cb != 1:
-    print("FATAL ios-prof inject: anchorA(swapGLBuffer)=%d anchorB(redrawScreen)=%d" % (ca, cb))
+ct = s.count(top_anchor)
+if ca != 1 or cb != 1 or ct != 1:
+    print("FATAL ios-prof inject: anchorA(swapGLBuffer)=%d anchorB(redrawScreen)=%d topAnchor=%d" % (ca, cb, ct))
     sys.exit(1)
 
 s = s.replace(anchor_a, repl_a, 1)
 s = s.replace(anchor_b, repl_b, 1)
+s = s.replace(top_anchor, top_repl, 1)
 out = s.replace('\n', '\r\n').encode('utf-8') if crlf else s.encode('utf-8')
 with open(p, 'wb') as f:
     f.write(out)
