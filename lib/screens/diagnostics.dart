@@ -66,6 +66,8 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
   // —— 派生指标 ——
   /// 帧率：优先用原生侧实时值（与游戏内 HUD 同值），无则退回日志里的窗口均值。
   double get fps => _nativeFps > 0 ? _nativeFps : _num(_diag?['fps']);
+  /// 当前显示的帧率是否来自日志（游戏未运行，值为上次运行时的实测帧率）。
+  bool get fpsFromLog => _nativeFps <= 0 && _num(_diag?['fps']) > 0;
   Map get ruby => _map(_diag?['ruby']);
   double get rubyAvg => _num(ruby['avgMs']);
   double get rubyMax => _num(ruby['maxMs']);
@@ -190,7 +192,9 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
           const Text('FPS',
               style: TextStyle(color: Colors.white54, fontSize: 18)),
           const Spacer(),
-          Text(running ? '引擎实时帧率（原生 HUD 同值）' : '游戏中由 HUD 实时显示',
+          Text(running
+                  ? (fpsFromLog ? '上次运行的实测帧率' : '引擎实时帧率（原生 HUD 同值）')
+                  : '游戏中由 HUD 实时显示',
               style: const TextStyle(color: Colors.white38, fontSize: 12)),
         ],
       ),
