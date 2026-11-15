@@ -1622,8 +1622,15 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
     $stderr.puts "[diag-block] reached (top-level diagnostics section executing)"
     __mkxp_diag_on = false
     __diag_probe = []
+    # 关键：iOS 静态 Ruby 可能没编进 json 扩展，require 'json' 会抛 LoadError，
+    # 而 LoadError < ScriptError（非 StandardError），rescue nil / rescue StandardError
+    # 都兜不住 —— 异常会穿透整个 hook eval 被 C++ state=NULL 吞掉，导致本 gate
+    # 及其后所有诊断代码静默不执行。故这里一律用 rescue LoadError / rescue Exception。
     begin
-      require 'json' rescue nil
+      begin
+        require 'json'
+      rescue LoadError, StandardError
+      end
       # 候选路径：HOME/Documents、Dir.home/Documents、以及从游戏目录 Dir.pwd
       # 逐级向上（含同级）找 Documents/.settings.json——不依赖 HOME 是否可用。
       __cands = []
@@ -1631,8 +1638,8 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
       __cands << File.join(__h, "Documents", ".settings.json") if __h && !__h.to_s.empty?
       __pwd = (Dir.pwd rescue nil)
       if __pwd && !__pwd.to_s.empty?
-        # 从游戏目录逐级向上（含同级）找 .settings.json：注意 File.join 先拼前段，
-        # 必须是 __pwd 在前、".." 与文件名在后（原先顺序写反会拼出垃圾路径）。
+        # 从游戏目录逐级向上（含同级）找 .settings.json：File.join 先拼前段，
+        # 必须 __pwd 在前、".." 与文件名在后。
         4.times { |i| __cands << File.expand_path(File.join(__pwd, *(([".."] * i) + [".settings.json"]))) }
       end
       __cands.uniq!
@@ -1640,19 +1647,46 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
         __diag_probe << "try=#{__c}"
         if File.exist?(__c)
           __diag_probe << "found=#{__c}"
-          __so = JSON.parse(File.read(__c)) rescue nil
-          __diag_probe << "parsed=#{(__so.inspect)[0, 140]}"
-          __mkxp_diag_on = !!(__so && __so["diagEnabled"])
+          __txt = File.read(__c) rescue ''
+          __diag_probe << "txt=#{__txt[0, 120]}"
+          # 不依赖 JSON：Flutter 用 jsonEncode 写，diagEnabled 为布尔字面量。
+          # 优先 JSON.parse，没 json 时用正则抠 "diagEnabled":true（等价且零依赖）。
+          __v = nil
+          if defined?(JSON) && JSON.respond_to?(:parse)
+            __so = JSON.parse(__txt) rescue nil
+            __v = __so["diagEnabled"] if __so.is_a?(Hash)
+          end
+          __v = (__txt =~ /"diagEnabled"\s*:\s*true/) ? true : false if __v.nil?
+          __mkxp_diag_on = !!__v
           break if __mkxp_diag_on
         end
       end
       __mkxp_diag_on = true if ENV['MKXP_DIAG'] == '1'   # 兜底（部分环境可读 env）
-    rescue StandardError => e
+    rescue Exception => e
       __diag_probe << "err=#{e.class}:#{e.message}"
     end
     $stderr.puts "[diag-gate] on=#{__mkxp_diag_on} home=#{(ENV['HOME']||'').inspect} pwd=#{(Dir.pwd rescue '?').inspect} #{__diag_probe.join(' ')}"
     if __mkxp_diag_on
-      require 'json' rescue nil
+      begin
+        require 'json'
+      rescue LoadError, StandardError
+      end
+
+      # 手写 JSON 序列化兜底：iOS 静态 Ruby 可能无 json 扩展，JSON.generate 不可用。
+      # 诊断数据全是简单结构（Hash/Array/String/Numeric/bool/nil），手写足够。
+      def __diag_json(o)
+        case o
+        when nil then 'null'
+        when true then 'true'
+        when false then 'false'
+        when Numeric then o.to_s
+        when String then '"' + o.to_s.gsub('\\', '\\\\').gsub('"', '\\"').gsub("\n", '\\n').gsub("\r", '\\r') + '"'
+        when Symbol then '"' + o.to_s.gsub('"', '\\"') + '"'
+        when Array then '[' + o.map { |v| __diag_json(v) }.join(',') + ']'
+        when Hash then '{' + o.map { |k, v| __diag_json(k.to_s) + ':' + __diag_json(v) }.join(',') + '}'
+        else '"' + o.to_s.gsub('"', '\\"') + '"'
+        end
+      end
 
       $__diag = {
         :frame => 0,
@@ -1719,7 +1753,12 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
             :lastSlow => h[:last_slow],
             :crashes => h[:crashes],
           }
-          $stderr.puts "[diag] #{JSON.generate(obj)}"
+          payload = if defined?(JSON) && JSON.respond_to?(:generate)
+            JSON.generate(obj)
+          else
+            __diag_json(obj)
+          end
+          $stderr.puts "[diag] #{payload}"
         rescue StandardError => e
           $stderr.puts "[diag] error #{e.class}: #{e.message}"
         end
