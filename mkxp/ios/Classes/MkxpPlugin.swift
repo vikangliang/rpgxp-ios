@@ -74,6 +74,9 @@ class MkxpMethodHandler: NSObject {
       // 把引擎实时 FPS 合并进诊断字典，Flutter 诊断页一次取到（Ruby 侧不报 FPS）
       var d = MkxpLog.readLastDiag() ?? [:]
       d["fps"] = MkxpBridge.fps()
+      // 引擎侧帧分解（ios_embed.mm 的 PROFILE 埋点）：Ruby 侧只覆盖脚本逻辑，
+      // 真实帧周期构成（引擎渲染 / GPU 回读 / 哈希 / 上屏）在这里，缺失时显示"—"。
+      if let e = MkxpLog.readLastEngineProfile() { d["engine"] = e }
       result(d)
     case "listSceneDumps":
       result(MkxpSceneDumps.list())

@@ -73,6 +73,8 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
   double get rubyMax => _num(ruby['maxMs']);
   int get rubyN => _int(ruby['n']);
   Map get slow => _map(_diag?['slow']);
+  /// 引擎侧帧分解（ios_embed.mm 埋点）：真实帧周期的构成。
+  Map get engine => _map(_diag?['engine']);
   int get slowCount => _int(slow['count']);
   int get slowThr => _int(slow['thresholdMs'], 16);
   List get components => _list(_diag?['components']);
@@ -159,6 +161,8 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
         children: [
           _fpsCard(),
           const SizedBox(height: 14),
+          _engineCard(),
+          const SizedBox(height: 14),
           _rubyCard(),
           const SizedBox(height: 14),
           _slowCard(),
@@ -199,6 +203,46 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
         ],
       ),
     );
+  }
+
+  /// 引擎侧帧分解：真实帧周期由哪一段构成。
+  /// 这是比 Ruby 侧归因更权威的数据——Ruby 只覆盖脚本/绘制逻辑（~0.2ms），
+  /// 真实开销在 iOS 软呈现层：GPU→CPU 回读(read) + 哈希拷贝(hmc) + 主线程放大上屏(disp)。
+  Widget _engineCard() {
+    final e = engine;
+    if (e.isEmpty) {
+      return _cardBox('引擎侧帧分解',
+          children: const [
+            Text('暂无引擎埋点数据（需开启性能诊断并进入游戏，引擎每 600 帧打印一次）。',
+                style: TextStyle(color: Colors.white38, fontSize: 12))
+          ]);
+    }
+    final frame = _num(e['frameMs']);
+    final eng = _num(e['engine']);
+    final read = _num(e['read']);
+    final hmc = _num(e['hmc']);
+    final disp = _num(e['disp']);
+    final mainDisp = _num(e['mainDispMs']);
+    final softMax = _num(e['softMaxMs']);
+    final efps = _num(e['fps']);
+    String ms(double v) => '${v.toStringAsFixed(2)} ms';
+    return _cardBox('引擎侧帧分解',
+        children: [
+          _kv('真实帧周期', ms(frame)),
+          _kv('引擎实测 FPS', efps > 0 ? efps.toStringAsFixed(1) : '—'),
+          const SizedBox(height: 4),
+          _kv('engine（引擎渲染+等待）', ms(eng)),
+          _kv('read（GPU→CPU 回读）', ms(read)),
+          _kv('hmc（哈希+拷贝+CGImage）', ms(hmc)),
+          _kv('disp（主线程上屏）', ms(disp)),
+          if (mainDisp > 0) _kv('main-display（主线程显示）', ms(mainDisp)),
+          if (softMax > 0) _kv('软呈现峰值', ms(softMax)),
+          const SizedBox(height: 6),
+          const Text(
+              'engine = 帧间隔 − read − hmc（含等 vsync 的等待）；read/hmc/disp 是 iOS '
+              '软呈现层的 CPU 开销，也是真实帧周期超过 16.7ms 的主因。',
+              style: TextStyle(color: Colors.white38, fontSize: 12, height: 1.5)),
+        ]);
   }
 
   Widget _rubyCard() => _cardBox('Ruby 帧逻辑耗时',

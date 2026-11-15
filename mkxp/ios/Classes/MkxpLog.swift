@@ -72,4 +72,57 @@ struct MkxpLog {
     }
     return nil
   }
+
+  /// 解析最近一条**引擎侧**帧分解埋点（ios_embed.mm 的 PROFILE / main-display / hook avg）。
+  ///
+  /// 为什么需要它：Ruby 侧 `[diag]` 只统计**脚本/绘制逻辑**（实测仅 ~0.2ms/帧），
+  /// 完全不含 iOS 软呈现层的开销。真实帧周期由引擎埋点给出：
+  ///   frame = 帧间隔；engine ≈ 帧间隔 − read − hmc（含等 vsync 的等待）；
+  ///   read = glFinish+glReadPixels 的 GPU→CPU 回读；hmc = 哈希+memcpy+CGImage；
+  ///   disp = 主线程放大上屏；mainDisp = 主线程显示总耗时。
+  /// 这些埋点由 MKXP_DIAG 门控（与诊断开关同开同关），每 600 帧打印一行。
+  static func readLastEngineProfile() -> [String: Any]? {
+    let tail = readTail()
+
+    let profRe = try? NSRegularExpression(
+      pattern: #"PROFILE fps=([0-9.]+) frame=([0-9.]+)ms \[engine=([0-9.]+) read=([0-9.]+) hmc=([0-9.]+) disp=([0-9.]+)\]"#)
+    let dispRe = try? NSRegularExpression(pattern: #"main-display avg ([0-9.]+) ms"#)
+    let hookRe = try? NSRegularExpression(
+      pattern: #"hook avg ([0-9.]+) max ([0-9.]+) \| present max ([0-9.]+) \| soft max ([0-9.]+)"#)
+
+    func d(_ line: String, _ m: NSTextCheckingResult, _ i: Int) -> Double {
+      let r = m.range(at: i)
+      guard r.location != NSNotFound, let sr = Range(r, in: line) else { return 0 }
+      return Double(String(line[sr])) ?? 0
+    }
+
+    var prof: [String: Any] = [:]
+    for line in tail.components(separatedBy: "\n").reversed() {
+      guard line.contains("[ios-embed]") else { continue }
+      let ns = NSRange(line.startIndex..., in: line)
+
+      if prof["frameMs"] == nil, let re = profRe,
+         let m = re.firstMatch(in: line, range: ns) {
+        prof["fps"] = d(line, m, 1)
+        prof["frameMs"] = d(line, m, 2)
+        prof["engine"] = d(line, m, 3)
+        prof["read"] = d(line, m, 4)
+        prof["hmc"] = d(line, m, 5)
+        prof["disp"] = d(line, m, 6)
+      }
+      if prof["mainDispMs"] == nil, let re = dispRe,
+         let m = re.firstMatch(in: line, range: ns) {
+        prof["mainDispMs"] = d(line, m, 1)
+      }
+      if prof["softMaxMs"] == nil, let re = hookRe,
+         let m = re.firstMatch(in: line, range: ns) {
+        prof["hookAvgMs"] = d(line, m, 1)
+        prof["hookMaxMs"] = d(line, m, 2)
+        prof["presentMaxMs"] = d(line, m, 3)
+        prof["softMaxMs"] = d(line, m, 4)
+      }
+      if !prof.isEmpty { return prof }
+    }
+    return nil
+  }
 }
