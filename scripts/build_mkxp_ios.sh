@@ -1605,6 +1605,97 @@ git -C "$MKXP_SRC" apply "$ROOT/scripts/mkxp-framework/shader-precision.patch" 2
   || { echo "FATAL: shader-precision.patch apply failed"; exit 1; }
 echo "applied shader-precision.patch (GLES mediump -> highp texture coords)"
 
+# ---------- iOS 帧分段埋点（引擎侧）：把 engine 段拆成 redraw / delay / swap ----------
+# 背景：iOS 侧 PROFILE 埋点只能给出 engine = 帧间隔 - read - hmc，无法区分
+# "真实渲染"与"sleep/等 GPU"。实测 engine 段高达 25ms（帧周期 31.9ms、fps 仅 31），
+# 必须拆开才知道该优化渲染还是该优化等待。
+# 这里在引擎侧加 3 个【纯累加、零行为改变】的埋点：
+#   redraw = 场景合成 + GL 提交 + swap 总耗时（RAII 守卫，覆盖函数内所有 return 路径）
+#   delay  = fpsLimiter.delay()（等 vsync 的 sleep）
+#   swap   = SDL_GL_SwapWindow（提交 + 等 GPU 完成，含阻塞）
+# 由 mkxp_ios_getProf() 以 extern "C" 导出，ios_embed.mm 读取后并入 PROFILE 行。
+# 用 python 注入（绝不动 patch 文件的 @@ 计数）；锚点失配直接 FATAL——
+# 埋点缺失会让人误判瓶颈，宁可不出包也不能出错数据。
+python3 - "$MKXP_SRC/src/display/graphics.cpp" <<'PYEOF' || { echo "FATAL: iOS 帧分段埋点注入失败（锚点失配）"; exit 1; }
+import sys
+p = sys.argv[1]
+with open(p, 'rb') as f:
+    raw = f.read()
+crlf = b'\r\n' in raw
+s = raw.decode('utf-8').replace('\r\n', '\n')
+
+anchor_a = ("    void swapGLBuffer() {\n"
+            "        fpsLimiter.delay();\n"
+            "        SDL_GL_SwapWindow(threadData->window);\n")
+repl_a = (
+    "    /* 计时用 SDL_GetPerformanceCounter：SDL 已在本文件使用；\n"
+    "     * 不引入 <chrono>——在命名空间内包含标准库头是未定义行为。 */\n"
+    "    /* ---- iOS 帧分段埋点（诊断用）：只累加，不改任何渲染行为 ----\n"
+    "     * redraw = 场景合成 + GL 提交 + swap 总耗时（RAII 守卫覆盖所有 return 路径）\n"
+    "     * delay  = fpsLimiter.delay()（等 vsync 的 sleep）\n"
+    "     * swap   = SDL_GL_SwapWindow（提交 + 等 GPU 完成，含阻塞）\n"
+    "     * 由 mkxp_ios_getProf() 以 extern \"C\" 导出给 iOS 侧，并入 PROFILE 行。 */\n"
+    "    static double g_iosProfRedraw = 0, g_iosProfDelay = 0, g_iosProfSwap = 0;\n"
+    "    static int g_iosProfN = 0;\n"
+    "    extern \"C\" void mkxp_ios_getProf(double *out) {\n"
+    "        if (!out) return;\n"
+    "        double n = g_iosProfN > 0 ? (double)g_iosProfN : 1.0;\n"
+    "        out[0] = g_iosProfRedraw / n;\n"
+    "        out[1] = g_iosProfDelay / n;\n"
+    "        out[2] = g_iosProfSwap / n;\n"
+    "        out[3] = (double)g_iosProfN;\n"
+    "    }\n"
+    "    void swapGLBuffer() {\n"
+    "        Uint64 __ppc0 = SDL_GetPerformanceCounter();\n"
+    "        fpsLimiter.delay();\n"
+    "        Uint64 __ppc1 = SDL_GetPerformanceCounter();\n"
+    "        SDL_GL_SwapWindow(threadData->window);\n"
+    "        Uint64 __ppc2 = SDL_GetPerformanceCounter();\n"
+    "        double __pfreq = (double)SDL_GetPerformanceFrequency();\n"
+    "        if (__pfreq > 0) {\n"
+    "            g_iosProfDelay += (double)(__ppc1 - __ppc0) * 1000.0 / __pfreq;\n"
+    "            g_iosProfSwap += (double)(__ppc2 - __ppc1) * 1000.0 / __pfreq;\n"
+    "        }\n"
+    "\n"
+    "        ++frameCount;\n"
+    "\n"
+    "        threadData->ethread->notifyFrame();\n"
+    "    }\n")
+
+anchor_b = ("    void redrawScreen() {\n"
+            "        screen.composite();\n")
+repl_b = (
+    "    void redrawScreen() {\n"
+    "        /* redraw 计时：RAII 守卫，函数内所有 return 路径都会计入 */\n"
+    "        struct __IosProfGuard {\n"
+    "            Uint64 t0;\n"
+    "            __IosProfGuard() : t0(SDL_GetPerformanceCounter()) {}\n"
+    "            ~__IosProfGuard() {\n"
+    "                Uint64 t1 = SDL_GetPerformanceCounter();\n"
+    "                double f = (double)SDL_GetPerformanceFrequency();\n"
+    "                if (f > 0) {\n"
+    "                    g_iosProfRedraw += (double)(t1 - t0) * 1000.0 / f;\n"
+    "                }\n"
+    "                ++g_iosProfN;\n"
+    "            }\n"
+    "        } __iosProfGuard;\n"
+    "        screen.composite();\n")
+
+ca = s.count(anchor_a)
+cb = s.count(anchor_b)
+if ca != 1 or cb != 1:
+    print("FATAL ios-prof inject: anchorA(swapGLBuffer)=%d anchorB(redrawScreen)=%d" % (ca, cb))
+    sys.exit(1)
+
+s = s.replace(anchor_a, repl_a, 1)
+s = s.replace(anchor_b, repl_b, 1)
+out = s.replace('\n', '\r\n').encode('utf-8') if crlf else s.encode('utf-8')
+with open(p, 'wb') as f:
+    f.write(out)
+print("patched graphics.cpp: iOS frame-split probes (redraw/delay/swap) + mkxp_ios_getProf")
+PYEOF
+
+
 # 签名自证：hunk 被 `patch -p1 -f` 静默丢弃时（源码对不上）必须直接 FATAL，
 # 否则会出「以为修了其实没修」的包（与 framework-entry.patch 同款铁律）。
 if ! grep -rqF "iOS: highp for GLES" "$MKXP_SRC/shader/common.h" 2>/dev/null; then

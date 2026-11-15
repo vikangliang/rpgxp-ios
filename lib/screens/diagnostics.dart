@@ -225,6 +225,10 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
     final mainDisp = _num(e['mainDispMs']);
     final softMax = _num(e['softMaxMs']);
     final efps = _num(e['fps']);
+    // 引擎侧细分（graphics.cpp 埋点，新包才有；旧包缺省为 0 → 不显示该行）
+    final redraw = _num(e['redrawMs']);
+    final delay = _num(e['delayMs']);
+    final swapMs = _num(e['swapMs']);
     String ms(double v) => '${v.toStringAsFixed(2)} ms';
     return _cardBox('引擎侧帧分解',
         children: [
@@ -232,6 +236,9 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
           _kv('引擎实测 FPS', efps > 0 ? efps.toStringAsFixed(1) : '—'),
           const SizedBox(height: 4),
           _kv('engine（引擎渲染+等待）', ms(eng)),
+          if (redraw > 0) _kv('├ redraw（合成+GL提交+swap）', ms(redraw)),
+          if (delay > 0) _kv('├ delay（等 vsync 等待）', ms(delay)),
+          if (swapMs > 0) _kv('├ swap（提交+等 GPU）', ms(swapMs)),
           _kv('read（GPU→CPU 回读）', ms(read)),
           _kv('hmc（哈希+拷贝+CGImage）', ms(hmc)),
           _kv('disp（主线程上屏）', ms(disp)),
@@ -239,8 +246,9 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
           if (softMax > 0) _kv('软呈现峰值', ms(softMax)),
           const SizedBox(height: 6),
           const Text(
-              'engine = 帧间隔 − read − hmc（含等 vsync 的等待）；read/hmc/disp 是 iOS '
-              '软呈现层的 CPU 开销，也是真实帧周期超过 16.7ms 的主因。',
+              'engine = 帧间隔 − read − hmc；redraw/delay/swap 把它进一步拆成'
+              '「引擎合成与 GL 提交」「等 vsync」「提交并等 GPU」三段。'
+              'read/hmc/disp 是 iOS 软呈现层的 CPU 开销。',
               style: TextStyle(color: Colors.white38, fontSize: 12, height: 1.5)),
         ]);
   }

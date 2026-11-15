@@ -50,6 +50,11 @@ static uint64_t g_presentTotal = 0;
 extern "C" void mkxp_ios_getScene(GLuint *tex, GLuint *fbo, int *sw, int *sh,
                                   int *ox, int *oy, int *ww, int *wh);
 
+/* 由 mkxp 的 graphics.cpp 提供：引擎侧帧分段埋点（build 脚本 python 注入）。
+ * out[0]=redraw 场景合成+GL提交+swap 总耗时；out[1]=delay 等 vsync 的 sleep；
+ * out[2]=swap SDL_GL_SwapWindow（提交+等 GPU，含阻塞）；out[3]=采样帧数。 */
+extern "C" void mkxp_ios_getProf(double *out);
+
 /* ===================== 软呈现 =====================
  *   1) 从场景 FBO 用 glReadPixels 读回像素（FBO 回读实测可用）；
  *   2) 直接管原始行序包成 CGImage（CFData 拷贝一份，避免缓冲复用导致撕裂）。
@@ -401,9 +406,15 @@ static void mkxp_softPresent()
         double hm  = g_profN ? g_profHmc / g_profN : 0;
         double dp  = g_profN ? g_profDisp / g_profN : 0;
         double eng = inv - rd - hm; if (eng < 0) eng = 0;
+        /* 引擎侧分段（graphics.cpp 埋点）：redraw=合成+GL提交+swap，delay=等 vsync，
+         * swap=SDL_GL_SwapWindow（含等 GPU 阻塞）。放在 ] 之后以兼容既有 PROFILE 正则。 */
+        double ep[4] = {0, 0, 0, 0};
+        mkxp_ios_getProf(ep);
         fprintf(stderr, "[ios-embed] PROFILE fps=%.1f frame=%.2fms "
-                        "[engine=%.2f read=%.2f hmc=%.2f disp=%.2f] (n=%d)\n",
-                1000.0 / (inv > 0 ? inv : 1), inv, eng, rd, hm, dp, g_profN);
+                        "[engine=%.2f read=%.2f hmc=%.2f disp=%.2f] "
+                        "redraw=%.2f delay=%.2f swap=%.2f (n=%d)\n",
+                1000.0 / (inv > 0 ? inv : 1), inv, eng, rd, hm, dp,
+                ep[0], ep[1], ep[2], g_profN);
         g_profInt = g_profRead = g_profHmc = g_profDisp = 0; g_profN = 0;
     }
 

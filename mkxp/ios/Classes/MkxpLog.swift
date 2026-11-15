@@ -89,6 +89,9 @@ struct MkxpLog {
     let dispRe = try? NSRegularExpression(pattern: #"main-display avg ([0-9.]+) ms"#)
     let hookRe = try? NSRegularExpression(
       pattern: #"hook avg ([0-9.]+) max ([0-9.]+) \| present max ([0-9.]+) \| soft max ([0-9.]+)"#)
+    // 引擎侧分段（graphics.cpp 埋点，新包才有；旧包日志里没有，解析不到就缺省）
+    let segRe = try? NSRegularExpression(
+      pattern: #"redraw=([0-9.]+) delay=([0-9.]+) swap=([0-9.]+)"#)
 
     func d(_ line: String, _ m: NSTextCheckingResult, _ i: Int) -> Double {
       let r = m.range(at: i)
@@ -97,6 +100,9 @@ struct MkxpLog {
     }
 
     var prof: [String: Any] = [:]
+    // 注意：不能"遇到第一个有数据的行就返回"——PROFILE 行与 main-display /
+    // hook avg 行是同一批 600 帧里各自打印的，顺序不固定。继续扫完尾部，
+    // 把三类字段都收集齐再返回（否则 mainDisp/softMax 会丢）。
     for line in tail.components(separatedBy: "\n").reversed() {
       guard line.contains("[ios-embed]") else { continue }
       let ns = NSRange(line.startIndex..., in: line)
@@ -114,6 +120,12 @@ struct MkxpLog {
          let m = re.firstMatch(in: line, range: ns) {
         prof["mainDispMs"] = d(line, m, 1)
       }
+      if prof["redrawMs"] == nil, let re = segRe,
+         let m = re.firstMatch(in: line, range: ns) {
+        prof["redrawMs"] = d(line, m, 1)
+        prof["delayMs"] = d(line, m, 2)
+        prof["swapMs"] = d(line, m, 3)
+      }
       if prof["softMaxMs"] == nil, let re = hookRe,
          let m = re.firstMatch(in: line, range: ns) {
         prof["hookAvgMs"] = d(line, m, 1)
@@ -121,8 +133,11 @@ struct MkxpLog {
         prof["presentMaxMs"] = d(line, m, 3)
         prof["softMaxMs"] = d(line, m, 4)
       }
-      if !prof.isEmpty { return prof }
+      // 三类字段都齐了就停（再往上只会是更旧的批次）
+      if prof["frameMs"] != nil && prof["mainDispMs"] != nil && prof["softMaxMs"] != nil {
+        return prof
+      }
     }
-    return nil
+    return prof.isEmpty ? nil : prof
   }
 }
