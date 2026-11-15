@@ -1585,12 +1585,30 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
     end
 
     # =====================================================================
-    # 运行诊断器（gated by ENV['MKXP_DIAG']=='1'）。采集：Ruby 帧耗时、慢帧归因、
-    # 闪退 backtrace。数据以 [diag] <json> 写 $stderr（→ mkxp.log），由原生
-    # getDiagnostics 解析，供 Flutter 诊断页与实时 HUD 浮层读取。
-    # 默认关闭（设置项 MKXP_DIAG），全部 begin/rescue，绝不影响正常游戏逻辑。
+    # 运行诊断器（默认关闭，零开销）。开关经 Flutter 设置写入沙盒
+    # Documents/.settings.json（diagEnabled 字段）——iOS 沙盒读不到自定义 env
+    #（setenv 对 Ruby VM 不生效，见上方 $__mkxp_diag 注释），故改用文件标志位；
+    # 每次游戏 launch 加载脚本时本 hook 会重新 eval，因此能取到最新的开关状态。
+    # env 仅作兜底。采集：Ruby 帧耗时、慢帧归因、闪退 backtrace。数据以 [diag]
+    # <json> 写 $stderr（→ mkxp.log），由原生 getDiagnostics 解析，供 Flutter
+    # 诊断页与实时 HUD 浮层读取。全部 begin/rescue，绝不影响正常游戏逻辑。
     # =====================================================================
-    if ENV['MKXP_DIAG'] == '1'
+    __mkxp_diag_on = false
+    begin
+      require 'json' rescue nil
+      __home = ENV['HOME'] || Dir.home rescue nil
+      if __home
+        __sp = File.join(__home, "Documents", ".settings.json")
+        if File.exist?(__sp)
+          __so = JSON.parse(File.read(__sp)) rescue nil
+          __mkxp_diag_on = !!(__so && __so["diagEnabled"])
+        end
+      end
+      __mkxp_diag_on = true if ENV['MKXP_DIAG'] == '1'   # 兜底（部分环境可读 env）
+    rescue StandardError
+      __mkxp_diag_on = false
+    end
+    if __mkxp_diag_on
       require 'json' rescue nil
 
       $__diag = {
