@@ -1594,20 +1594,34 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
     # 诊断页与实时 HUD 浮层读取。全部 begin/rescue，绝不影响正常游戏逻辑。
     # =====================================================================
     __mkxp_diag_on = false
+    __diag_probe = []
     begin
       require 'json' rescue nil
-      __home = ENV['HOME'] || Dir.home rescue nil
-      if __home
-        __sp = File.join(__home, "Documents", ".settings.json")
-        if File.exist?(__sp)
-          __so = JSON.parse(File.read(__sp)) rescue nil
+      # 候选路径：HOME/Documents、Dir.home/Documents、以及从游戏目录 Dir.pwd
+      # 逐级向上（含同级）找 Documents/.settings.json——不依赖 HOME 是否可用。
+      __cands = []
+      __h = ENV['HOME'] || (Dir.home rescue nil)
+      __cands << File.join(__h, "Documents", ".settings.json") if __h && !__h.to_s.empty?
+      __pwd = (Dir.pwd rescue nil)
+      if __pwd && !__pwd.to_s.empty?
+        4.times { |i| __cands << File.expand_path(File.join([".."] * i + [".settings.json"], __pwd)) }
+      end
+      __cands.uniq!
+      __cands.each do |__c|
+        __diag_probe << "try=#{__c}"
+        if File.exist?(__c)
+          __diag_probe << "found=#{__c}"
+          __so = JSON.parse(File.read(__c)) rescue nil
+          __diag_probe << "parsed=#{(__so.inspect)[0, 140]}"
           __mkxp_diag_on = !!(__so && __so["diagEnabled"])
+          break if __mkxp_diag_on
         end
       end
       __mkxp_diag_on = true if ENV['MKXP_DIAG'] == '1'   # 兜底（部分环境可读 env）
-    rescue StandardError
-      __mkxp_diag_on = false
+    rescue StandardError => e
+      __diag_probe << "err=#{e.class}:#{e.message}"
     end
+    $stderr.puts "[diag-gate] on=#{__mkxp_diag_on} home=#{(ENV['HOME']||'').inspect} pwd=#{(Dir.pwd rescue '?').inspect} #{__diag_probe.join(' ')}"
     if __mkxp_diag_on
       require 'json' rescue nil
 
