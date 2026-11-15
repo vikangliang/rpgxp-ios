@@ -28,6 +28,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
   static const _card = Color(0xFF16161C);
 
   Map? _diag;
+  double _nativeFps = 0.0;
   bool _loading = true;
   Timer? _timer;
 
@@ -46,9 +47,12 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
 
   Future<void> _poll() async {
     final d = await Mkxp.getDiagnostics();
+    // 原生侧帧率（与游戏内 HUD 同值）比日志里的窗口均值更实时，优先用它。
+    final f = await Mkxp.getFps();
     if (!mounted) return;
     setState(() {
       _diag = d;
+      _nativeFps = f;
       _loading = false;
     });
   }
@@ -60,14 +64,15 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
   List _list(Object? v) => v is List ? v as List : const [];
 
   // —— 派生指标 ——
-  double get fps => _num(_diag?['fps']);
+  /// 帧率：优先用原生侧实时值（与游戏内 HUD 同值），无则退回日志里的窗口均值。
+  double get fps => _nativeFps > 0 ? _nativeFps : _num(_diag?['fps']);
   Map get ruby => _map(_diag?['ruby']);
   double get rubyAvg => _num(ruby['avgMs']);
   double get rubyMax => _num(ruby['maxMs']);
   int get rubyN => _int(ruby['n']);
   Map get slow => _map(_diag?['slow']);
   int get slowCount => _int(slow['count']);
-  int get slowThr => _int(slow['thresholdMs'], 40);
+  int get slowThr => _int(slow['thresholdMs'], 16);
   List get components => _list(_diag?['components']);
   Map get lastSlow => _map(_diag?['lastSlow']);
   List get crashes => _list(_diag?['crashes']);
@@ -205,12 +210,18 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
   Widget _slowCard() {
     final comp = lastSlow['comp']?.toString() ?? '—';
     final ms = _num(lastSlow['ms']);
-    return _cardBox('慢帧（> ${slowThr}ms）',
+    final over = _num(slow['overPct']);
+    final hard = _int(slow['hardCount']);
+    final hardThr = _int(slow['hardThresholdMs'], 40);
+    return _cardBox('超预算帧（> ${slowThr}ms）',
         children: [
           _kv('次数', '$slowCount'),
+          _kv('占采样帧', '${over.toStringAsFixed(2)} %'),
+          _kv('严重卡顿（> ${hardThr}ms）', '$hard'),
           _kv('最近一次', ms > 0 ? '${ms.toStringAsFixed(1)} ms @ $comp' : '—'),
           const SizedBox(height: 6),
-          const Text('超过阈值的帧会被记录“最耗时组件”，作为卡顿归因线索。',
+          const Text('阈值取 60fps 帧预算 16.7ms：超预算即掉帧。超阈值的帧会记录'
+              '“最耗时组件”，作为卡顿归因线索。',
               style: TextStyle(color: Colors.white38, fontSize: 12, height: 1.5)),
         ]);
   }

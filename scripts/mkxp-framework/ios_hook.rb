@@ -1738,7 +1738,8 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
         :ruby_n => 0, :ruby_sum => 0.0, :ruby_sumsq => 0.0, :ruby_max => 0.0,
         :comp => {},
         :frame_comp => {},
-        :slow_count => 0, :slow_thr => 40.0,
+        :slow_count => 0, :slow_thr => 16.7, :hard_count => 0, :hard_thr => 40.0,
+        :t0 => nil, :t1 => nil, :fc0 => nil, :fc1 => nil,
         :slow_samples => [],
         :crashes => [],
         :last_slow => nil,
@@ -1771,14 +1772,22 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
         fc = h[:frame_comp]
         # 慢帧判定：帧内若没有任何组件被计时（fc 为空），此前会整帧漏记
         # （实测出现"最大 156ms 但慢帧 0 次"）。这里改为仍记录，归因标"未归因"。
+        # 阈值取 60fps 帧预算 16.7ms（超预算即掉帧），另用 40ms 统计"严重卡顿"。
         if dt_ms >= h[:slow_thr]
           top = fc.any? ? fc.max_by { |_, v| v } : nil
           h[:slow_count] += 1
+          h[:hard_count] += 1 if dt_ms >= h[:hard_thr]
           rec = { :at => __diag_now, :ms => dt_ms.round(1), :comp => (top ? top[0] : '未归因') }
           h[:last_slow] = rec
           h[:slow_samples] << rec
           h[:slow_samples].shift while h[:slow_samples].size > 60
         end
+        # FPS 基线：引擎帧计数 + 单调时钟（Graphics.frame_count 是引擎真实帧号，
+        # 比 Ruby 侧计数更接近真实帧率——包含引擎等待/呈现耗时）。
+        h[:t1] = __diag_now
+        h[:fc1] = (Graphics.frame_count rescue nil)
+        h[:t0] ||= h[:t1]
+        h[:fc0] ||= h[:fc1]
         h[:frame_comp] = {}
         # 每 600 帧或每 2 秒 flush 一次（不能只靠帧数：低帧率时 600 帧要等很久）
         __diag_flush if h[:frame] % 600 == 0 || (__diag_now - h[:last_flush]) >= 2.0
@@ -1801,11 +1810,32 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
               :pct => (h[:ruby_sum] > 0 ? (v / h[:ruby_sum] * 100.0) : 0.0).round(1) }
           }
           ruby_avg = h[:ruby_n] > 0 ? (h[:ruby_sum] / h[:ruby_n]).round(2) : 0.0
+          # 实时 FPS：优先用引擎帧计数 Graphics.frame_count（真实帧号，含引擎等待），
+          # 不可用时退回 Ruby 帧计数。窗口取"上次 flush 到现在"，更贴近实时。
+          fps = h[:fps] || 0.0
+          begin
+            __dt = (h[:t1] && h[:t0]) ? (h[:t1] - h[:t0]) : 0.0
+            if __dt > 0.5
+              __nfr = (h[:fc1] && h[:fc0] && h[:fc1] > h[:fc0]) ? (h[:fc1] - h[:fc0]) : h[:frame]
+              fps = (__nfr / __dt).round(1)
+            end
+          rescue StandardError
+            fps = h[:fps] || 0.0
+          end
+          h[:fps] = fps
+          # 超预算帧占比（掉帧率）
+          __over_pct = (h[:ruby_n] > 0 ? (h[:slow_count].to_f / h[:ruby_n] * 100.0) : 0.0).round(2)
+          # 滚动窗口：把起点移到本次 flush 时刻，下次算的是"最近一个窗口"的帧率
+          h[:t0] = h[:t1]
+          h[:fc0] = h[:fc1]
           obj = {
             :updated => now.round(3),
+            :fps => fps,
             :ruby => { :avgMs => ruby_avg, :maxMs => h[:ruby_max].round(2), :n => h[:ruby_n] },
             :components => comp,
-            :slow => { :count => h[:slow_count], :thresholdMs => h[:slow_thr].to_i },
+            :slow => { :count => h[:slow_count], :thresholdMs => h[:slow_thr].round(1),
+                       :hardCount => h[:hard_count], :hardThresholdMs => h[:hard_thr].to_i,
+                       :overPct => __over_pct },
             :lastSlow => h[:last_slow],
             :crashes => h[:crashes],
           }
