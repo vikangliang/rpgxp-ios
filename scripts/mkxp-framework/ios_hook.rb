@@ -3,6 +3,25 @@ $__mkxp_main = self
 # 最新诊断代码（iOS 上 mkxp.log 跨安装累积且会被裁剪，BUILD 串可能残留旧值）。
 # 若新日志看不到此行，说明跑的是旧 IPA，需重打包重装。
 $stderr.puts "[mkxp-diag] code-present v3 (diagnostics @72a2a77+)"
+
+# 早期诊断探测：放在 hook 最前（100% 执行），只做文件存在性 + HOME/pwd 打印，
+# 不依赖 JSON/后续方法定义。用于无论后段为何不执行都能看到开关探测真相。
+begin
+  __eh = (ENV['HOME'] rescue '?')
+  __ep = (Dir.pwd rescue '?')
+  $stderr.puts "[diag-early] HOME=#{__eh.inspect} PWD=#{__ep.inspect}"
+  ['Documents/.settings.json', '.settings.json'].each do |__rel|
+    ['HOME', 'PWD', 'PWD/..'].each do |__base|
+      __full = (__base == 'HOME' ? File.join(__eh.to_s, __rel)
+               : __base == 'PWD' ? File.join(__ep.to_s, __rel)
+               : File.join(__ep.to_s, '..', __rel))
+      $stderr.puts "[diag-early] try(#{__base})=#{__full} exist=#{(File.exist?(__full) rescue false)}" if __rel == '.settings.json'
+    end
+  end
+rescue Exception => __e
+  $stderr.puts "[diag-early] ERROR #{__e.class}: #{__e.message}"
+end
+
 # ---- 根治：iOS MRI 3.x 的 private 方法显式接收者调用 NoMethodError ----
 # RPG Maker XP / Essentials 21.1 生态（Gen 9 Pack、Deluxe Battle Kit、
 # Following Pokemon EX 等）大量"显式接收者调用 private 方法"，PC 上老 RGSS
@@ -1197,6 +1216,7 @@ def __mkxp_anim_ensure_cache
   end
 end
 
+$stderr.puts "[flow] reached L1219 (before MkxpAnimStore)"
 class MkxpAnimStore
   def initialize(dir, entries)
     @bin = File.join(dir, "mkxp_anims.bin")
@@ -1366,6 +1386,7 @@ end
 #   的 method_added 链上惰性包装；插件重定义会重复触发，靠 @wrapping 与
 #   @wrapped_owner 去重。不依赖任何帧钩子/诊断块。
 # ============================================================================
+$stderr.puts "[flow] reached L1388 (before MkxpFindCenterFast)"
 module MkxpFindCenterFast
   ALPHA_OFF     = 3
   MAX_FALLBACK  = 20
@@ -1567,6 +1588,7 @@ end
 
 # 挂在现有 Object.method_added 之后（alias 链，不覆盖既有钩子）。
 # 原钩子内部 define_method 时 $__mkxp_busy 为 true，本钩子据此跳过，避免递归。
+$stderr.puts "[flow] reached L1591 (before class << Object method_added)"
 class << Object
   unless method_defined?(:__mkxp_fc_orig_method_added)
     alias_method :__mkxp_fc_orig_method_added, :method_added
@@ -1597,6 +1619,7 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
     # <json> 写 $stderr（→ mkxp.log），由原生 getDiagnostics 解析，供 Flutter
     # 诊断页与实时 HUD 浮层读取。全部 begin/rescue，绝不影响正常游戏逻辑。
     # =====================================================================
+    $stderr.puts "[diag-block] reached (top-level diagnostics section executing)"
     __mkxp_diag_on = false
     __diag_probe = []
     begin
@@ -1608,7 +1631,9 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
       __cands << File.join(__h, "Documents", ".settings.json") if __h && !__h.to_s.empty?
       __pwd = (Dir.pwd rescue nil)
       if __pwd && !__pwd.to_s.empty?
-        4.times { |i| __cands << File.expand_path(File.join([".."] * i + [".settings.json"], __pwd)) }
+        # 从游戏目录逐级向上（含同级）找 .settings.json：注意 File.join 先拼前段，
+        # 必须是 __pwd 在前、".." 与文件名在后（原先顺序写反会拼出垃圾路径）。
+        4.times { |i| __cands << File.expand_path(File.join(__pwd, *(([".."] * i) + [".settings.json"]))) }
       end
       __cands.uniq!
       __cands.each do |__c|
