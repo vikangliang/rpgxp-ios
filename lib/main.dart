@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'screens/control_layout.dart';
+import 'screens/diagnostics.dart';
 import 'screens/import.dart';
 import 'screens/library.dart';
 import 'screens/log_view.dart';
@@ -60,6 +61,7 @@ class RpgxpLoaderApp extends StatelessWidget {
         '/import': (_) => const ImportPage(),
         '/log': (_) => const LogPage(),
         '/controls': (_) => const ControlLayoutPage(),
+        '/diagnostics': (_) => const DiagnosticsPage(),
       },
     );
   }

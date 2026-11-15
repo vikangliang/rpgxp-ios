@@ -10,16 +10,19 @@ class AppSettings {
   static const _kKeepAwake = 'keepAwake';
   static const _kLockLandscape = 'lockLandscape';
   static const _kVibration = 'vibration';
+  static const _kDiag = 'diagEnabled';
   static const _kLastPlayedPrefix = 'lastPlayed:';
 
   final bool keepAwake;      // 保持屏幕常亮 → 原生 idleTimerDisabled
   final bool lockLandscape;  // 固定横屏游戏 → 进游戏锁横屏
   final bool vibration;      // 控制器振动 → 按键触感
+  final bool diagEnabled;    // 运行诊断器（帧耗时/慢帧/闪退）→ 默认关，零开销
 
   const AppSettings({
     this.keepAwake = true,
     this.lockLandscape = true,
     this.vibration = true,
+    this.diagEnabled = false,
   });
 
   static Future<File> _file() async {
@@ -48,6 +51,7 @@ class AppSettings {
       keepAwake: m[_kKeepAwake] as bool? ?? true,
       lockLandscape: m[_kLockLandscape] as bool? ?? true,
       vibration: m[_kVibration] as bool? ?? true,
+      diagEnabled: m[_kDiag] as bool? ?? false,
     );
   }
 
@@ -55,11 +59,13 @@ class AppSettings {
     required bool keepAwake,
     required bool lockLandscape,
     required bool vibration,
+    required bool diagEnabled,
   }) async {
     final m = await _read();
     m[_kKeepAwake] = keepAwake;
     m[_kLockLandscape] = lockLandscape;
     m[_kVibration] = vibration;
+    m[_kDiag] = diagEnabled;
     await _write(m);
   }
 

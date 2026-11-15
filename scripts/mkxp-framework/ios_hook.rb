@@ -1577,9 +1577,170 @@ end
 # 若 findCenter 在 ios_hook 注入前已存在（脚本预编译/热重载），method_added
 # 不会触发，此处立即补一次包装；wrap 内部幂等，重复调用无副作用。
 begin
-  if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:findCenter)
+if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:findCenter)
     MkxpFindCenterFast.wrap
-  end
-rescue StandardError => e
-  $stderr.puts "[fcfix] eager wrap failed: #{e.class}: #{e.message}"
-end
+    end
+    rescue StandardError => e
+    $stderr.puts "[fcfix] eager wrap failed: #{e.class}: #{e.message}"
+    end
+
+    # =====================================================================
+    # 运行诊断器（gated by ENV['MKXP_DIAG']=='1'）。采集：Ruby 帧耗时、慢帧归因、
+    # 闪退 backtrace。数据以 [diag] <json> 写 $stderr（→ mkxp.log），由原生
+    # getDiagnostics 解析，供 Flutter 诊断页与实时 HUD 浮层读取。
+    # 默认关闭（设置项 MKXP_DIAG），全部 begin/rescue，绝不影响正常游戏逻辑。
+    # =====================================================================
+    if ENV['MKXP_DIAG'] == '1'
+      require 'json' rescue nil
+
+      $__diag = {
+        :frame => 0,
+        :ruby_n => 0, :ruby_sum => 0.0, :ruby_sumsq => 0.0, :ruby_max => 0.0,
+        :comp => {},
+        :frame_comp => {},
+        :slow_count => 0, :slow_thr => 40.0,
+        :slow_samples => [],
+        :crashes => [],
+        :last_slow => nil,
+        :ruby_samples => [],
+        :last_flush => -10.0,
+      }
+
+      def __diag_now
+        (Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0.0)
+      end
+
+      # 累积某组件耗时（同时累加到整段 + 本帧）
+      def __diag_acc(label, dt_ms)
+        h = $__diag
+        h[:comp][label] = (h[:comp][label] || 0.0) + dt_ms
+        h[:frame_comp][label] = (h[:frame_comp][label] || 0.0) + dt_ms
+      rescue StandardError
+      end
+
+      # 记录一帧 Ruby 耗时：累计 + 窗口样本 + 慢帧归因 + 每 600 帧/慢帧落盘
+      def __diag_record_ruby(dt_ms)
+        h = $__diag
+        h[:frame] += 1
+        h[:ruby_n] += 1
+        h[:ruby_sum] += dt_ms
+        h[:ruby_sumsq] += dt_ms * dt_ms
+        h[:ruby_max] = dt_ms if dt_ms > h[:ruby_max]
+        h[:ruby_samples] << dt_ms
+        h[:ruby_samples].shift while h[:ruby_samples].size > 120
+        fc = h[:frame_comp]
+        if dt_ms >= h[:slow_thr] && fc.any?
+          top = fc.max_by { |_, v| v }
+          h[:slow_count] += 1
+          rec = { :at => __diag_now, :ms => dt_ms.round(1), :comp => top[0] }
+          h[:last_slow] = rec
+          h[:slow_samples] << rec
+          h[:slow_samples].shift while h[:slow_samples].size > 60
+        end
+        h[:frame_comp] = {}
+        __diag_flush(true) if h[:frame] % 600 == 0
+      rescue StandardError
+      end
+
+      def __diag_flush(force = false)
+        h = $__diag
+        now = __diag_now
+        return if !force && (now - h[:last_flush]) < 0.25
+        h[:last_flush] = now
+        begin
+          comp = h[:comp].sort_by { |_, v| -v }.first(8).map { |k, v| { :name => k, :ms => v.round(1) } }
+          ruby_avg = h[:ruby_n] > 0 ? (h[:ruby_sum] / h[:ruby_n]).round(2) : 0.0
+          obj = {
+            :updated => now.round(3),
+            :ruby => { :avgMs => ruby_avg, :maxMs => h[:ruby_max].round(2), :n => h[:ruby_n] },
+            :components => comp,
+            :slow => { :count => h[:slow_count], :thresholdMs => h[:slow_thr].to_i },
+            :lastSlow => h[:last_slow],
+            :crashes => h[:crashes],
+          }
+          $stderr.puts "[diag] #{JSON.generate(obj)}"
+        rescue StandardError => e
+          $stderr.puts "[diag] error #{e.class}: #{e.message}"
+        end
+      rescue StandardError
+      end
+
+      def __diag_record_crash(e)
+        h = $__diag
+        return if h[:crashes].size >= 20
+        bt = (e.backtrace || [])[0, 12]
+        h[:crashes] << { :at => __diag_now, :type => e.class.to_s, :msg => (e.message.to_s[0, 200] rescue ''), :bt => bt }
+        __diag_flush(true)
+      rescue StandardError
+      end
+
+      # 通用方法计时包裹（累积 self 时间，不打印，零日志开销）
+      def __diag_wrap(cls, mname, label, singleton = false)
+        return unless cls
+        wkey = :"@__diag_wrapped_#{mname}"
+        return if cls.instance_variable_get(wkey)
+        cls.instance_variable_set(wkey, true)
+        if singleton
+          return unless cls.respond_to?(mname)
+          orig = cls.method(mname)
+          cls.define_singleton_method(mname) do |*a, &b|
+            t = __diag_now
+            r = orig.call(*a, &b)
+            __diag_acc(label, (__diag_now - t) * 1000.0)
+            r
+          end
+        else
+          im = (cls.instance_method(mname) rescue nil)
+          return unless im
+          cls.send(:define_method, mname) do |*a, &b|
+            t = __diag_now
+            r = im.bind(self).call(*a, &b)
+            __diag_acc(label, (__diag_now - t) * 1000.0)
+            r
+          end
+        end
+      rescue StandardError => e
+        $stderr.puts "[diag] wrap #{label} failed: #{e.class}"
+      end
+
+      # 帧入口：Ruby 侧每帧耗时（包住 rescue 以捕获并上报逐帧异常）
+      begin
+        if defined?(::Graphics)
+          im = ::Graphics.instance_method(:update) rescue nil
+          if im
+            ::Graphics.send(:define_method, :update) do |*a, &b|
+              t = __diag_now
+              begin
+                r = im.bind(self).call(*a, &b)
+              rescue StandardError => e
+                __diag_record_crash(e)
+                raise
+              end
+              __diag_record_ruby((__diag_now - t) * 1000.0)
+              r
+            end
+            $stderr.puts "[diag] Graphics.update wrapped"
+          end
+        end
+      rescue StandardError => e
+        $stderr.puts "[diag] frame wrap failed: #{e.class}"
+      end
+
+      # 归因目标（仅包裹已存在的方法；缺失自动跳过）
+      __diag_wrap(::MkxpFindCenterFast, :findCenter, "findCenter") if defined?(::MkxpFindCenterFast)
+      __diag_wrap(::MkxpFindCenterFast, :find, "findCenter") if defined?(::MkxpFindCenterFast)
+      __diag_wrap(::Bitmap, :stretch_blt, "blit") if defined?(::Bitmap)
+      __diag_wrap(::Bitmap, :blt, "blit") if defined?(::Bitmap)
+      __diag_wrap(::Bitmap, :draw_text, "文本") if defined?(::Bitmap)
+      __diag_wrap(::Window, :draw_text, "文本") if defined?(::Window)
+      __diag_wrap(::Sprite_Character, :update, "sprite") if defined?(::Sprite_Character)
+      __diag_wrap(::PokemonSprite, :setSpeciesBitmap, "精灵合成") if defined?(::PokemonSprite)
+      __diag_wrap(::PokemonSprite, :front_sprite_bitmap, "精灵合成") if defined?(::PokemonSprite)
+
+      begin
+        at_exit { __diag_flush(true) }
+      rescue StandardError
+      end
+
+      $stderr.puts "[diag] diagnostics installed (gated by MKXP_DIAG)"
+    end

@@ -17,6 +17,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _keepAwake = true;
   bool _lockLandscape = true;
   bool _vibration = true;
+  bool _diagEnabled = false;
 
   static const _primary = Color(0xFF4CC2FF);
   static const _card = Color(0xFF16161C);
@@ -30,6 +31,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _keepAwake = s.keepAwake;
         _lockLandscape = s.lockLandscape;
         _vibration = s.vibration;
+        _diagEnabled = s.diagEnabled;
       });
     });
   }
@@ -39,6 +41,7 @@ class _SettingsPageState extends State<SettingsPage> {
       keepAwake: _keepAwake,
       lockLandscape: _lockLandscape,
       vibration: _vibration,
+      diagEnabled: _diagEnabled,
     );
   }
 
@@ -87,6 +90,13 @@ class _SettingsPageState extends State<SettingsPage> {
                     await _persist();
                     if (v) await Mkxp.haptic();
                   })),
+              _row(Icons.speed_outlined, '性能诊断（卡顿/慢帧/闪退）',
+                  subtitle: '开启后下次进游戏才生效；复现问题后到「关于 → 性能诊断」查看归因',
+                  trailing: _switch(_diagEnabled, (v) async {
+                    setState(() => _diagEnabled = v);
+                    await _persist();
+                    await Mkxp.setDiagEnabled(v);
+                  })),
               _row(Icons.tune, '默认游戏配置', onTap: () => _todo('默认游戏配置')),
               _row(Icons.gamepad_outlined, '虚拟按键布局',
                   trailing: const Icon(Icons.chevron_right, color: Colors.white38),
@@ -95,6 +105,9 @@ class _SettingsPageState extends State<SettingsPage> {
             ]),
             const SizedBox(height: 16),
             _group('关于', [
+              _row(Icons.speed_outlined, '性能诊断',
+                  trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                  onTap: () => Navigator.pushNamed(context, '/diagnostics')),
               _row(Icons.article_outlined, '运行日志',
                   trailing: const Icon(Icons.chevron_right, color: Colors.white38),
                   onTap: () => Navigator.pushNamed(context, '/log')),
@@ -135,13 +148,17 @@ class _SettingsPageState extends State<SettingsPage> {
       );
 
   Widget _row(IconData icon, String label,
-      {Widget? trailing, VoidCallback? onTap}) {
+      {Widget? trailing, VoidCallback? onTap, String? subtitle}) {
     return ListTile(
       onTap: onTap,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
       leading: Icon(icon, color: _primary, size: 24),
       title: Text(label,
           style: const TextStyle(color: Colors.white, fontSize: 15)),
+      subtitle: subtitle == null
+          ? null
+          : Text(subtitle,
+              style: const TextStyle(color: Colors.white38, fontSize: 11)),
       trailing: trailing,
     );
   }

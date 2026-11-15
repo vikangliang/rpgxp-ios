@@ -163,6 +163,26 @@ class Mkxp {
     }
   }
 
+  /// 诊断器开关：设置页切换；原生据此在下次 launch 时给引擎传 MKXP_DIAG 环境变量，
+  /// 并经 MkxpPlugin.diagEnabled 控制 HUD 是否叠加“当前卡顿组件”。默认关。
+  static Future<void> setDiagEnabled(bool enabled) async {
+    try {
+      await _ch.invokeMethod('setDiagEnabled', enabled);
+    } catch (_) {}
+  }
+
+  /// 读取运行诊断快照（gated by MKXP_DIAG）：FPS + Ruby 帧耗时 + 慢帧归因 +
+  /// 闪退回溯。返回 null 表示诊断未开启或无数据。
+  /// 用非泛型 Map? 接收平台通道字典，避免 NS Dictionary 泛型 as 转换失败。
+  static Future<Map?> getDiagnostics() async {
+    try {
+      final r = await _ch.invokeMethod('getDiagnostics');
+      return r as Map?;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// 场景快照列表（引擎落盘的 Documents/scene_dump_*.png，用于无 Mac 调试）。
   static Future<List<SceneDump>> listSceneDumps() async {
     try {

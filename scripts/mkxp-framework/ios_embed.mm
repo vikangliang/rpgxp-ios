@@ -182,19 +182,23 @@ static volatile sig_atomic_t g_appBackgrounded = 0;
 extern "C" int mkxp_ios_firstFrameShown(void) { return atomic_load(&g_firstFrameShown); }
 
 /* FPS 角标：每帧 EAGL present 钩子(swz_presentRenderbuffer)自增 g_presentTotal，
- * 这里按 ~0.5s 窗口算平均帧率，供 MkxpTouchOverlay 原生角标显示。
+ * 按两次查询之间的实际窗口算平均帧率。短间隔(<0.25s, 定时器抖动或 HUD/诊断页并发)复用
+ * 上次有效值；只有真正没出新帧(游戏暂停)才返回 0。供 MkxpTouchOverlay 原生角标显示。
  * 复用既有 g_presentTotal（presentRenderbuffer: 每帧必触发），无需改 graphics.cpp。 */
 extern "C" double mkxp_get_avg_fps(void) {
     static uint64_t lastCount = 0;
     static double lastTime = 0;
+    static double cached = 0.0;                  // 上次有效帧率，短间隔查询时复用，避免误报 0
     uint64_t now = g_presentTotal;
     double t = [[NSDate date] timeIntervalSince1970];
     if (lastTime == 0) { lastCount = now; lastTime = t; return 0.0; }
     double dt = t - lastTime;
-    if (dt < 0.5) return 0.0;
-    double fps = (double)(now - lastCount) / dt;
+    if (dt < 0.25) return cached;                // 间隔过短(定时器抖动 / HUD+诊断页并发)→复用上次值
+    uint64_t presented = now - lastCount;
+    if (presented == 0) { lastTime = t; cached = 0.0; return 0.0; }  // 真没出新帧(暂停)才为 0
+    cached = (double)presented / dt;
     lastCount = now; lastTime = t;
-    return fps;
+    return cached;
 }
 
 /* 音频会话中断/路由桥接：由 eventthread.cpp 提供，复用其暂停-恢复逻辑，

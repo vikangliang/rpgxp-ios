@@ -278,7 +278,17 @@ final class MkxpTouchOverlay: NSObject {
       let color: UIColor = f >= 55 ? UIColor(red: 0.20, green: 0.78, blue: 0.35, alpha: 1)
                     : f >= 30 ? UIColor(red: 1.0, green: 0.84, blue: 0.20, alpha: 1)
                     : UIColor(red: 1.0, green: 0.27, blue: 0.23, alpha: 1)
-      lbl.text = "\(v) FPS"
+      var text = "\(v) FPS"
+      // 诊断开启时叠加“当前卡顿组件”（来自 Ruby 诊断器写入的 [diag] 行），
+      // 让运行中实时看到是哪块在拖帧，无需导出日志。
+      if MkxpPlugin.diagEnabled {
+        if let diag = MkxpLog.readLastDiag(),
+           let lastSlow = diag["lastSlow"] as? [String: Any],
+           let comp = lastSlow["comp"] as? String, !comp.isEmpty {
+          text += " · \(comp)"
+        }
+      }
+      lbl.text = text
       lbl.textColor = color
     }
   }

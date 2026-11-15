@@ -1,0 +1,349 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+
+import '../services/mkxp.dart';
+
+/// 性能诊断页（gated by MKXP_DIAG）。读取引擎 Ruby 侧周期写入 mkxp.log 的
+/// `[diag] <json>`（经原生 getDiagnostics 解析），结构化展示：
+///   · 实时 FPS（引擎报）
+///   · Ruby 帧逻辑耗时（平均/最大/采样数）
+///   · 慢帧统计（阈值/次数/最近一次卡顿组件）
+///   · 组件耗时归因（Top 8 条形图）
+///   · 闪退列表（类型/信息/回溯）
+/// 游戏中另由原生 HUD 浮层实时显示「FPS + 当前卡顿组件」，本页用于事后/复现分析。
+class DiagnosticsPage extends StatefulWidget {
+  const DiagnosticsPage({super.key});
+
+  @override
+  State<DiagnosticsPage> createState() => _DiagnosticsPageState();
+}
+
+class _DiagnosticsPageState extends State<DiagnosticsPage> {
+  static const _primary = Color(0xFF4CC2FF);
+  static const _card = Color(0xFF16161C);
+
+  Map? _diag;
+  bool _loading = true;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _poll();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _poll());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _poll() async {
+    final d = await Mkxp.getDiagnostics();
+    if (!mounted) return;
+    setState(() {
+      _diag = d;
+      _loading = false;
+    });
+  }
+
+  // —— 类型安全取值助手（平台通道字典为非泛型 Map，避免 as 转换失败）——
+  double _num(Object? v, [double dflt = 0]) => (v is num) ? v.toDouble() : dflt;
+  int _int(Object? v, [int dflt = 0]) => (v is num) ? v.round() : dflt;
+  Map _map(Object? v) => v is Map ? v as Map : <Object?, Object?>{};
+  List _list(Object? v) => v is List ? v as List : const [];
+
+  // —— 派生指标 ——
+  double get fps => _num(_diag?['fps']);
+  Map get ruby => _map(_diag?['ruby']);
+  double get rubyAvg => _num(ruby['avgMs']);
+  double get rubyMax => _num(ruby['maxMs']);
+  int get rubyN => _int(ruby['n']);
+  Map get slow => _map(_diag?['slow']);
+  int get slowCount => _int(slow['count']);
+  int get slowThr => _int(slow['thresholdMs'], 40);
+  List get components => _list(_diag?['components']);
+  Map get lastSlow => _map(_diag?['lastSlow']);
+  List get crashes => _list(_diag?['crashes']);
+  double get _compMax => components.fold(
+      0.0,
+      (m, e) =>
+          e is Map && _num((e as Map)['ms']) > m ? _num((e as Map)['ms']) : m);
+
+  bool get _hasData => rubyN > 0;
+
+  Future<void> _export() async {
+    final json = const JsonEncoder.withIndent('  ').convert(_diag ?? {});
+    final dir = await getTemporaryDirectory();
+    final ts = DateTime.now().toIso8601String().replaceAll(':', '-');
+    final file = File('${dir.path}/mkxp_diag_$ts.json');
+    await file.writeAsString(json);
+    await Share.shareXFiles([XFile(file.path)],
+        subject: 'mkxp 诊断', text: 'MKXP 运行诊断');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0B0B0F),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.white,
+        elevation: 0,
+        title: const Text('性能诊断',
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+        actions: [
+          IconButton(
+              icon: const Icon(Icons.article_outlined),
+              tooltip: '运行日志',
+              onPressed: () => Navigator.pushNamed(context, '/log')),
+          IconButton(
+              icon: const Icon(Icons.download_outlined),
+              tooltip: '导出诊断 JSON',
+              onPressed: _export),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _poll),
+        ],
+      ),
+      body: SafeArea(
+        child: _loading
+            ? const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: _primary))
+            : !_hasData
+                ? _emptyHint()
+                : _body(),
+      ),
+    );
+  }
+
+  Widget _emptyHint() => Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.speed_outlined,
+                  size: 48, color: Colors.white24),
+              const SizedBox(height: 16),
+              const Text('诊断器未开启或本局暂无数据',
+                  style: TextStyle(color: Colors.white, fontSize: 16)),
+              const SizedBox(height: 10),
+              const Text(
+                '请在「设置 → 游戏 → 性能诊断」打开开关，进入游戏复现卡顿/慢帧/闪退，'
+                '再回到此处查看归因。游戏中浮层会实时显示 FPS + 当前卡顿组件。',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white54, fontSize: 13, height: 1.6),
+              ),
+            ],
+          ),
+        ),
+      );
+
+  Widget _body() => ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: [
+          _fpsCard(),
+          const SizedBox(height: 14),
+          _rubyCard(),
+          const SizedBox(height: 14),
+          _slowCard(),
+          const SizedBox(height: 14),
+          _componentsCard(),
+          const SizedBox(height: 14),
+          _crashesCard(),
+        ],
+      );
+
+  Widget _fpsCard() {
+    final v = fps.round();
+    final running = fps > 0;
+    final color = fps >= 55
+        ? const Color(0xFF34C759)
+        : fps >= 30
+            ? const Color(0xFFFFD60A)
+            : const Color(0xFFFF453A);
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+          color: _card, borderRadius: BorderRadius.circular(14)),
+      child: Row(
+        children: [
+          Text(running ? '$v' : '—',
+              style: TextStyle(
+                  color: running ? color : Colors.white38,
+                  fontSize: 44,
+                  fontWeight: FontWeight.w700)),
+          const SizedBox(width: 10),
+          const Text('FPS',
+              style: TextStyle(color: Colors.white54, fontSize: 18)),
+          const Spacer(),
+          Text(running ? '引擎实时帧率（原生 HUD 同值）' : '游戏中由 HUD 实时显示',
+              style: const TextStyle(color: Colors.white38, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+
+  Widget _rubyCard() => _cardBox('Ruby 帧逻辑耗时',
+      children: [
+        _kv('平均', '${rubyAvg.toStringAsFixed(2)} ms'),
+        _kv('最大', '${rubyMax.toStringAsFixed(2)} ms'),
+        _kv('采样帧数', '$rubyN'),
+        const SizedBox(height: 6),
+        const Text('Ruby 侧每帧脚本/绘制逻辑耗时（不含引擎 GL 渲染）。',
+            style: TextStyle(color: Colors.white38, fontSize: 12, height: 1.5)),
+      ]);
+
+  Widget _slowCard() {
+    final comp = lastSlow['comp']?.toString() ?? '—';
+    final ms = _num(lastSlow['ms']);
+    return _cardBox('慢帧（> ${slowThr}ms）',
+        children: [
+          _kv('次数', '$slowCount'),
+          _kv('最近一次', ms > 0 ? '${ms.toStringAsFixed(1)} ms @ $comp' : '—'),
+          const SizedBox(height: 6),
+          const Text('超过阈值的帧会被记录“最耗时组件”，作为卡顿归因线索。',
+              style: TextStyle(color: Colors.white38, fontSize: 12, height: 1.5)),
+        ]);
+  }
+
+  Widget _componentsCard() {
+    if (components.isEmpty) {
+      return _cardBox('组件耗时归因',
+          children: const [
+            Text('暂无组件采样（诊断开启后跑一会才有数据）。',
+                style: TextStyle(color: Colors.white38, fontSize: 12))
+          ]);
+    }
+    final max = _compMax;
+    return _cardBox('组件耗时归因（Top ${components.length}）',
+        children: [
+          for (final e in components)
+            if (e is Map) _bar(e['name']?.toString() ?? '?', _num(e['ms']), max),
+        ]);
+  }
+
+  Widget _bar(String name, double ms, double max) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                    child: Text(name,
+                        style: const TextStyle(color: Colors.white, fontSize: 13))),
+                Text('${ms.toStringAsFixed(1)} ms',
+                    style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: max > 0 ? (ms / max).clamp(0, 1) : 0,
+                minHeight: 6,
+                backgroundColor: Colors.white10,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  ms >= 40
+                      ? const Color(0xFFFF453A)
+                      : ms >= 16
+                          ? const Color(0xFFFFD60A)
+                          : _primary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
+  Widget _crashesCard() {
+    if (crashes.isEmpty) {
+      return _cardBox('闪退 / 逐帧异常', children: const [
+        Text('本会话未捕获到异常（崩溃回溯为空 = 这一局没崩）。',
+            style: TextStyle(color: Colors.white38, fontSize: 12))
+      ]);
+    }
+    return _cardBox('闪退 / 逐帧异常（${crashes.length}）',
+        children: [
+          for (final c in crashes)
+            if (c is Map) _crashItem(c),
+        ]);
+  }
+
+  Widget _crashItem(Map c) {
+    final type = c['type']?.toString() ?? '?';
+    final msg = c['msg']?.toString() ?? '';
+    final bt = _list(c['bt']);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+          color: const Color(0xFF0B0B0F),
+          borderRadius: BorderRadius.circular(10)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(type,
+              style: const TextStyle(
+                  color: Color(0xFFFF453A),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600)),
+          if (msg.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(msg,
+                  style:
+                      const TextStyle(color: Colors.white70, fontSize: 12))),
+          if (bt.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                bt.whereType<String>().join('\n'),
+                style: const TextStyle(
+                    color: Colors.white38,
+                    fontSize: 10,
+                    fontFamily: 'monospace',
+                    height: 1.4),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cardBox(String title, {required List<Widget> children}) => Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+            color: _card, borderRadius: BorderRadius.circular(14)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600)),
+            const SizedBox(height: 10),
+            ...children,
+          ],
+        ),
+      );
+
+  Widget _kv(String k, String v) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          children: [
+            Text(k, style: const TextStyle(color: Colors.white54, fontSize: 13)),
+            const Spacer(),
+            Text(v,
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ],
+        ),
+      );
+}

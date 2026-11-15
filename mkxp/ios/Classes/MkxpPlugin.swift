@@ -7,6 +7,9 @@ import ObjectiveC
 /// mkxp 插件的 iOS 入口。由 GeneratedPluginRegistrant 自动调用 register(with:)，
 /// 负责注册 MethodChannel 与平台视图工厂。无需修改 AppDelegate。
 public class MkxpPlugin: NSObject, FlutterPlugin {
+  /// 诊断器开关：Flutter 设置页切换，经 setDiagEnabled 写入；launch 时据此给引擎传
+  /// MKXP_DIAG 环境变量，HUD 也据此决定是否叠加显示“当前卡顿组件”。
+  static var diagEnabled = false
   public static func register(with registrar: FlutterPluginRegistrar) {
     installCrashLogger()
     installAudioResume()
@@ -64,6 +67,14 @@ class MkxpMethodHandler: NSObject {
       result([]) // M2 扫描 Documents/games
     case "readLog":
       result(MkxpLog.readTail())
+    case "setDiagEnabled":
+      if let v = call.arguments as? Bool { MkxpPlugin.diagEnabled = v }
+      result(nil)
+    case "getDiagnostics":
+      // 把引擎实时 FPS 合并进诊断字典，Flutter 诊断页一次取到（Ruby 侧不报 FPS）
+      var d = MkxpLog.readLastDiag() ?? [:]
+      d["fps"] = MkxpBridge.fps()
+      result(d)
     case "listSceneDumps":
       result(MkxpSceneDumps.list())
     case "readSceneDump":
@@ -102,6 +113,7 @@ class MkxpMethodHandler: NSObject {
       // 启动前修复 zip 导入产生的乱码文件名（GBK 名被 Latin-1 误解码，
       // 会导致中文名 BGM/贴图找不到：切图 BGM 静音、精灵显示"?"）
       MkxpFileFix.normalize(URL(fileURLWithPath: MkxpBridge.resolve(path)))
+      setenv("MKXP_DIAG", MkxpPlugin.diagEnabled ? "1" : "0", 1)
       let rc = MkxpBridge.run(gamePath: path)
       if rc == 0 {
         MkxpTouchOverlay.shared.show()       // 原生触摸浮层（SDL 窗口之上）

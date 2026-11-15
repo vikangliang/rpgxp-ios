@@ -53,6 +53,8 @@ class _GameRunPageState extends State<GameRunPage> {
           : [DeviceOrientation.portraitUp],
     );
     await Mkxp.setOrientation(settings.lockLandscape);
+    // 诊断开关经 setenv 在 launch 时传给引擎（原生 launch 前据此设 MKXP_DIAG）
+    await Mkxp.setDiagEnabled(settings.diagEnabled);
     await AppSettings.touchLastPlayed(widget.game.name);
     await AppSettings.addPlayCount(widget.game.name);
     if (!mounted) return; // 启动等待期间已退出：不要再拉起引擎

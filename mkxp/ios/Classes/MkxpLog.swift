@@ -58,4 +58,19 @@ struct MkxpLog {
     let url = docsURL().appendingPathComponent(fileName)
     try? "".write(to: url, atomically: false, encoding: .utf8)
   }
+
+  /// 解析 mkxp.log 末尾最后一个 `[diag] <json>` 行（Ruby 诊断器输出），返回字典。
+  /// Flutter 诊断页与 HUD 浮层据此展示帧耗时/慢帧归因/闪退，无需读整个大文件。
+  static func readLastDiag() -> [String: Any]? {
+    let tail = readTail()
+    guard let tail = tail, !tail.isEmpty else { return nil }
+    for line in tail.components(separatedBy: "\n").reversed() {
+      guard let range = line.range(of: "[diag] "), range.upperBound < line.endIndex else { continue }
+      let jsonStr = String(line[range.upperBound...])
+      guard let data = jsonStr.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+      return obj
+    }
+    return nil
+  }
 }
