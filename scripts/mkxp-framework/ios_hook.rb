@@ -1,4 +1,8 @@
 $__mkxp_main = self
+# 诊断代码存在探针：每次 hook 加载最先打印，用于确认设备上 MKXP.framework 是否含
+# 最新诊断代码（iOS 上 mkxp.log 跨安装累积且会被裁剪，BUILD 串可能残留旧值）。
+# 若新日志看不到此行，说明跑的是旧 IPA，需重打包重装。
+$stderr.puts "[mkxp-diag] code-present v3 (diagnostics @72a2a77+)"
 # ---- 根治：iOS MRI 3.x 的 private 方法显式接收者调用 NoMethodError ----
 # RPG Maker XP / Essentials 21.1 生态（Gen 9 Pack、Deluxe Battle Kit、
 # Following Pokemon EX 等）大量"显式接收者调用 private 方法"，PC 上老 RGSS
