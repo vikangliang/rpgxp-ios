@@ -71,9 +71,12 @@ class MkxpMethodHandler: NSObject {
       if let v = call.arguments as? Bool { MkxpPlugin.diagEnabled = v }
       result(nil)
     case "getDiagnostics":
-      // 把引擎实时 FPS 合并进诊断字典，Flutter 诊断页一次取到（Ruby 侧不报 FPS）
+      // 把引擎实时 FPS 合并进诊断字典，Flutter 诊断页一次取到。
+      // 注意：游戏未运行时 MkxpBridge.fps() 返回 0，不能无条件覆盖 Ruby 侧窗口 FPS
+      // （否则诊断导出里永远显示 fps=0，掩盖真实帧率）。只在原生有有效值时覆盖。
       var d = MkxpLog.readLastDiag() ?? [:]
-      d["fps"] = MkxpBridge.fps()
+      let liveFps = MkxpBridge.fps()
+      if liveFps > 0 { d["fps"] = liveFps }
       // 引擎侧帧分解（ios_embed.mm 的 PROFILE 埋点）：Ruby 侧只覆盖脚本逻辑，
       // 真实帧周期构成（引擎渲染 / GPU 回读 / 哈希 / 上屏）在这里，缺失时显示"—"。
       if let e = MkxpLog.readLastEngineProfile() { d["engine"] = e }

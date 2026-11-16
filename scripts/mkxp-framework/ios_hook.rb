@@ -1745,6 +1745,14 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
         :last_slow => nil,
         :ruby_samples => [],
         :last_flush => -10.0,
+        # ---- 冻结抓拍（>200ms 的帧间隔，即瞬时 fps≈0）----
+        # 注意：dt_ms 只是 Ruby 包装方法的执行耗时（纯脚本逻辑），抓不到引擎/呈现层的
+        # 冻结。这里用 Graphics.frame_count 推进 + 单调时钟测【真实帧间隔】：
+        # 引擎卡住时 Ruby 钩子不会被调用，卡完恢复的第一次调用即可算出那段 gap。
+        :freeze_ms => 200.0, :freeze_count => 0,
+        :last_fc => nil, :last_fc_t => nil,
+        :last_gap_ms => 0.0, :gap_max_ms => 0.0,
+        :freezes => [],
       }
 
       def __diag_now
@@ -1762,6 +1770,49 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
       # 记录一帧 Ruby 耗时：累计 + 窗口样本 + 慢帧归因 + 每 600 帧/慢帧落盘
       def __diag_record_ruby(dt_ms)
         h = $__diag
+        # ---- 真实帧间隔监控 / 冻结抓拍 ----
+        # dt_ms 只是当前 Ruby 钩子的执行耗时，抓不到引擎/呈现层的冻结（实测 Ruby
+        # 平均 0.15ms，但真实帧周期 31ms）。引擎卡住时 Ruby 钩子不会被调用，
+        # 恢复的第一次调用里 Graphics.frame_count 会跳变，据此反推出那段时间差。
+        begin
+          h[:frame_ruby_ms] = (h[:frame_ruby_ms] || 0.0) + dt_ms
+          __fc_now = (Graphics.frame_count rescue nil)
+          __t_now = __diag_now
+          if __fc_now && h[:last_fc]
+            if __fc_now > h[:last_fc]
+              __gap = (__t_now - h[:last_fc_t]) * 1000.0
+              h[:last_gap_ms] = __gap
+              h[:gap_max_ms] = __gap if __gap > h[:gap_max_ms]
+              if __gap >= h[:freeze_ms]
+                h[:freeze_count] += 1
+                __scene = (($scene && $scene.class && $scene.class.name) rescue '?')
+                __snap = {
+                  :at => __t_now.round(3),
+                  :gapMs => __gap.round(1),
+                  :rubyMs => h[:frame_ruby_ms].round(2),
+                  :outsideMs => (__gap - h[:frame_ruby_ms]).round(1),
+                  :scene => __scene,
+                  :frame => h[:frame],
+                  :mapId => ($game_map && $game_map.map_id rescue nil),
+                  :px => ($game_player && $game_player.x rescue nil),
+                  :py => ($game_player && $game_player.y rescue nil),
+                }
+                h[:freezes] << __snap
+                h[:freezes].shift while h[:freezes].size > 20
+                $stderr.puts "[diag] FREEZE ##{h[:freeze_count]} gap=#{__snap[:gapMs]}ms ruby=#{__snap[:rubyMs]}ms outside=#{__snap[:outsideMs]}ms scene=#{__scene} map=#{__snap[:mapId]} px=#{__snap[:px]},#{__snap[:py]}"
+                __diag_flush(true)   # 立即落盘：黑匣子，闪退也不丢
+              end
+              h[:last_fc] = __fc_now
+              h[:last_fc_t] = __t_now
+              h[:frame_ruby_ms] = 0.0
+            end
+          else
+            h[:last_fc] = __fc_now
+            h[:last_fc_t] = __t_now
+            h[:frame_ruby_ms] = 0.0
+          end
+        rescue StandardError
+        end
         h[:frame] += 1
         h[:ruby_n] += 1
         h[:ruby_sum] += dt_ms
@@ -1844,6 +1895,11 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
                        :overPct => __over_pct },
             :lastSlow => h[:last_slow],
             :crashes => h[:crashes],
+            # 冻结抓拍：真实帧间隔 >200ms 的现场（Ruby 逻辑耗时抓不到这类卡顿）
+            :freeze => { :count => h[:freeze_count], :thresholdMs => h[:freeze_ms].to_i,
+                         :maxGapMs => h[:gap_max_ms].round(1),
+                         :lastGapMs => h[:last_gap_ms].round(1),
+                         :samples => h[:freezes].last(20) },
           }
           payload = if defined?(JSON) && JSON.respond_to?(:generate)
             JSON.generate(obj)

@@ -75,6 +75,12 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
   Map get slow => _map(_diag?['slow']);
   /// 引擎侧帧分解（ios_embed.mm 埋点）：真实帧周期的构成。
   Map get engine => _map(_diag?['engine']);
+  /// 冻结抓拍：真实帧间隔 >200ms 的现场（Ruby 逻辑耗时抓不到这类卡顿）。
+  Map get freeze => _map(_diag?['freeze']);
+  List get freezeSamples {
+    final s = freeze['samples'];
+    return s is List ? s : const [];
+  }
   int get slowCount => _int(slow['count']);
   int get slowThr => _int(slow['thresholdMs'], 16);
   List get components => _list(_diag?['components']);
@@ -159,6 +165,8 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
   Widget _body() => ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
+          _freezeCard(),
+          const SizedBox(height: 14),
           _fpsCard(),
           const SizedBox(height: 14),
           _engineCard(),
@@ -172,6 +180,47 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
           _crashesCard(),
         ],
       );
+
+  /// 冻结抓拍卡片：>200ms 的帧间隔会立即落盘（黑匣子），这里展示最近 20 次现场。
+  /// 关键看 outsideMs（= 帧间隔 − Ruby 逻辑耗时）：它大就说明卡顿在引擎/呈现层。
+  Widget _freezeCard() {
+    final n = _int(freeze['count']);
+    final thr = _int(freeze['thresholdMs'], 200);
+    final maxGap = _num(freeze['maxGapMs']);
+    final lastGap = _num(freeze['lastGapMs']);
+    final samples = freezeSamples;
+    final shown = samples.length > 8 ? samples.sublist(samples.length - 8) : samples;
+    return _cardBox('冻结抓拍（帧间隔 > $thr ms）',
+        children: [
+          _kv('次数', '$n'),
+          _kv('最大帧间隔', maxGap > 0 ? '${maxGap.toStringAsFixed(0)} ms' : '—'),
+          _kv('最近帧间隔', lastGap > 0 ? '${lastGap.toStringAsFixed(0)} ms' : '—'),
+          if (shown.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text('最近现场（倒序）',
+                style: TextStyle(color: Colors.white54, fontSize: 12)),
+            const SizedBox(height: 4),
+            for (final s in shown.reversed)
+              if (s is Map)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    '${_num(s['gapMs']).toStringAsFixed(0)}ms  引擎外 ${_num(s['outsideMs']).toStringAsFixed(0)}ms'
+                    '  Ruby ${_num(s['rubyMs']).toStringAsFixed(1)}ms'
+                    '  ${s['scene']?.toString() ?? '?'}'
+                    '  @${s['mapId']?.toString() ?? '?'}(${s['px']?.toString() ?? '?'},${s['py']?.toString() ?? '?'})',
+                    style: const TextStyle(color: Colors.white70, fontSize: 11, height: 1.4),
+                  ),
+                ),
+          ],
+          const SizedBox(height: 6),
+          const Text(
+              '帧间隔由 Graphics.frame_count + 单调时钟测得，包含引擎等待与呈现。'
+              '「引擎外」= 帧间隔 − Ruby 逻辑耗时；它远大于 Ruby 耗时时，'
+              '说明卡顿发生在引擎/GL/软呈现层（Ruby 侧改不动）。',
+              style: TextStyle(color: Colors.white38, fontSize: 12, height: 1.5)),
+        ]);
+  }
 
   Widget _fpsCard() {
     final v = fps.round();
