@@ -81,6 +81,11 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
     final s = freeze['samples'];
     return s is List ? s : const [];
   }
+  /// 最严重的冻结现场（按 gapMs 降序 Top-8）——最近 20 个样本可能挤掉最严重的那次。
+  List get freezeWorst {
+    final s = freeze['worst'];
+    return s is List ? s : const [];
+  }
   int get slowCount => _int(slow['count']);
   int get slowThr => _int(slow['thresholdMs'], 16);
   List get components => _list(_diag?['components']);
@@ -190,11 +195,28 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
     final lastGap = _num(freeze['lastGapMs']);
     final samples = freezeSamples;
     final shown = samples.length > 8 ? samples.sublist(samples.length - 8) : samples;
+    final worst = freezeWorst;
     return _cardBox('冻结抓拍（帧间隔 > $thr ms）',
         children: [
           _kv('次数', '$n'),
           _kv('最大帧间隔', maxGap > 0 ? '${maxGap.toStringAsFixed(0)} ms' : '—'),
           _kv('最近帧间隔', lastGap > 0 ? '${lastGap.toStringAsFixed(0)} ms' : '—'),
+          if (worst.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text('最严重（按卡顿时长排序）',
+                style: TextStyle(color: Colors.redAccent, fontSize: 12)),
+            const SizedBox(height: 4),
+            for (final s in worst.take(5))
+              if (s is Map)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    '${_num(s['gapMs']).toStringAsFixed(0)}ms  引擎外 ${_num(s['outsideMs']).toStringAsFixed(0)}ms'
+                    '  ${s['scene']?.toString() ?? '?'} @${s['mapId']?.toString() ?? '?'}(${s['px']?.toString() ?? '?'},${s['py']?.toString() ?? '?'})',
+                    style: const TextStyle(color: Color(0xFFFF9A8F), fontSize: 11, height: 1.4),
+                  ),
+                ),
+          ],
           if (shown.isNotEmpty) ...[
             const SizedBox(height: 8),
             const Text('最近现场（倒序）',

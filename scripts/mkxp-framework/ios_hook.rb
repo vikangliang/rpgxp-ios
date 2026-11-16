@@ -1798,7 +1798,10 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
                   :py => ($game_player && $game_player.y rescue nil),
                 }
                 h[:freezes] << __snap
-                h[:freezes].shift while h[:freezes].size > 20
+                # 保留足够多的现场：之前只留最近 20 个，导致最严重的那次
+                # （实测 4074ms）被后续密集冻结挤掉，只剩 428ms 的样本——
+                # 关键证据反而丢了。扩到 120 个，flush 时同时输出 Top-N 与最近 N。
+                h[:freezes].shift while h[:freezes].size > 120
                 $stderr.puts "[diag] FREEZE ##{h[:freeze_count]} gap=#{__snap[:gapMs]}ms ruby=#{__snap[:rubyMs]}ms outside=#{__snap[:outsideMs]}ms scene=#{__scene} map=#{__snap[:mapId]} px=#{__snap[:px]},#{__snap[:py]}"
                 __diag_flush(true)   # 立即落盘：黑匣子，闪退也不丢
               end
@@ -1899,7 +1902,8 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
             :freeze => { :count => h[:freeze_count], :thresholdMs => h[:freeze_ms].to_i,
                          :maxGapMs => h[:gap_max_ms].round(1),
                          :lastGapMs => h[:last_gap_ms].round(1),
-                         :samples => h[:freezes].last(20) },
+                         :worst => h[:freezes].sort_by { |s| -(s[:gapMs] || 0) }.first(8),
+                         :samples => h[:freezes].last(12) },
           }
           payload = if defined?(JSON) && JSON.respond_to?(:generate)
             JSON.generate(obj)
