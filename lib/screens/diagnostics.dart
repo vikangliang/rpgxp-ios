@@ -186,6 +186,19 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
         ],
       );
 
+  /// 把 freeze 样本里的 compTop（[[名称, 毫秒], ...]）格式化成一行短文本。
+  /// 出现秒级组件值 = 卡顿在 Ruby 可及的加载入口；空 = 在 C++ 引擎内部。
+  String _compTopText(dynamic v) {
+    if (v is! List || v.isEmpty) return '';
+    final parts = <String>[];
+    for (final e in v.take(3)) {
+      if (e is List && e.length >= 2) {
+        parts.add('${e[0]} ${_num(e[1]).toStringAsFixed(0)}ms');
+      }
+    }
+    return parts.isEmpty ? '' : '  组件[${parts.join(' ')}]';
+  }
+
   /// 冻结抓拍卡片：>200ms 的帧间隔会立即落盘（黑匣子），这里展示最近 20 次现场。
   /// 关键看 outsideMs（= 帧间隔 − Ruby 逻辑耗时）：它大就说明卡顿在引擎/呈现层。
   Widget _freezeCard() {
@@ -212,7 +225,8 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                   padding: const EdgeInsets.only(bottom: 6),
                   child: Text(
                     '${_num(s['gapMs']).toStringAsFixed(0)}ms  引擎外 ${_num(s['outsideMs']).toStringAsFixed(0)}ms'
-                    '  ${s['scene']?.toString() ?? '?'} @${s['mapId']?.toString() ?? '?'}(${s['px']?.toString() ?? '?'},${s['py']?.toString() ?? '?'})',
+                    '  ${s['scene']?.toString() ?? '?'} @${s['mapId']?.toString() ?? '?'}(${s['px']?.toString() ?? '?'},${s['py']?.toString() ?? '?'})'
+                    '${_compTopText(s['compTop'])}',
                     style: const TextStyle(color: Color(0xFFFF9A8F), fontSize: 11, height: 1.4),
                   ),
                 ),
@@ -230,7 +244,8 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                     '${_num(s['gapMs']).toStringAsFixed(0)}ms  引擎外 ${_num(s['outsideMs']).toStringAsFixed(0)}ms'
                     '  Ruby ${_num(s['rubyMs']).toStringAsFixed(1)}ms'
                     '  ${s['scene']?.toString() ?? '?'}'
-                    '  @${s['mapId']?.toString() ?? '?'}(${s['px']?.toString() ?? '?'},${s['py']?.toString() ?? '?'})',
+                    '  @${s['mapId']?.toString() ?? '?'}(${s['px']?.toString() ?? '?'},${s['py']?.toString() ?? '?'})'
+                    '${_compTopText(s['compTop'])}',
                     style: const TextStyle(color: Colors.white70, fontSize: 11, height: 1.4),
                   ),
                 ),

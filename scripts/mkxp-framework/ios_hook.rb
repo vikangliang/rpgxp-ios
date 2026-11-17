@@ -1786,6 +1786,9 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
               if __gap >= h[:freeze_ms]
                 h[:freeze_count] += 1
                 __scene = (($scene && $scene.class && $scene.class.name) rescue '?')
+                # 抓拍当时的组件 Top-3：若某组件出现秒级值，说明卡顿在 Ruby 可及的
+                # 加载入口（位图创建/音频/转场）；全空则坐实在 C++ 引擎内部。
+                __ctop = (h[:comp] || {}).sort_by { |_, v| -v }.first(3).map { |k, v| [k, v.round(1)] }
                 __snap = {
                   :at => __t_now.round(3),
                   :gapMs => __gap.round(1),
@@ -1796,13 +1799,14 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
                   :mapId => ($game_map && $game_map.map_id rescue nil),
                   :px => ($game_player && $game_player.x rescue nil),
                   :py => ($game_player && $game_player.y rescue nil),
+                  :compTop => __ctop,
                 }
                 h[:freezes] << __snap
                 # 保留足够多的现场：之前只留最近 20 个，导致最严重的那次
                 # （实测 4074ms）被后续密集冻结挤掉，只剩 428ms 的样本——
                 # 关键证据反而丢了。扩到 120 个，flush 时同时输出 Top-N 与最近 N。
                 h[:freezes].shift while h[:freezes].size > 120
-                $stderr.puts "[diag] FREEZE ##{h[:freeze_count]} gap=#{__snap[:gapMs]}ms ruby=#{__snap[:rubyMs]}ms outside=#{__snap[:outsideMs]}ms scene=#{__scene} map=#{__snap[:mapId]} px=#{__snap[:px]},#{__snap[:py]}"
+                $stderr.puts "[diag] FREEZE ##{h[:freeze_count]} gap=#{__snap[:gapMs]}ms ruby=#{__snap[:rubyMs]}ms outside=#{__snap[:outsideMs]}ms scene=#{__scene} map=#{__snap[:mapId]} px=#{__snap[:px]},#{__snap[:py]} comp=#{__ctop.inspect}"
                 __diag_flush(true)   # 立即落盘：黑匣子，闪退也不丢
               end
               h[:last_fc] = __fc_now
@@ -2028,6 +2032,22 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
       __diag_wrap(::Sprite_Character, :update, "sprite") if defined?(::Sprite_Character)
       __diag_wrap(::PokemonSprite, :setSpeciesBitmap, "精灵合成") if defined?(::PokemonSprite)
       __diag_wrap(::PokemonSprite, :front_sprite_bitmap, "精灵合成") if defined?(::PokemonSprite)
+
+      # ---- 加载期专项埋点（定位启动/场景切换的秒级卡顿）----
+      # 实测 Scene_Intro 一次 freeze gap=4171ms，但 rubyMs 只有 6.47ms——
+      # 卡顿不在帧钩子里，很可能在这类"加载入口"内部。这些都是 Ruby 可及的
+      # 引擎内建方法（第 4 参数 singleton=true 包装类方法），耗时进 components。
+      # 判读：若某次 freeze 的 compTop 里出现秒级大值 → Ruby 可优化；
+      #       若 compTop 全空 → 坐实 C++ 层（纹理上传/shader 编译/文件解码），转引擎埋点。
+      if defined?(::Graphics)
+        __diag_wrap(::Graphics, :transition, "切换转场", true) if ::Graphics.respond_to?(:transition)
+        __diag_wrap(::Graphics, :fadein, "淡入淡出", true) if ::Graphics.respond_to?(:fadein)
+        __diag_wrap(::Graphics, :fadeout, "淡入淡出", true) if ::Graphics.respond_to?(:fadeout)
+      end
+      __diag_wrap(::Bitmap, :new, "位图创建", true) if defined?(::Bitmap)
+      [:bgm_play, :bgs_play, :me_play, :se_play].each do |am|
+        __diag_wrap(::Audio, am, "音频加载", true) if defined?(::Audio) && ::Audio.respond_to?(am)
+      end
 
       begin
         # 退出时补一次 flush；若一帧都没采到，说明帧钩子没命中——明确打印，
