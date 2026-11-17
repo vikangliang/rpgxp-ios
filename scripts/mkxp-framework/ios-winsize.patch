@@ -442,7 +442,7 @@ index 64dc47f..c48543b 100644
 +            g_iosWw = winSize.x;    g_iosWh = winSize.y;
 +        }
 +
-+        probeScenePixels();
++        // probeScenePixels(); /* disabled: 100x glReadPixels @frame300 => 3.5s stall */
          
          // maybe unspaghetti this later
          if (integerScaleStepApplicable() && !integerLastMileScaling)
@@ -450,7 +450,7 @@ index 64dc47f..c48543b 100644
          
          GLMeta::blitEnd();
          
-+        probeScreenPixels();
++        // probeScreenPixels(); /* disabled: 36x glReadPixels @frame300 => stall */
 +        
          swapGLBuffer();
          
