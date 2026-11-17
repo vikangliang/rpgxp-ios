@@ -1150,24 +1150,6 @@ end
 
 def __mkxp_anim_cache_dir
   return $__mkxp_anim_dir if defined?($__mkxp_anim_dir) && $__mkxp_anim_dir
-  # 优先用游戏自带的预构建缓存（tools/build_anim_cache.rb 打包期生成，随游戏
-  # zip 分发到 Data/）。命中时只读，不需要目录可写——这样首次启动直接
-  # cache hit，省掉 iOS 上 ~4s 的 Marshal.load + 1532 次 dump。
-  # 必须校验签名：若游戏数据更新而缓存过期，选 Data/ 会导致 ensure_cache
-  # 试图覆盖只读的游戏包文件。签名不匹配就落到下面的可写目录重建。
-  begin
-    preset = File.expand_path("Data")
-    pidx = File.join(preset, "mkxp_anims.idx")
-    pbin = File.join(preset, "mkxp_anims.bin")
-    if File.exist?(pidx) && File.exist?(pbin)
-      pmeta = (Marshal.load(File.binread(pidx)) rescue nil)
-      psig = __mkxp_anim_signature_file("Data/PkmnAnimations.rxdata")
-      if pmeta && pmeta[0] == "MKXPANIM1" && pmeta[1] == psig
-        return ($__mkxp_anim_dir = preset)
-      end
-    end
-  rescue StandardError
-  end
   cands = []
   begin
     cands << File.expand_path("../../../Library/Caches", Dir.pwd)
