@@ -1150,15 +1150,11 @@ end
 
 def __mkxp_anim_cache_dir
   return $__mkxp_anim_dir if defined?($__mkxp_anim_dir) && $__mkxp_anim_dir
-  # 缓存完全由 App 自己管理，游戏无需任何改动。
-  # 存放位置必须是【持久】目录：原来的 ../../../Library/Caches 在 iOS 上
-  # 会被系统在存储紧张时清除、重装 App 也丢，导致每次都要重新花 ~4s 建缓存。
-  # 改用 Documents 下的隐藏目录（Dir.pwd 是游戏目录，标准情况为
-  # Documents/games/<game>，../../ 即 Documents）：
-  #   - App 更新/重启不丢，只在首次安装构建一次
-  #   - 以点开头且不在 games/ 下，不会被游戏列表扫描成游戏
-  # 若游戏自带 Data/mkxp_anims.idx+bin（可选的高级加速，见
-  # tools/build_anim_cache.rb），仍优先使用；没有也完全不影响。
+  # 优先用游戏自带的预构建缓存（tools/build_anim_cache.rb 打包期生成，随游戏
+  # zip 分发到 Data/）。命中时只读，不需要目录可写——这样首次启动直接
+  # cache hit，省掉 iOS 上 ~4s 的 Marshal.load + 1532 次 dump。
+  # 必须校验签名：若游戏数据更新而缓存过期，选 Data/ 会导致 ensure_cache
+  # 试图覆盖只读的游戏包文件。签名不匹配就落到下面的可写目录重建。
   begin
     preset = File.expand_path("Data")
     pidx = File.join(preset, "mkxp_anims.idx")
@@ -1173,12 +1169,6 @@ def __mkxp_anim_cache_dir
   rescue StandardError
   end
   cands = []
-  # 首选：Documents/.mkxp_anim_cache（持久）
-  begin
-    cands << File.expand_path("../../.mkxp_anim_cache", Dir.pwd)
-  rescue StandardError
-  end
-  # 次选：老的 Library/Caches（兼容非标准游戏路径，如游戏不在 Documents/games 下）
   begin
     cands << File.expand_path("../../../Library/Caches", Dir.pwd)
   rescue StandardError
