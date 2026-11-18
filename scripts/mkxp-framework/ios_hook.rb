@@ -945,7 +945,12 @@ if defined?(::Audio)
     next unless ::Audio.respond_to?(am)
     om = ::Audio.method(am)
     ::Audio.singleton_class.send(:define_method, am) do |*a, &b|
+      # 计时：定位启动期按 Enter 后 Ruby 主线程 4s 冻结。若卡在音频解码，
+      # 这里会打印 >200ms 的调用（含文件名），一次真机即可定性/排除。
+      __at0 = (Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0.0)
       om.call(*a, &b)
+      __dt = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0.0) - __at0) * 1000.0
+      $stderr.puts "[mkxp-audio] SLOW #{am} #{__dt.round(0)}ms file=#{(a[0].respond_to?(:name) ? a[0].name : a[0]).inspect}" if __dt > 200.0
     rescue StandardError => e
       if ($__mkxp_audio_n += 1) <= 8
         $stderr.puts "[mkxp-audio] #{am} rescued: #{e.class}: #{e.message}"
