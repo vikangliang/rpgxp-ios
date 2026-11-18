@@ -675,6 +675,7 @@ class << Object
           ::Object.send(:define_method, :mainFunctionDebug) do
             __mkxp_anim_ensure_cache   # 所有游戏脚本已加载完（PBAnimations 等类齐备），此处一次性构建分片缓存
             __mkxp_patch_mega_bitmap   # 启动期一次性给基类 Sprite/Plane#bitmap= 打 mega-surface 降采样根治(判定已改用 mega?,不会误伤游戏 TilesetWrapper 的合法高 tileset)
+            __diag_install_save_timing if $__mkxp_diag_on   # [临时诊断] 包装读档计时，验证启动4s
             __mkxp_main_safe(mfd)
           end
         rescue StandardError
@@ -1753,10 +1754,41 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
         :last_fc => nil, :last_fc_t => nil,
         :last_gap_ms => 0.0, :gap_max_ms => 0.0,
         :freezes => [],
+        # [临时诊断] SaveData.read_from_file 每次读档的耗时/minorGC/调用栈，验证启动4s
+        :save_reads => [],
       }
 
       def __diag_now
         (Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0.0)
+      end
+
+      # [临时诊断] 包装 SaveData.read_from_file（class 方法），测每次读档耗时/minorGC/调用栈。
+      # 在游戏脚本加载完（mainFunctionDebug 入口）调用，此时 SaveData 已定义。
+      def __diag_install_save_timing
+        return if defined?($__save_timing_done) && $__save_timing_done
+        $__save_timing_done = true
+        sc = ::SaveData.singleton_class
+        return if sc.instance_variable_get(:@__diag_save_timed)
+        sc.instance_variable_set(:@__diag_save_timed, true)
+        orig = ::SaveData.method(:read_from_file)
+        sc.send(:define_method, :read_from_file) do |*args|
+          t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0.0
+          g0 = (GC.stat[:minor_gc_count] rescue nil)
+          ret = orig.call(*args)
+          t1 = Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0.0
+          g1 = (GC.stat[:minor_gc_count] rescue nil)
+          rec = {
+            :ms => ((t1 - t0) * 1000.0).round(1),
+            :minorGC => (g0 && g1) ? (g1 - g0) : nil,
+            :file => (args[0].to_s.split("/").last rescue "?"),
+            :caller => ((caller[1..3] || []).map { |x| x.to_s.split("/").last }.join(" < ") rescue ""),
+          }
+          ($__diag[:save_reads] << rec rescue nil)
+          __diag_flush(true) rescue nil
+          ret
+        end
+      rescue StandardError => e
+        $stderr.puts "[diag] save timing install failed: #{e.class}: #{e.message}"
       end
 
       # 累积某组件耗时（同时累加到整段 + 本帧）
@@ -1904,6 +1936,7 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
                          :lastGapMs => h[:last_gap_ms].round(1),
                          :worst => h[:freezes].sort_by { |s| -(s[:gapMs] || 0) }.first(8),
                          :samples => h[:freezes].last(12) },
+            :saveReads => h[:save_reads],   # [临时诊断] 每次读档耗时，验证启动4s
           }
           payload = if defined?(JSON) && JSON.respond_to?(:generate)
             JSON.generate(obj)
