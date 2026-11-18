@@ -1147,7 +1147,9 @@ end
 # 只返回轻量代理容器；单个动画在第一次被 [] / each / get_from_name 实际使用时
 # 才从分片反序列化。堆里不再常驻 70 万对象，PRE <10ms，首次动画 <50ms。
 # 任何异常、缓存缺失、签名不符都回退原 load_data 全量加载，功能完全不变。
-$__mkxp_anim_lazy = true unless defined?($__mkxp_anim_lazy)
+# [A/B 测试] 临时关闭动画缓存 lazy 机制，验证启动 4s 冻结是否由它引入。
+# true = 缓存版(现行为)；false = 回退到 11-10 之前的原始全量加载。
+$__mkxp_anim_lazy = false unless defined?($__mkxp_anim_lazy)
 begin
   require "zlib"
 rescue LoadError
