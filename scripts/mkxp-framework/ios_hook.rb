@@ -945,12 +945,7 @@ if defined?(::Audio)
     next unless ::Audio.respond_to?(am)
     om = ::Audio.method(am)
     ::Audio.singleton_class.send(:define_method, am) do |*a, &b|
-      # 计时：定位启动期按 Enter 后 Ruby 主线程 4s 冻结。若卡在音频解码，
-      # 这里会打印 >200ms 的调用（含文件名），一次真机即可定性/排除。
-      __at0 = (Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0.0)
       om.call(*a, &b)
-      __dt = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue 0.0) - __at0) * 1000.0
-      $stderr.puts "[mkxp-audio] SLOW #{am} #{__dt.round(0)}ms file=#{(a[0].respond_to?(:name) ? a[0].name : a[0]).inspect}" if __dt > 200.0
     rescue StandardError => e
       if ($__mkxp_audio_n += 1) <= 8
         $stderr.puts "[mkxp-audio] #{am} rescued: #{e.class}: #{e.message}"
@@ -1147,9 +1142,7 @@ end
 # 只返回轻量代理容器；单个动画在第一次被 [] / each / get_from_name 实际使用时
 # 才从分片反序列化。堆里不再常驻 70 万对象，PRE <10ms，首次动画 <50ms。
 # 任何异常、缓存缺失、签名不符都回退原 load_data 全量加载，功能完全不变。
-# [A/B 测试] 临时关闭动画缓存 lazy 机制，验证启动 4s 冻结是否由它引入。
-# true = 缓存版(现行为)；false = 回退到 11-10 之前的原始全量加载。
-$__mkxp_anim_lazy = false unless defined?($__mkxp_anim_lazy)
+$__mkxp_anim_lazy = true unless defined?($__mkxp_anim_lazy)
 begin
   require "zlib"
 rescue LoadError
@@ -1759,7 +1752,6 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
         :freeze_ms => 200.0, :freeze_count => 0,
         :last_fc => nil, :last_fc_t => nil,
         :last_gap_ms => 0.0, :gap_max_ms => 0.0,
-        :last_gc_major => nil, :last_gc_minor => nil,
         :freezes => [],
       }
 
@@ -1791,17 +1783,9 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
               __gap = (__t_now - h[:last_fc_t]) * 1000.0
               h[:last_gap_ms] = __gap
               h[:gap_max_ms] = __gap if __gap > h[:gap_max_ms]
-              # GC 计数：major GC 停顿会让 frame_count 停住但 rubyMs 极小，
-              # 与"引擎卡住"表现完全一样。这里抓这次 gap 期间的 GC 次数来区分。
-              # 在分支开头统一读一次，freeze 子块与基线更新共用（避免未定义）。
-              __gcs = (GC.stat rescue {})
-              __gc_major = __gcs[:major_gc_count] rescue nil
-              __gc_minor = __gcs[:minor_gc_count] rescue nil
               if __gap >= h[:freeze_ms]
                 h[:freeze_count] += 1
                 __scene = (($scene && $scene.class && $scene.class.name) rescue '?')
-                __dmajor = (__gc_major && h[:last_gc_major]) ? (__gc_major - h[:last_gc_major]) : nil
-                __dminor = (__gc_minor && h[:last_gc_minor]) ? (__gc_minor - h[:last_gc_minor]) : nil
                 __snap = {
                   :at => __t_now.round(3),
                   :gapMs => __gap.round(1),
@@ -1812,29 +1796,23 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
                   :mapId => ($game_map && $game_map.map_id rescue nil),
                   :px => ($game_player && $game_player.x rescue nil),
                   :py => ($game_player && $game_player.y rescue nil),
-                  :gcMajor => __dmajor, :gcMinor => __dminor,
                 }
                 h[:freezes] << __snap
                 # 保留足够多的现场：之前只留最近 20 个，导致最严重的那次
                 # （实测 4074ms）被后续密集冻结挤掉，只剩 428ms 的样本——
                 # 关键证据反而丢了。扩到 120 个，flush 时同时输出 Top-N 与最近 N。
                 h[:freezes].shift while h[:freezes].size > 120
-                $stderr.puts "[diag] FREEZE ##{h[:freeze_count]} gap=#{__snap[:gapMs]}ms ruby=#{__snap[:rubyMs]}ms outside=#{__snap[:outsideMs]}ms gcM=#{__dmajor.inspect} gcm=#{__dminor.inspect} scene=#{__scene} map=#{__snap[:mapId]} px=#{__snap[:px]},#{__snap[:py]}"
+                $stderr.puts "[diag] FREEZE ##{h[:freeze_count]} gap=#{__snap[:gapMs]}ms ruby=#{__snap[:rubyMs]}ms outside=#{__snap[:outsideMs]}ms scene=#{__scene} map=#{__snap[:mapId]} px=#{__snap[:px]},#{__snap[:py]}"
                 __diag_flush(true)   # 立即落盘：黑匣子，闪退也不丢
               end
               h[:last_fc] = __fc_now
               h[:last_fc_t] = __t_now
               h[:frame_ruby_ms] = 0.0
-              h[:last_gc_major] = __gc_major
-              h[:last_gc_minor] = __gc_minor
             end
           else
             h[:last_fc] = __fc_now
             h[:last_fc_t] = __t_now
             h[:frame_ruby_ms] = 0.0
-            __gcs0 = (GC.stat rescue {})
-            h[:last_gc_major] = (__gcs0[:major_gc_count] rescue nil)
-            h[:last_gc_minor] = (__gcs0[:minor_gc_count] rescue nil)
           end
         rescue StandardError
         end
