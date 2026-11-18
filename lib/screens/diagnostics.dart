@@ -186,6 +186,15 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
         ],
       );
 
+  /// 冻结样本里的 GC 次数增量（major/minor）。major>0 说明这段卡顿是 Ruby GC 停顿。
+  String _gcText(dynamic s) {
+    if (s is! Map) return '';
+    final ma = s['gcMajor'];
+    final mi = s['gcMinor'];
+    if (ma == null && mi == null) return '';
+    return '  GC[大${ma ?? '?'} 小${mi ?? '?'}]';
+  }
+
   /// 冻结抓拍卡片：>200ms 的帧间隔会立即落盘（黑匣子），这里展示最近 20 次现场。
   /// 关键看 outsideMs（= 帧间隔 − Ruby 逻辑耗时）：它大就说明卡顿在引擎/呈现层。
   Widget _freezeCard() {
@@ -212,7 +221,8 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                   padding: const EdgeInsets.only(bottom: 6),
                   child: Text(
                     '${_num(s['gapMs']).toStringAsFixed(0)}ms  引擎外 ${_num(s['outsideMs']).toStringAsFixed(0)}ms'
-                    '  ${s['scene']?.toString() ?? '?'} @${s['mapId']?.toString() ?? '?'}(${s['px']?.toString() ?? '?'},${s['py']?.toString() ?? '?'})',
+                    '  ${s['scene']?.toString() ?? '?'} @${s['mapId']?.toString() ?? '?'}(${s['px']?.toString() ?? '?'},${s['py']?.toString() ?? '?'})'
+                    '${_gcText(s)}',
                     style: const TextStyle(color: Color(0xFFFF9A8F), fontSize: 11, height: 1.4),
                   ),
                 ),
@@ -230,16 +240,17 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                     '${_num(s['gapMs']).toStringAsFixed(0)}ms  引擎外 ${_num(s['outsideMs']).toStringAsFixed(0)}ms'
                     '  Ruby ${_num(s['rubyMs']).toStringAsFixed(1)}ms'
                     '  ${s['scene']?.toString() ?? '?'}'
-                    '  @${s['mapId']?.toString() ?? '?'}(${s['px']?.toString() ?? '?'},${s['py']?.toString() ?? '?'})',
+                    '  @${s['mapId']?.toString() ?? '?'}(${s['px']?.toString() ?? '?'},${s['py']?.toString() ?? '?'})'
+                    '${_gcText(s)}',
                     style: const TextStyle(color: Colors.white70, fontSize: 11, height: 1.4),
                   ),
                 ),
           ],
           const SizedBox(height: 6),
           const Text(
-              '帧间隔由 Graphics.frame_count + 单调时钟测得，包含引擎等待与呈现。'
-              '「引擎外」= 帧间隔 − Ruby 逻辑耗时；它远大于 Ruby 耗时时，'
-              '说明卡顿发生在引擎/GL/软呈现层（Ruby 侧改不动）。',
+              '帧间隔由 Graphics.frame_count + 单调时钟测得。「引擎外」= 帧间隔 − Ruby 耗时。'
+              'GC[大N] = 这段卡顿期间的 major GC 次数：>0 说明是 Ruby 垃圾回收停顿（加载大量对象）；'
+              '若 GC=0 且引擎外秒级，则卡顿在 C++ 引擎/GL/软呈现层。',
               style: TextStyle(color: Colors.white38, fontSize: 12, height: 1.5)),
         ]);
   }
