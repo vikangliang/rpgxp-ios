@@ -1938,6 +1938,7 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
                          :worst => h[:freezes].sort_by { |s| -(s[:gapMs] || 0) }.first(8),
                          :samples => h[:freezes].last(12) },
             :saveReads => h[:save_reads],   # [临时诊断] 每次读档耗时，验证启动4s
+            :saveFix => ($__newest_save_fixed ? true : false),  # 4s修复hook是否已安装
           }
           payload = if defined?(JSON) && JSON.respond_to?(:generate)
             JSON.generate(obj)
@@ -2090,11 +2091,12 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
     # 定义在诊断块【外】，无条件可用；在 mainFunctionDebug 入口（游戏脚本加载完）安装。
     def __mkxp_fix_newest_save_slot
       return if $__newest_save_fixed
-      $__newest_save_fixed = true
       sc = ::SaveData.singleton_class
-      return unless sc.method_defined?(:get_newest_save_slot)
+      # 方法还没定义时不设固定标记，留待下次重试（诊断钩子每帧都会调 mainFunctionDebug）
+      return unless defined?(::SaveData) && sc.method_defined?(:get_newest_save_slot)
       return if sc.instance_variable_get(:@__newest_save_fixed)
       sc.instance_variable_set(:@__newest_save_fixed, true)
+      $__newest_save_fixed = true
       sc.send(:define_method, :get_newest_save_slot) do
         newest_slot = nil
         newest_time = Time.at(0)
