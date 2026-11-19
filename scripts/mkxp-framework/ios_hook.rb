@@ -676,6 +676,7 @@ class << Object
             __mkxp_anim_ensure_cache   # 所有游戏脚本已加载完（PBAnimations 等类齐备），此处一次性构建分片缓存
             __mkxp_patch_mega_bitmap   # 启动期一次性给基类 Sprite/Plane#bitmap= 打 mega-surface 降采样根治(判定已改用 mega?,不会误伤游戏 TilesetWrapper 的合法高 tileset)
             __diag_install_save_timing if $__mkxp_diag_on   # [临时诊断] 包装读档计时，验证启动4s
+            __mkxp_fix_newest_save_slot                      # [启动4s修复] get_newest_save_slot 改用 mtime 选槽位，避免逐个完整读档累加4s
             __mkxp_main_safe(mfd)
           end
         rescue StandardError
@@ -2079,4 +2080,44 @@ if ::Object.method_defined?(:findCenter) || ::Object.private_method_defined?(:fi
       end
 
       $stderr.puts "[diag] diagnostics installed (gated by MKXP_DIAG) armed=#{($__diag_hooks || []).join(',')}"
+    end
+
+    # [启动4s卡顿修复] 包装 SaveData.get_newest_save_slot（Auto Multi Save 插件的
+    # class 方法）。原实现为了找"最新存档"，逐个完整 Marshal.load 全部 ~19 个槽位，
+    # 每槽 90-230ms 累加约 4 秒（真机 saveReads 铁证：40 条 caller=each_slot）。
+    # 改为用文件 mtime 直接选最新槽位：O(1) 系统调用，19 槽 <1ms。保存时刻越晚，
+    # mtime 与存档内 last_time_saved 都越大，故语义等价；保留原 OLD_SAVE_SLOT 兼容。
+    # 定义在诊断块【外】，无条件可用；在 mainFunctionDebug 入口（游戏脚本加载完）安装。
+    def __mkxp_fix_newest_save_slot
+      return if $__newest_save_fixed
+      $__newest_save_fixed = true
+      sc = ::SaveData.singleton_class
+      return unless sc.method_defined?(:get_newest_save_slot)
+      return if sc.instance_variable_get(:@__newest_save_fixed)
+      sc.instance_variable_set(:@__newest_save_fixed, true)
+      sc.send(:define_method, :get_newest_save_slot) do
+        newest_slot = nil
+        newest_time = Time.at(0)
+        begin
+          self.each_slot do |slot|
+            full = self.get_full_path(slot)
+            next if !File.file?(full)
+            t = File.mtime(full)
+            if t > newest_time
+              newest_time = t
+              newest_slot = slot
+            end
+          end
+          # 与原实现一致：无任何存档但有旧 Game 存档时，复制为"存档 1"
+          if newest_slot.nil? && File.file?(self.get_full_path(self::OLD_SAVE_SLOT))
+            file_copy(self.get_full_path(self::OLD_SAVE_SLOT), self.get_full_path("存档 1"))
+            return "存档 1"
+          end
+        rescue StandardError
+        end
+        newest_slot
+      end
+      $stderr.puts "[mkxp-save] get_newest_save_slot patched (mtime fast path)"
+    rescue StandardError => e
+      $stderr.puts "[mkxp-save] patch failed: #{e.class}: #{e.message}"
     end
